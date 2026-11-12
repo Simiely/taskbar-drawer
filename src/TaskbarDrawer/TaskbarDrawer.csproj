@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>TaskbarDrawer</AssemblyName>
+    <RootNamespace>TaskbarDrawer</RootNamespace>
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
+    <!-- 版本号：每次发版手动 bump 主版本，构建时间由 MSBuild 自动补上，
+         托盘菜单 / 启动提示 / exe 属性里都能直接看到，用来确认跑的是不是最新构建。 -->
+    <Version>1.1.4</Version>
+    <InformationalVersion>1.1.4 · $([System.DateTime]::Now.ToString("yyyy-MM-dd HH:mm"))</InformationalVersion>
+    <!-- WFAC010：WinForms 分析器建议把 DPI 感知移到 ApplicationHighDpiMode，
+         本程序是 WPF + PerMonitorV2 清单，保持清单设置。 -->
+    <NoWarn>$(NoWarn);WFAC010</NoWarn>
+  </PropertyGroup>
+
+  <!-- WinForms 只为托盘 NotifyIcon 引入；去掉它的隐式 using，避免与 WPF 的
+       Point / Rectangle / DragEventArgs 撞名。 -->
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <!-- 同一张图标也嵌入程序：托盘按 16 / 20 / 24 取帧，不依赖从 exe 反向提取。 -->
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\AppIcon.ico" LogicalName="TaskbarDrawer.Assets.AppIcon.ico" />
+  </ItemGroup>
+</Project>
