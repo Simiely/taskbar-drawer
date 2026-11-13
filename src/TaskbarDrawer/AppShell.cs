@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Threading;
 using TaskbarDrawer.Core;
+using TaskbarDrawer.Core.Rules;
 using TaskbarDrawer.Interop;
 using TaskbarDrawer.UI;
 
@@ -23,6 +24,8 @@ public sealed class AppShell : IDisposable
     private TrayService _tray;
     private TaskbarChipLayer _chips;
     private MainPanelWindow _panel;
+    private RuleSet _rules;
+    private RuleRunner _runner;
     private HotkeyDefinition _stashHotkey;
     private DispatcherTimer _pruneTimer;
     private Dispatcher _dispatcher;
@@ -53,7 +56,9 @@ public sealed class AppShell : IDisposable
         _settings = AppSettings.Load();
 
         _stash = new StashAllService();
-        _stash.Changed += UpdateSurface;
+        // Changed 是同步广播：UI 构建一旦抛异常，会沿「业务方法 → RunRules → 入口 Safe」冒泡，
+        // 结果是状态已改、界面没刷、日志还记在错误的 scope 上。隔离必须在订阅处收口。
+        _stash.Changed += () => Safe("surface", UpdateSurface);
 
         // 场景：从运行时编组抓快照落盘，之后可一键关闭 / 还原，跨启动保留。
         _workspace = new WorkspaceService();
@@ -77,10 +82,10 @@ public sealed class AppShell : IDisposable
         _single.GroupOf = hwnd => _stash.GroupIdOf(hwnd);
         // 切到别的组 / 别的窗口时，别的组整组收回胶囊（而不是最小化成一排任务栏按钮）。
         _single.CollapseGroup = groupId => _stash.StashGroup(groupId);
-        _single.Applied += count =>
+        _single.Applied += count => Safe("single.applied", () =>
         {
             if (count > 0) _tray?.SetStatus($"单窗口模式：已收起 {count} 个窗口");
-        };
+        });
 
         _chips = new TaskbarChipLayer();
         _chips.Clicked += entry => Safe("chip.click", () => OnChipClicked(entry));
@@ -116,6 +121,10 @@ public sealed class AppShell : IDisposable
         // 已经是管理员就没有「提权重启」的必要，菜单项只对普通权限实例显示。
         _tray.SetElevated(NativeMethods.IsCurrentProcessElevated);
         _tray.SetVersion(InformationalVersion);
+
+        // 入口固定三个，流程写在 RuleSet.CreateDefault() 里，运行期只读。
+        _rules = RuleSet.CreateDefault();
+        _runner = CreateRuleRunner();
 
         RegisterHotkeys();
 
@@ -222,8 +231,57 @@ public sealed class AppShell : IDisposable
         {
             // 只在录制新热键时忽略，避免把用户按下的组合当操作；面板开着时也要正常收起 / 展开。
             if (_panel != null && _panel.Recording) return;
-            Toggle();
+            RunRules(RuleTriggerKind.Hotkey, () => new RuleFacts
+            {
+                HasUntrackedWindows = _stash.HasUntrackedVisibleWindows(),
+                HasExpandedGroup = _stash.Groups().Any(g => g.Expanded)
+            });
         });
+    }
+
+    /// <summary>
+    /// 规则执行的公共入口：先剪掉已被外部关闭的窗口，再算事实、走规则。
+    /// 顺序很重要——事实必须在剪枝之后算，否则热键会按过期的窗口数量做判断。
+    /// </summary>
+    private void RunRules(RuleTriggerKind trigger, Func<RuleFacts> buildFacts)
+    {
+        if (_disposed) return;
+        _stash.Prune();
+        _runner.Run(trigger, buildFacts());
+    }
+
+    /// <summary>
+    /// 把规则里的卡片接到具体操作上。新增一种卡片 = 目录加一行 + 这里绑一个处理函数。
+    /// </summary>
+    private RuleRunner CreateRuleRunner()
+    {
+        var runner = new RuleRunner(() => _rules);
+
+        runner.On(RuleCatalog.ConditionHasUntracked, _ => _stash.HasUntrackedVisibleWindows());
+        runner.On(RuleCatalog.ConditionHasExpandedGroup, _ => _stash.Groups().Any(g => g.Expanded));
+        runner.On(RuleCatalog.ConditionChipOnScreen, facts => facts.ChipOnScreen);
+        runner.On(RuleCatalog.ConditionSceneRunning, facts => facts.SceneRunning);
+
+        runner.Do(RuleCatalog.ActionStashNew, (_, _) => StashNewGroup());
+        runner.Do(RuleCatalog.ActionExpandLatest, (_, _) => ExpandLatest());
+        runner.Do(RuleCatalog.ActionExpandAll, (_, _) => ExpandAll());
+        runner.Do(RuleCatalog.ActionCollapseExpanded, (_, _) => CollapseExpandedGroups());
+        runner.Do(RuleCatalog.ActionExpandGroup, (facts, _) => ExpandChipGroup(facts.GroupId));
+        runner.Do(RuleCatalog.ActionToggleGroup, (facts, _) => ToggleGroup(facts.GroupId));
+        runner.Do(RuleCatalog.ActionRestoreScene, (facts, _) =>
+        {
+            if (!string.IsNullOrEmpty(facts.SavedId)) RestoreSavedGroup(facts.SavedId);
+        });
+        runner.Do(RuleCatalog.ActionOpenPanel, (_, _) => OpenPanel());
+        runner.Do(RuleCatalog.ActionToast, (_, step) =>
+        {
+            string text = step.Args != null && step.Args.TryGetValue("text", out var value) && !string.IsNullOrWhiteSpace(value)
+                ? value
+                : "已执行";
+            ToastWindow.Show(text);
+        });
+
+        return runner;
     }
 
     /// <summary>
@@ -272,28 +330,36 @@ public sealed class AppShell : IDisposable
         _tray?.SetStatus(message);
     }
 
-    private void Toggle()
+    /// <summary>把所有正展开的编组一起收回胶囊（规则里的「收起所有已展开编组」）。</summary>
+    private void CollapseExpandedGroups()
     {
         if (_disposed) return;
-        // 收起 / 展开都会连续切换前台，先暂停单窗口模式，避免它在过程中把窗口最小化。
         _single.SuspendTemporarily();
-        var (stashed, count) = _stash.Toggle();
-        if (count == 0)
+
+        int hidden = 0;
+        foreach (var group in _stash.Groups().Where(g => g.Expanded).ToArray())
+            hidden += _stash.StashGroup(group.Id);
+
+        Feedback(hidden > 0 ? $"已收起 {hidden} 个窗口" : "没有可操作的窗口");
+        UpdateSurface();
+    }
+
+    /// <summary>展开被点击的那一组（规则里的「展开这个编组」）。</summary>
+    private void ExpandChipGroup(int groupId)
+    {
+        if (_disposed || groupId == 0) return;
+        _single.SuspendTemporarily();
+
+        int shown = _stash.ExpandGroup(groupId);
+        if (shown == 0)
         {
-            Feedback("没有可操作的窗口");
-        }
-        else if (stashed)
-        {
-            var newest = _stash.Groups().FirstOrDefault();
-            string message = newest != null ? $"已收起 {count} 个窗口 · 第 {newest.Id} 组" : $"已收起 {count} 个窗口";
-            Feedback(WithElevationNote(message));
+            Feedback("这一组已经不存在");
         }
         else
         {
-            string message = $"已展开第 {_stash.LastExpandedGroupId} 组 · {count} 个窗口";
-            Feedback(CollapseOtherGroups(_stash.LastExpandedGroupId) > 0
-                ? $"{message} · 其它组已收起"
-                : message);
+            int collapsed = CollapseOtherGroups(groupId);
+            string message = $"已展开「{GroupLabel(groupId)}」· {shown} 个窗口";
+            Feedback(collapsed > 0 ? $"{message} · 其它组已收起" : message);
         }
         UpdateSurface();
     }
@@ -462,42 +528,20 @@ public sealed class AppShell : IDisposable
         UpdateSurface();
     }
 
-    /// <summary>左键点胶囊：场景 = 收起 / 展开（跟任务栏按钮一样），编组 = 展开。</summary>
+    /// <summary>左键点胶囊：把点击当成规则的一个入口，具体做什么由固定规则决定。</summary>
     private void OnChipClicked(ChipEntry entry)
     {
         if (_disposed) return;
-        if (entry.Dormant)
-        {
-            RestoreSavedGroup(entry.SavedId);
-            return;
-        }
-        // 场景左键是切换：开着就全部收进胶囊，收着就全部放出来。
-        if (entry.IsSaved)
-        {
-            ToggleGroup(entry.GroupId);
-            return;
-        }
-        // 已经在屏幕上：左键不再做任何事（不弹提示，避免每次点击都冒一个浮窗）。
-        if (entry.Highlight) return;
 
-        _single.SuspendTemporarily();
-        int shown = _stash.ExpandGroup(entry.GroupId);
-        if (shown == 0)
+        bool isScene = entry.IsSaved;
+        RunRules(isScene ? RuleTriggerKind.SceneChip : RuleTriggerKind.GroupChip, () => new RuleFacts
         {
-            Feedback("这一组已经不存在");
-        }
-        else
-        {
-            int collapsed = CollapseOtherGroups(entry.GroupId);
-            Feedback(collapsed > 0
-                ? $"已展开「{ChipLabel(entry)}」· {shown} 个窗口 · 其它组已收起"
-                : $"已展开「{ChipLabel(entry)}」· {shown} 个窗口");
-        }
-        UpdateSurface();
+            ChipOnScreen = entry.Highlight,
+            SceneRunning = isScene && !entry.Dormant,
+            GroupId = entry.GroupId,
+            SavedId = entry.SavedId
+        });
     }
-
-    private static string ChipLabel(ChipEntry entry)
-        => string.IsNullOrEmpty(entry.Name) ? $"第 {entry.GroupId} 组" : entry.Name;
 
     /// <summary>存储编组：起个名字，把这一组的「软件 + 位置」存成场景快照。</summary>
     private void SaveAsScene(int groupId)
@@ -668,99 +712,13 @@ public sealed class AppShell : IDisposable
         if (_disposed) return;
         var groups = _stash.Groups();
         // 面板的场景区块只列当前没有窗口的那些（还活着的就在上面的编组列表里）。
-        var dormant = DormantGroups(groups, _workspace.Summaries());
-        _chips.Sync(BuildChips(groups, dormant));
+        var dormant = ChipProjection.Dormant(groups, _workspace.Summaries());
+        _chips.Sync(ChipProjection.Chips(groups, dormant));
         _tray.SetGroups(groups, _stash.Count);
         _tray.SetHotkeys(_stashHotkey.Gesture);
         _panel.SetGroups(groups, _stash.Count);
         _panel.SetSavedGroups(dormant);
         _panel.SetHotkeyText(_stashHotkey.Gesture);
-    }
-
-    /// <summary>已保存、但当前没有对应运行时编组的场景（只剩快照）。</summary>
-    private static SavedGroupSummary[] DormantGroups(
-        IReadOnlyList<StashGroupSummary> groups, IReadOnlyList<SavedGroupSummary> saved)
-    {
-        var live = new HashSet<string>(groups.Where(g => g.SavedId != null).Select(g => g.SavedId));
-        return saved.Where(s => !live.Contains(s.Id)).ToArray();
-    }
-
-    /// <summary>
-    /// 胶囊顺序：运行时编组靠托盘（当前工作），已关闭的场景依次排在外侧。
-    /// 存过的组只有一枚胶囊——跟它的运行时编组是同一组，不会重复出现。
-    /// </summary>
-    private static IReadOnlyList<ChipEntry> BuildChips(
-        IReadOnlyList<StashGroupSummary> groups, IReadOnlyList<SavedGroupSummary> saved)
-    {
-        var chips = new List<ChipEntry>();
-
-        foreach (var group in groups)
-        {
-            chips.Add(new ChipEntry
-            {
-                Text = string.IsNullOrEmpty(group.Name)
-                    ? $"{group.Id}·{group.Count}"
-                    : group.SavedId != null ? "★" + ChipName(group.Name) : ChipName(group.Name),
-                Tooltip = RuntimeTooltip(group),
-                Highlight = group.Expanded,
-                GroupId = group.Id,
-                SavedId = group.SavedId,
-                Count = group.Count,
-                Name = group.Name
-            });
-        }
-
-        // 已保存、但当前一个窗口都没有的场景：胶囊继续在，点一下重新拉起。
-        foreach (var group in saved)
-        {
-            chips.Add(new ChipEntry
-            {
-                Text = "★" + ChipName(group.Name),
-                Tooltip = SavedTooltip(group),
-                Highlight = false,
-                Dormant = true,
-                SavedId = group.Id,
-                Count = group.Count,
-                Name = group.Name
-            });
-        }
-
-        return chips;
-    }
-
-    private static string ChipName(string name)
-    {
-        if (string.IsNullOrWhiteSpace(name)) return "场景";
-        return name.Length > 6 ? name[..6] + "…" : name;
-    }
-
-    private static string RuntimeTooltip(StashGroupSummary group)
-    {
-        string head = string.IsNullOrEmpty(group.Name)
-            ? $"第 {group.Id} 组 · {group.Count} 个窗口 · {group.State}"
-            : group.SavedId != null
-                ? $"★ {group.Name} · {group.Count} 个窗口 · {group.State}"
-                : $"{group.Name} · {group.Count} 个窗口 · {group.State}";
-
-        var lines = new List<string> { head };
-        foreach (string title in group.Titles.Take(3))
-            lines.Add(title.Length > 26 ? title[..26] + "…" : title);
-        if (group.Count > 3) lines.Add("…");
-        lines.Add(group.Expanded ? "左键收起 · 右键管理" : "左键展开 · 右键管理");
-        return string.Join("\n", lines);
-    }
-
-    private static string SavedTooltip(SavedGroupSummary group)
-    {
-        var lines = new List<string> { $"★ {group.Name} · {group.Count} 个窗口 · 已关闭" };
-        foreach (string title in group.Titles.Take(3))
-        {
-            string text = title ?? "";
-            lines.Add(text.Length > 26 ? text[..26] + "…" : text);
-        }
-        if (group.Count > 3) lines.Add("…");
-        lines.Add("左键打开并还原窗口位置 · 右键管理");
-        return string.Join("\n", lines);
     }
 
     /// <summary>

@@ -16,13 +16,12 @@ namespace TaskbarDrawer.UI;
 /// </summary>
 public sealed class TaskbarChipWindow : Window
 {
-    private static readonly SolidColorBrush NormalBackground = Frozen(0xE6, 0x2C, 0x2C, 0x2E);
-    private static readonly SolidColorBrush NormalHover = Frozen(0xF5, 0x3A, 0x3A, 0x3C);
-    private static readonly SolidColorBrush ExpandedBackground = Frozen(0xE6, 0x0A, 0x6C, 0xDE);
-    private static readonly SolidColorBrush ExpandedHover = Frozen(0xF5, 0x1A, 0x7C, 0xEE);
-    private static readonly SolidColorBrush EdgeNormal = Frozen(0x2E, 0xFF, 0xFF, 0xFF);
-    private static readonly SolidColorBrush EdgeExpanded = Frozen(0x00, 0x00, 0x00, 0x00);
-    private static readonly SolidColorBrush TextBrush = Frozen(0xFF, 0xFF, 0xFF, 0xFF);
+    private static readonly SolidColorBrush NormalBackground = Theme.Frozen(0xE6, 0x2C, 0x2C, 0x2E);
+    private static readonly SolidColorBrush NormalHover = Theme.Frozen(0xF5, 0x3A, 0x3A, 0x3C);
+    private static readonly SolidColorBrush ExpandedBackground = Theme.Frozen(0xE6, 0x0A, 0x6C, 0xDE);
+    private static readonly SolidColorBrush ExpandedHover = Theme.Frozen(0xF5, 0x1A, 0x7C, 0xEE);
+    private static readonly SolidColorBrush EdgeNormal = Theme.Frozen(0x2E, 0xFF, 0xFF, 0xFF);
+    private static readonly SolidColorBrush EdgeExpanded = Theme.Frozen(0x00, 0x00, 0x00, 0x00);
 
     private readonly Border _root;
     private readonly TextBlock _text;
@@ -48,7 +47,7 @@ public sealed class TaskbarChipWindow : Window
         _text = new TextBlock
         {
             Text = "",
-            Foreground = TextBrush,
+            Foreground = Theme.TextPrimary,
             FontFamily = new FontFamily("Segoe UI Variable Text, Microsoft YaHei UI, Segoe UI"),
             FontSize = 11.5,
             FontWeight = FontWeights.SemiBold,
@@ -93,9 +92,9 @@ public sealed class TaskbarChipWindow : Window
 
         _tooltip = new ToolTip
         {
-            Background = Frozen(0xF7, 0x1C, 0x1C, 0x1E),
-            Foreground = Frozen(0xF5, 0xFF, 0xFF, 0xFF),
-            BorderBrush = Frozen(0x33, 0xFF, 0xFF, 0xFF),
+            Background = Theme.Frozen(0xF7, 0x1C, 0x1C, 0x1E),
+            Foreground = Theme.Frozen(0xF5, 0xFF, 0xFF, 0xFF),
+            BorderBrush = Theme.Frozen(0x33, 0xFF, 0xFF, 0xFF),
             FontFamily = new FontFamily("Segoe UI Variable Text, Microsoft YaHei UI, Segoe UI"),
             FontSize = 12,
             Padding = new Thickness(11, 8, 11, 8),
@@ -209,7 +208,7 @@ public sealed class TaskbarChipWindow : Window
             Width = 12,
             Height = 8,
             CornerRadius = new CornerRadius(2),
-            Background = Frozen(0x4D, 0xFF, 0xFF, 0xFF),
+            Background = Theme.Frozen(0x4D, 0xFF, 0xFF, 0xFF),
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Top
         });
@@ -218,17 +217,10 @@ public sealed class TaskbarChipWindow : Window
             Width = 12,
             Height = 8,
             CornerRadius = new CornerRadius(2),
-            Background = Frozen(0xD9, 0xFF, 0xFF, 0xFF),
+            Background = Theme.Frozen(0xD9, 0xFF, 0xFF, 0xFF),
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Bottom
         });
         return grid;
-    }
-
-    private static SolidColorBrush Frozen(byte a, byte r, byte g, byte b)
-    {
-        var brush = new SolidColorBrush(Color.FromArgb(a, r, g, b));
-        brush.Freeze();
-        return brush;
     }
 }

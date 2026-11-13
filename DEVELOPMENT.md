@@ -7,7 +7,7 @@
 
 - **做什么**：把一组窗口收进任务栏胶囊、原位展开；把软件 + 窗口位置存成场景，关掉后还能按原位置拉起。
 - **不做什么**：不做窗口缩略图、不做虚拟桌面、不替换任务栏、不接管窗口管理（取消编组即完全交还系统）。
-- **状态**：v1.1.4，个人自用 + 开源；单显示器 1920×1080 / Win11 24H2 为主验证环境。
+- **状态**：v1.3.0，个人自用 + 开源；单显示器 1920×1080 / Win11 24H2 为主验证环境。
 - **约束**：Win11 不允许 DeskBand / 往任务栏塞子窗口，胶囊只能是自己画的 topmost 小窗。
 
 ## 二、架构说明
@@ -35,12 +35,16 @@
 - `SavedGroups`：场景模型 + `saved-groups.json` 原子写（临时文件 + `File.Move`）。
 - `WorkspaceService`：场景的保存 / 更新快照 / 关闭 / 还原；还原时已有窗口直接摆位，缺失的 `Process.Start` 后在 12 s 内轮询新窗口并摆位。
 - `SingleWindowMode` / `WindowActivator` / `WindowRecovery` / `HotkeyManager` / `AppSettings` / `AutoStart`：单窗口、抢前台、崩溃恢复、热键、配置、自启。
+- `Rules/RuleModel`（`RuleSet` / `RuleFlow` / `RuleStep`）：规则树 + 写死在代码里的默认树，不落盘。
+- `Rules/RuleCatalog`：卡片目录（Kind / 分类 / 标题 / 说明 / 可用入口 / 参数定义）。
+- `Rules/RuleRunner` + `RuleFacts`：解释器。条件与动作都是查表委托，无反射 / 无表达式树 / 无动态编译。
 
 界面对象：
 
 - `TaskbarChipLayer`：胶囊层。每 2 s 重贴任务栏、体检 z 序；最多 7 枚，多出的进溢出槽（逐组可点）。
 - `TaskbarChipWindow`：单枚胶囊（深色圆角、数量、tooltip）。
 - `MainPanelWindow`：主面板（编组 / 场景 / 开关 / 热键）。
+- `Theme` / `Ui`：深色画刷与通用控件工厂（`Frozen` / `Text` / `Clickable`），窗口只引用，不再各自定义颜色。
 - `TrayService`（托盘 + 深色菜单）、`TextPromptWindow`（重命名）、`ToastWindow`、`DarkMenuRenderer`、`AppIcon`。
 
 ### 2.3 关键数据流
@@ -51,6 +55,7 @@
 存场景：面板「存储编组」→ WorkspaceService.SaveFrom(组内窗口) → saved-groups.json → LinkSaved(组, 场景 id, 名字)
 关场景：「关闭窗口」→ 有 SavedId：UpdateSnapshot + 逐句柄 PostMessage(WM_CLOSE)；无 SavedId：取消编组
 开场景：场景胶囊 → Restore → 已有窗口摆位 / 缺失的启动 + 轮询 → Adopt 接回运行时编组
+入口事件：热键 / 胶囊点击 → 算 RuleFacts（一次枚举）→ RuleRunner 走规则树 → 命中动作 → 调上面这些方法
 ```
 
 术语只有两个：**编组**（运行时、按句柄）、**场景**（持久化、按 exe 路径 + 位置）。同一个窗口可以同时属于多个编组。
@@ -101,10 +106,20 @@
 - 解决：变化检测加入 `Shell_TrayWnd` 句柄比较，句柄变了强制重排；溢出槽列出每一组的名字，可直接点 / 右键。
 - 预防：判断「外部环境是否变化」要比较身份（句柄），不能只比较几何。
 
+### 问题：编组胶囊展开后，再点没反应
+
+**TL;DR**：规则化时把「再点收起」丢了，默认流写成「未展开才展开」，展开状态落到空分支。
+
+- 问题：README 承诺「再点 → 收起」，实际点击没有任何反馈，看起来像程序卡住。
+- 根因：GroupChip 默认树用 `cond.chipOnScreen` 包住 `act.expandGroup`，`Then` 留空；改造前的手感没有被完整翻译成规则。
+- 解决：默认流改成单张 `act.toggleGroup`；同时给 `cond.hasUntracked` / `cond.hasExpandedGroup` 补 `OnlyTriggers = Hotkey`，避免加进胶囊流后永远为 false。
+- 预防：默认树是产品手感的一部分，改规则要对着 README 逐条核对；新增条件卡先确认「这个事实在哪几个入口算过」。
+
 ## 四、数据文件与调试
 
 - `%LOCALAPPDATA%\TaskbarDrawer\settings.json`、`saved-groups.json`、`recovery.json`、`logs\`
 - `--probe`：确认候选窗口集合（判断「为什么这个窗口没被收进去」）
+- `dotnet test tests/TaskbarDrawer.Tests`：规则引擎回归测试（默认手感 / 步数与深度护栏 / 目录约束）
 - 面板「编组」区块：点整行收起 / 展开；按钮与胶囊右键菜单一致
 - 发布：`dotnet publish ... -p:PublishSingleFile=true`，刻意保持框架依赖以把 exe 压到约 320 KB
 

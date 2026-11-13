@@ -33,6 +33,8 @@
 ```powershell
 dotnet build src/TaskbarDrawer/TaskbarDrawer.csproj -c Release
 
+dotnet test tests/TaskbarDrawer.Tests/TaskbarDrawer.Tests.csproj -c Release
+
 dotnet publish src/TaskbarDrawer/TaskbarDrawer.csproj -c Release -r win-x64 `
   --self-contained false -p:PublishSingleFile=true -o publish
 ```

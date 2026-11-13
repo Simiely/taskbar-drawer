@@ -36,10 +36,6 @@ public sealed class StashGroupSummary
     public string Name { get; init; }
 
     public string State => Expanded ? "已展开" : "已收起";
-
-    public string Label => string.IsNullOrEmpty(Name)
-        ? $"第 {Id} 组 · {Count} 个窗口 · {CreatedAt:HH:mm}"
-        : $"{Name} · {Count} 个窗口 · {CreatedAt:HH:mm}";
 }
 
 /// <summary>
@@ -62,8 +58,6 @@ public sealed class StashAllService
 
     /// <summary>当前所有被收纳的窗口（供崩溃回收记录使用）。</summary>
     public IReadOnlyCollection<StashedWindow> Items => _stash.Items;
-
-    public int GroupCount => _groups.Count;
 
     public event Action Changed;
 
@@ -322,26 +316,6 @@ public sealed class StashAllService
         return shown;
     }
 
-    /// <summary>
-    /// 单热键切换：屏幕上有「不属于任何组」的窗口 → 收成新一组；否则展开最近一组仍收着的窗口。
-    /// </summary>
-    public (bool stashed, int count) Toggle()
-    {
-        _stash.Prune();
-        if (HasUntrackedVisibleWindows()) return (true, StashAll());
-
-        // 屏幕上只剩已展开的组：那就把它们重新收起来，实现「一键腾桌面 / 一键恢复」。
-        var expanded = Groups().Where(g => g.Expanded).ToArray();
-        if (expanded.Length > 0)
-        {
-            int hidden = 0;
-            foreach (var group in expanded) hidden += StashGroup(group.Id);
-            if (hidden > 0) return (true, hidden);
-        }
-
-        return (false, ExpandNewest());
-    }
-
     /// <summary>程序退出 / 崩溃兜底：把窗口交回任务栏（最小化、可见）。</summary>
     public int ReleaseAll()
     {
@@ -360,7 +334,8 @@ public sealed class StashAllService
         return removed;
     }
 
-    private bool HasUntrackedVisibleWindows()
+    /// <summary>屏幕上是否还有不属于任何编组的窗口（规则里的条件卡片要用）。</summary>
+    public bool HasUntrackedVisibleWindows()
     {
         foreach (var candidate in WindowEnumerator.Enumerate(includeMinimized: false))
         {

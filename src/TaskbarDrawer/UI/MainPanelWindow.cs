@@ -8,6 +8,7 @@ using System.Windows.Shapes;
 using TaskbarDrawer.Core;
 using TaskbarDrawer.Interop;
 using Forms = System.Windows.Forms;
+using static TaskbarDrawer.UI.Ui;
 
 namespace TaskbarDrawer.UI;
 
@@ -21,22 +22,6 @@ public sealed class MainPanelWindow : Window
     private const double PanelWidth = 400;
     private const double EstimatedHeight = 780;
 
-    // Apple 深色语义色（systemBackground / secondarySystemBackground / systemBlue …）
-    private static readonly SolidColorBrush PanelBackground = Frozen(0xF7, 0x1C, 0x1C, 0x1E);
-    private static readonly SolidColorBrush PanelBorder = Frozen(0xFF, 0x38, 0x38, 0x3A);
-    private static readonly SolidColorBrush CardBackground = Frozen(0xFF, 0x2C, 0x2C, 0x2E);
-    private static readonly SolidColorBrush CardHover = Frozen(0xFF, 0x3A, 0x3A, 0x3C);
-    private static readonly SolidColorBrush ControlBackground = Frozen(0xFF, 0x3A, 0x3A, 0x3C);
-    private static readonly SolidColorBrush ControlHover = Frozen(0xFF, 0x48, 0x48, 0x4A);
-    private static readonly SolidColorBrush TextPrimary = Frozen(0xFF, 0xFF, 0xFF, 0xFF);
-    private static readonly SolidColorBrush TextSecondary = Frozen(0xFF, 0x98, 0x98, 0x9D);
-    private static readonly SolidColorBrush TextMuted = Frozen(0xFF, 0x8E, 0x8E, 0x93);
-    private static readonly SolidColorBrush AccentBrush = Frozen(0xFF, 0x0A, 0x84, 0xFF);
-    private static readonly SolidColorBrush SuccessBrush = Frozen(0xFF, 0x34, 0xC7, 0x59);
-    private static readonly SolidColorBrush DangerBrush = Frozen(0xFF, 0xFF, 0x45, 0x3A);
-    private static readonly SolidColorBrush DividerBrush = Frozen(0xFF, 0x38, 0x38, 0x3A);
-    private static readonly SolidColorBrush SwitchTrackOff = Frozen(0xFF, 0x39, 0x39, 0x3D);
-
     private readonly StackPanel _groupList = new();
     private readonly StackPanel _savedList = new();
     private readonly TextBlock _summary;
@@ -47,6 +32,12 @@ public sealed class MainPanelWindow : Window
     private readonly TextBlock _stashHotkeyValue;
     private readonly TextBlock _stashEditLabel;
     private readonly TextBlock _status;
+
+    // 隐藏期间收到的数据：不建 UI，等 ShowPanel 时一次性补上。
+    private IReadOnlyList<StashGroupSummary> _pendingGroups = Array.Empty<StashGroupSummary>();
+    private IReadOnlyList<SavedGroupSummary> _pendingSaved = Array.Empty<SavedGroupSummary>();
+    private int _pendingTotal;
+    private bool _surfaceDirty;
 
     private bool _recording;
 
@@ -62,15 +53,15 @@ public sealed class MainPanelWindow : Window
         SizeToContent = SizeToContent.Height;
         Width = PanelWidth;
 
-        _summary = Text("", 11, FontWeights.Normal, TextSecondary);
+        _summary = Text("", 11, FontWeights.Normal, Theme.TextSecondary);
 
         _emptyHint = Text("还没有收纳任何窗口。按热键把屏幕上的窗口收成一组，之后点任务栏胶囊就能展开。",
-            11.5, FontWeights.Normal, TextMuted);
+            11.5, FontWeights.Normal, Theme.TextMuted);
         _emptyHint.TextWrapping = TextWrapping.Wrap;
         _emptyHint.Margin = new Thickness(2, 8, 0, 0);
 
         _savedEmpty = Text("没有已关闭的场景。把一组窗口「存储编组」再「关闭窗口」，场景就留在这里，点一下就能按原位置打开。",
-            11.5, FontWeights.Normal, TextMuted);
+            11.5, FontWeights.Normal, Theme.TextMuted);
         _savedEmpty.TextWrapping = TextWrapping.Wrap;
         _savedEmpty.Margin = new Thickness(2, 8, 0, 0);
 
@@ -79,8 +70,8 @@ public sealed class MainPanelWindow : Window
         _autoStartRow = new ToggleRow("开机自启", "登录后自动常驻托盘",
             value => AutoStartRequested?.Invoke(value));
 
-        _stashHotkeyValue = Text("Ctrl+Alt+Shift+D", 11, FontWeights.SemiBold, TextPrimary);
-        _status = Text("", 11, FontWeights.Normal, TextMuted);
+        _stashHotkeyValue = Text("Ctrl+Alt+Shift+D", 11, FontWeights.SemiBold, Theme.TextPrimary);
+        _status = Text("", 11, FontWeights.Normal, Theme.TextMuted);
         _status.Margin = new Thickness(2, 10, 0, 0);
         _status.TextWrapping = TextWrapping.Wrap;
 
@@ -125,22 +116,49 @@ public sealed class MainPanelWindow : Window
     /// <summary>刷新分组列表（每次收纳 / 展开 / 收起 / 外部关闭后由 AppShell 调用）。</summary>
     public void SetGroups(IReadOnlyList<StashGroupSummary> groups, int total)
     {
-        _groupList.Children.Clear();
-        foreach (var group in groups)
-            _groupList.Children.Add(BuildGroupRow(group));
-
-        _emptyHint.Visibility = groups.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        _summary.Text = total > 0 ? $"{total} 个窗口 · {groups.Count} 个编组" : "";
+        _pendingGroups = groups;
+        _pendingTotal = total;
+        if (IsVisible) ApplyGroups();
+        else _surfaceDirty = true;
     }
 
     /// <summary>刷新场景列表（存储 / 重命名 / 关闭 / 解散后由 AppShell 调用）。</summary>
     public void SetSavedGroups(IReadOnlyList<SavedGroupSummary> saved)
     {
+        _pendingSaved = saved;
+        if (IsVisible) ApplySaved();
+        else _surfaceDirty = true;
+    }
+
+    /// <summary>
+    /// 面板隐藏时只记数据、不建行：展开 / 收起是热键高频路径，
+    /// 实测 10 编组全量重建要 2.75 ms（最坏 13 ms），隐藏时做纯属浪费。
+    /// </summary>
+    private void ApplyGroups()
+    {
+        _groupList.Children.Clear();
+        foreach (var group in _pendingGroups)
+            _groupList.Children.Add(BuildGroupRow(group));
+
+        _emptyHint.Visibility = _pendingGroups.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        _summary.Text = _pendingTotal > 0 ? $"{_pendingTotal} 个窗口 · {_pendingGroups.Count} 个编组" : "";
+    }
+
+    private void ApplySaved()
+    {
         _savedList.Children.Clear();
-        foreach (var group in saved)
+        foreach (var group in _pendingSaved)
             _savedList.Children.Add(BuildSavedRow(group));
 
-        _savedEmpty.Visibility = saved.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        _savedEmpty.Visibility = _pendingSaved.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void FlushSurface()
+    {
+        if (!_surfaceDirty) return;
+        _surfaceDirty = false;
+        ApplyGroups();
+        ApplySaved();
     }
 
     public void SetSingleWindow(bool value) => _singleRow.Set(value);
@@ -155,12 +173,12 @@ public sealed class MainPanelWindow : Window
         if (success)
         {
             SetHotkeyText(gesture);
-            _status.Foreground = TextMuted;
+            _status.Foreground = Theme.TextMuted;
             _status.Text = $"已改为 {gesture}";
         }
         else
         {
-            _status.Foreground = DangerBrush;
+            _status.Foreground = Theme.DangerBrush;
             _status.Text = error;
         }
     }
@@ -174,6 +192,8 @@ public sealed class MainPanelWindow : Window
         if (!IsVisible)
         {
             bool restored = TryRestorePosition();
+            // 先补齐隐藏期间攒下的内容，UpdateLayout 才能量到正确高度。
+            FlushSurface();
             Show();
             UpdateLayout();
             if (restored) ClampToWorkArea();
@@ -237,7 +257,7 @@ public sealed class MainPanelWindow : Window
         // 结果热键被永久忽略、用户以为程序坏了。这里主动收尾。
         if (!_recording) return;
         StopRecording();
-        _status.Foreground = TextMuted;
+        _status.Foreground = Theme.TextMuted;
         _status.Text = "已取消修改";
     }
 
@@ -265,14 +285,14 @@ public sealed class MainPanelWindow : Window
         if (key == Key.Escape)
         {
             StopRecording();
-            _status.Foreground = TextMuted;
+            _status.Foreground = Theme.TextMuted;
             _status.Text = "已取消修改";
             return;
         }
 
         if (IsModifierKey(key) || e.IsRepeat)
         {
-            _status.Foreground = TextMuted;
+            _status.Foreground = Theme.TextMuted;
             _status.Text = "继续按一个非修饰键（如 S、F2、Space）";
             return;
         }
@@ -280,7 +300,7 @@ public sealed class MainPanelWindow : Window
         uint modifiers = ModifierBits();
         if ((modifiers & (NativeMethods.MOD_CONTROL | NativeMethods.MOD_ALT | NativeMethods.MOD_WIN)) == 0)
         {
-            _status.Foreground = DangerBrush;
+            _status.Foreground = Theme.DangerBrush;
             _status.Text = "快捷键至少要包含 Ctrl / Alt / Win 之一";
             return;
         }
@@ -294,8 +314,8 @@ public sealed class MainPanelWindow : Window
     {
         _recording = true;
         _stashEditLabel.Text = "按下…";
-        _stashEditLabel.Foreground = AccentBrush;
-        _status.Foreground = TextMuted;
+        _stashEditLabel.Foreground = Theme.AccentBrush;
+        _status.Foreground = Theme.TextMuted;
         _status.Text = "按下新的组合键（需含 Ctrl / Alt / Win），Esc 取消";
     }
 
@@ -303,7 +323,7 @@ public sealed class MainPanelWindow : Window
     {
         _recording = false;
         _stashEditLabel.Text = "修改";
-        _stashEditLabel.Foreground = TextPrimary;
+        _stashEditLabel.Foreground = Theme.TextPrimary;
     }
 
     private static bool IsModifierKey(Key key) => key is
@@ -327,8 +347,8 @@ public sealed class MainPanelWindow : Window
     {
         var root = new Border
         {
-            Background = PanelBackground,
-            BorderBrush = PanelBorder,
+            Background = Theme.PanelBackground,
+            BorderBrush = Theme.PanelBorder,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(18),
             Effect = new DropShadowEffect
@@ -367,8 +387,8 @@ public sealed class MainPanelWindow : Window
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
         var texts = new StackPanel();
-        texts.Children.Add(Text("任务栏收纳", 16, FontWeights.SemiBold, TextPrimary));
-        var hint = Text("每组一枚胶囊贴在任务栏 · 左键收起 / 展开，右键管理", 10.5, FontWeights.Normal, TextMuted);
+        texts.Children.Add(Text("任务栏收纳", 16, FontWeights.SemiBold, Theme.TextPrimary));
+        var hint = Text("每组一枚胶囊贴在任务栏 · 左键收起 / 展开，右键管理", 10.5, FontWeights.Normal, Theme.TextMuted);
         hint.Margin = new Thickness(0, 3, 0, 0);
         texts.Children.Add(hint);
         Grid.SetColumn(texts, 0);
@@ -377,7 +397,7 @@ public sealed class MainPanelWindow : Window
         var close = CreateAction("✕", Hide);
         close.Background = Brushes.Transparent;
         close.VerticalAlignment = VerticalAlignment.Top;
-        close.MouseEnter += (_, _) => close.Background = CardHover;
+        close.MouseEnter += (_, _) => close.Background = Theme.PanelCardHover;
         close.MouseLeave += (_, _) => close.Background = Brushes.Transparent;
         Grid.SetColumn(close, 1);
         grid.Children.Add(close);
@@ -398,7 +418,7 @@ public sealed class MainPanelWindow : Window
         var head = new Grid();
         head.ColumnDefinitions.Add(new ColumnDefinition());
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var title = Text("编组", 11, FontWeights.SemiBold, TextSecondary);
+        var title = Text("编组", 11, FontWeights.SemiBold, Theme.TextSecondary);
         title.Margin = new Thickness(2, 0, 0, 0);
         head.Children.Add(title);
         _summary.HorizontalAlignment = HorizontalAlignment.Right;
@@ -440,7 +460,7 @@ public sealed class MainPanelWindow : Window
     {
         var panel = new StackPanel { Margin = new Thickness(0, 16, 0, 0) };
 
-        var title = Text("已关闭的场景", 11, FontWeights.SemiBold, TextSecondary);
+        var title = Text("已关闭的场景", 11, FontWeights.SemiBold, Theme.TextSecondary);
         title.Margin = new Thickness(2, 0, 0, 0);
         panel.Children.Add(title);
 
@@ -455,7 +475,7 @@ public sealed class MainPanelWindow : Window
         panel.Children.Add(_savedEmpty);
 
         var note = Text("场景 = 保存过的一组软件和窗口位置。运行中它和编组一样：点胶囊收起 / 展开；「关闭窗口」（或窗口自己的 ×）才是真的关掉，关完后胶囊留下，点一下按保存的位置重新打开。",
-            10.5, FontWeights.Normal, TextMuted);
+            10.5, FontWeights.Normal, Theme.TextMuted);
         note.TextWrapping = TextWrapping.Wrap;
         note.Margin = new Thickness(2, 8, 0, 0);
         panel.Children.Add(note);
@@ -465,7 +485,7 @@ public sealed class MainPanelWindow : Window
     private FrameworkElement BuildToggles()
     {
         var panel = new StackPanel { Margin = new Thickness(0, 16, 0, 0) };
-        var title = Text("开关", 11, FontWeights.SemiBold, TextSecondary);
+        var title = Text("开关", 11, FontWeights.SemiBold, Theme.TextSecondary);
         title.Margin = new Thickness(2, 0, 0, 0);
         panel.Children.Add(title);
 
@@ -475,7 +495,7 @@ public sealed class MainPanelWindow : Window
         panel.Children.Add(_autoStartRow.Root);
 
         var note = Text("单窗口模式开启时，展开一组也只保留最后激活的那个窗口，其余自动最小化。",
-            10.5, FontWeights.Normal, TextMuted);
+            10.5, FontWeights.Normal, Theme.TextMuted);
         note.TextWrapping = TextWrapping.Wrap;
         note.Margin = new Thickness(2, 10, 0, 0);
         panel.Children.Add(note);
@@ -485,14 +505,14 @@ public sealed class MainPanelWindow : Window
     private FrameworkElement BuildHotkeys(Border stashEdit)
     {
         var panel = new StackPanel { Margin = new Thickness(0, 16, 0, 0) };
-        var title = Text("快捷键", 11, FontWeights.SemiBold, TextSecondary);
+        var title = Text("快捷键", 11, FontWeights.SemiBold, Theme.TextSecondary);
         title.Margin = new Thickness(2, 0, 0, 0);
         panel.Children.Add(title);
         panel.Children.Add(BuildHotkeyRow("收起 / 展开", _stashHotkeyValue, stashEdit));
         panel.Children.Add(_status);
 
         var note = Text("托盘左键单击图标打开主面板。编组胶囊右键：取消编组 / 存储编组 / 重命名；场景胶囊右键：重命名 / 关闭窗口 / 解散场景。",
-            10.5, FontWeights.Normal, TextMuted);
+            10.5, FontWeights.Normal, Theme.TextMuted);
         note.TextWrapping = TextWrapping.Wrap;
         note.Margin = new Thickness(2, 10, 0, 0);
         panel.Children.Add(note);
@@ -506,7 +526,7 @@ public sealed class MainPanelWindow : Window
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        var name = Text(title, 12, FontWeights.Normal, TextPrimary);
+        var name = Text(title, 12, FontWeights.Normal, Theme.TextPrimary);
         name.Margin = new Thickness(2, 0, 0, 0);
         name.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(name, 0);
@@ -514,7 +534,7 @@ public sealed class MainPanelWindow : Window
 
         var keyCap = new Border
         {
-            Background = ControlBackground,
+            Background = Theme.ControlBackground,
             CornerRadius = new CornerRadius(6),
             Padding = new Thickness(9, 3, 9, 4),
             Child = value,
@@ -544,7 +564,7 @@ public sealed class MainPanelWindow : Window
         {
             Width = 7,
             Height = 7,
-            Fill = group.Expanded ? SuccessBrush : TextMuted,
+            Fill = group.Expanded ? Theme.SuccessBrush : Theme.TextMuted,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 1, 7, 0)
         });
@@ -552,15 +572,15 @@ public sealed class MainPanelWindow : Window
             ? $"第 {group.Id} 组 · {group.Count} 个窗口"
             : group.SavedId != null
                 ? $"★ {group.Name} · {group.Count} 个窗口"
-                : $"{group.Name} · {group.Count} 个窗口", 12.5, FontWeights.SemiBold, TextPrimary));
+                : $"{group.Name} · {group.Count} 个窗口", 12.5, FontWeights.SemiBold, Theme.TextPrimary));
         texts.Children.Add(titleLine);
 
         var subGrid = new Grid { Margin = new Thickness(14, 2, 8, 0) };
         subGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         subGrid.ColumnDefinitions.Add(new ColumnDefinition());
         subGrid.Children.Add(Text(group.State, 10.5, FontWeights.SemiBold,
-            group.Expanded ? SuccessBrush : TextMuted));
-        var titles = Text("· " + DescribeTitles(group), 10.5, FontWeights.Normal, TextMuted);
+            group.Expanded ? Theme.SuccessBrush : Theme.TextMuted));
+        var titles = Text("· " + DescribeTitles(group), 10.5, FontWeights.Normal, Theme.TextMuted);
         titles.TextTrimming = TextTrimming.CharacterEllipsis;
         titles.Margin = new Thickness(5, 0, 0, 0);
         Grid.SetColumn(titles, 1);
@@ -616,7 +636,7 @@ public sealed class MainPanelWindow : Window
 
         var row = new Border
         {
-            Background = CardBackground,
+            Background = Theme.PanelCard,
             CornerRadius = new CornerRadius(10),
             Padding = new Thickness(12, 9, 10, 9),
             Margin = new Thickness(0, 6, 0, 0),
@@ -624,8 +644,8 @@ public sealed class MainPanelWindow : Window
             Cursor = Cursors.Hand,
             ToolTip = $"{group.CreatedAt:HH:mm} 收成一组 · 现在是{group.State}\n点这一行收起 / 展开"
         };
-        row.MouseEnter += (_, _) => row.Background = CardHover;
-        row.MouseLeave += (_, _) => row.Background = CardBackground;
+        row.MouseEnter += (_, _) => row.Background = Theme.PanelCardHover;
+        row.MouseLeave += (_, _) => row.Background = Theme.PanelCard;
         row.MouseLeftButtonUp += (_, e) =>
         {
             e.Handled = true;
@@ -648,14 +668,14 @@ public sealed class MainPanelWindow : Window
         {
             Width = 7,
             Height = 7,
-            Fill = TextMuted,
+            Fill = Theme.TextMuted,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 1, 7, 0)
         });
-        titleLine.Children.Add(Text("★ " + ShortName(group.Name), 12.5, FontWeights.SemiBold, TextPrimary));
+        titleLine.Children.Add(Text("★ " + ShortName(group.Name), 12.5, FontWeights.SemiBold, Theme.TextPrimary));
         texts.Children.Add(titleLine);
 
-        var sub = Text($"{group.State} · {group.Count} 个窗口 · 点这一行打开", 10.5, FontWeights.SemiBold, TextMuted);
+        var sub = Text($"{group.State} · {group.Count} 个窗口 · 点这一行打开", 10.5, FontWeights.SemiBold, Theme.TextMuted);
         sub.Margin = new Thickness(14, 2, 0, 0);
         texts.Children.Add(sub);
 
@@ -685,7 +705,7 @@ public sealed class MainPanelWindow : Window
 
         var row = new Border
         {
-            Background = CardBackground,
+            Background = Theme.PanelCard,
             CornerRadius = new CornerRadius(10),
             Padding = new Thickness(12, 9, 10, 9),
             Margin = new Thickness(0, 6, 0, 0),
@@ -695,8 +715,8 @@ public sealed class MainPanelWindow : Window
                 ? "场景保存的窗口记录\n点这一行打开"
                 : string.Join("\n", group.Titles.Take(6)) + "\n点这一行打开"
         };
-        row.MouseEnter += (_, _) => row.Background = CardHover;
-        row.MouseLeave += (_, _) => row.Background = CardBackground;
+        row.MouseEnter += (_, _) => row.Background = Theme.PanelCardHover;
+        row.MouseLeave += (_, _) => row.Background = Theme.PanelCard;
         row.MouseLeftButtonUp += (_, e) =>
         {
             e.Handled = true;
@@ -721,17 +741,8 @@ public sealed class MainPanelWindow : Window
     private static FrameworkElement Divider() => new Border
     {
         Height = 1,
-        Background = DividerBrush,
+        Background = Theme.Divider,
         Margin = new Thickness(0, 16, 0, 0)
-    };
-
-    private static TextBlock Text(string text, double size, FontWeight weight, Brush foreground) => new()
-    {
-        Text = text,
-        FontFamily = new FontFamily("Segoe UI Variable Text, Microsoft YaHei UI, Segoe UI"),
-        FontSize = size,
-        FontWeight = weight,
-        Foreground = foreground
     };
 
     private static Border CreateAction(string text, Action onClick, bool accent = false)
@@ -740,18 +751,18 @@ public sealed class MainPanelWindow : Window
     private static Border CreateAction(string text, Action onClick, out TextBlock label, bool accent = false)
     {
         label = Text(text, 11.5, accent ? FontWeights.SemiBold : FontWeights.Normal,
-            accent ? Brushes.White : TextPrimary);
+            accent ? Brushes.White : Theme.TextPrimary);
         var border = new Border
         {
-            Background = accent ? AccentBrush : ControlBackground,
+            Background = accent ? Theme.AccentBrush : Theme.ControlBackground,
             CornerRadius = new CornerRadius(8),
             Padding = new Thickness(11, 5, 11, 5),
             Child = label,
             Cursor = Cursors.Hand,
             VerticalAlignment = VerticalAlignment.Center
         };
-        border.MouseEnter += (_, _) => border.Background = accent ? AccentBrush : ControlHover;
-        border.MouseLeave += (_, _) => border.Background = accent ? AccentBrush : ControlBackground;
+        border.MouseEnter += (_, _) => border.Background = accent ? Theme.AccentBrush : Theme.ControlHover;
+        border.MouseLeave += (_, _) => border.Background = accent ? Theme.AccentBrush : Theme.ControlBackground;
         border.MouseLeftButtonDown += (_, e) => e.Handled = true;
         border.MouseLeftButtonUp += (_, e) =>
         {
@@ -759,13 +770,6 @@ public sealed class MainPanelWindow : Window
             onClick();
         };
         return border;
-    }
-
-    private static SolidColorBrush Frozen(byte a, byte r, byte g, byte b)
-    {
-        var brush = new SolidColorBrush(Color.FromArgb(a, r, g, b));
-        brush.Freeze();
-        return brush;
     }
 
     /// <summary>一行带 iOS 风格开关的条目：左侧标题 + 说明，右侧 40×24 滑动开关。</summary>
@@ -797,14 +801,14 @@ public sealed class MainPanelWindow : Window
                 Width = TrackWidth,
                 Height = TrackHeight,
                 CornerRadius = new CornerRadius(TrackHeight / 2),
-                Background = SwitchTrackOff,
+                Background = Theme.SwitchTrackOff,
                 Child = _knob,
                 VerticalAlignment = VerticalAlignment.Center
             };
 
             var texts = new StackPanel();
-            texts.Children.Add(Text(title, 12, FontWeights.Normal, TextPrimary));
-            var sub = Text(hint, 10.5, FontWeights.Normal, TextMuted);
+            texts.Children.Add(Text(title, 12, FontWeights.Normal, Theme.TextPrimary));
+            var sub = Text(hint, 10.5, FontWeights.Normal, Theme.TextMuted);
             sub.Margin = new Thickness(0, 2, 8, 0);
             texts.Children.Add(sub);
 
@@ -818,14 +822,14 @@ public sealed class MainPanelWindow : Window
 
             Root = new Border
             {
-                Background = CardBackground,
+                Background = Theme.PanelCard,
                 CornerRadius = new CornerRadius(10),
                 Padding = new Thickness(12, 9, 12, 9),
                 Child = grid,
                 Cursor = Cursors.Hand
             };
-            Root.MouseEnter += (_, _) => Root.Background = CardHover;
-            Root.MouseLeave += (_, _) => Root.Background = CardBackground;
+            Root.MouseEnter += (_, _) => Root.Background = Theme.PanelCardHover;
+            Root.MouseLeave += (_, _) => Root.Background = Theme.PanelCard;
             Root.MouseLeftButtonUp += (_, e) =>
             {
                 e.Handled = true;
@@ -848,7 +852,7 @@ public sealed class MainPanelWindow : Window
 
         private void Apply()
         {
-            _track.Background = Value ? SuccessBrush : SwitchTrackOff;
+            _track.Background = Value ? Theme.SuccessBrush : Theme.SwitchTrackOff;
             _knob.HorizontalAlignment = Value ? HorizontalAlignment.Right : HorizontalAlignment.Left;
         }
     }

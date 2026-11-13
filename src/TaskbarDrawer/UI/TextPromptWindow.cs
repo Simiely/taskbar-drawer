@@ -11,14 +11,6 @@ namespace TaskbarDrawer.UI;
 /// </summary>
 public sealed class TextPromptWindow : Window
 {
-    private static readonly SolidColorBrush PanelBackground = Frozen(0xF7, 0x1C, 0x1C, 0x1E);
-    private static readonly SolidColorBrush PanelBorder = Frozen(0xFF, 0x38, 0x38, 0x3A);
-    private static readonly SolidColorBrush ControlBackground = Frozen(0xFF, 0x3A, 0x3A, 0x3C);
-    private static readonly SolidColorBrush ControlHover = Frozen(0xFF, 0x48, 0x48, 0x4A);
-    private static readonly SolidColorBrush TextPrimary = Frozen(0xFF, 0xFF, 0xFF, 0xFF);
-    private static readonly SolidColorBrush TextMuted = Frozen(0xFF, 0x8E, 0x8E, 0x93);
-    private static readonly SolidColorBrush AccentBrush = Frozen(0xFF, 0x0A, 0x84, 0xFF);
-
     private readonly TextBox _input;
 
     private TextPromptWindow(string title, string hint, string initial)
@@ -38,20 +30,20 @@ public sealed class TextPromptWindow : Window
             Text = initial ?? "",
             FontFamily = new FontFamily("Segoe UI Variable Text, Microsoft YaHei UI, Segoe UI"),
             FontSize = 12.5,
-            Foreground = TextPrimary,
-            Background = ControlBackground,
-            BorderBrush = PanelBorder,
+            Foreground = Theme.TextPrimary,
+            Background = Theme.ControlBackground,
+            BorderBrush = Theme.PanelBorder,
             BorderThickness = new Thickness(1),
             CaretBrush = Brushes.White,
             Padding = new Thickness(8, 6, 8, 6),
             Margin = new Thickness(0, 10, 0, 0),
-            SelectionBrush = AccentBrush
+            SelectionBrush = Theme.AccentBrush
         };
         _input.SelectAll();
 
         var stack = new StackPanel { Margin = new Thickness(18, 16, 18, 16) };
-        stack.Children.Add(MakeText(title, 13, FontWeights.SemiBold, TextPrimary));
-        stack.Children.Add(MakeText(hint, 10.5, FontWeights.Normal, TextMuted));
+        stack.Children.Add(Ui.Text(title, 13, FontWeights.SemiBold, Theme.TextPrimary, wrap: true));
+        stack.Children.Add(Ui.Text(hint, 10.5, FontWeights.Normal, Theme.TextMuted, wrap: true));
         stack.Children.Add(_input);
 
         var buttons = new StackPanel
@@ -72,8 +64,8 @@ public sealed class TextPromptWindow : Window
 
         var root = new Border
         {
-            Background = PanelBackground,
-            BorderBrush = PanelBorder,
+            Background = Theme.PanelBackground,
+            BorderBrush = Theme.PanelBorder,
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(14),
             Child = stack
@@ -109,42 +101,25 @@ public sealed class TextPromptWindow : Window
         return window.ShowDialog() == true ? window._input.Text.Trim() : null;
     }
 
-    private static TextBlock MakeText(string text, double size, FontWeight weight, Brush foreground) => new()
-    {
-        Text = text,
-        FontFamily = new FontFamily("Segoe UI Variable Text, Microsoft YaHei UI, Segoe UI"),
-        FontSize = size,
-        FontWeight = weight,
-        Foreground = foreground,
-        TextWrapping = TextWrapping.Wrap
-    };
-
     private static Border MakeAction(string text, bool accent, Action onClick)
     {
-        var label = MakeText(text, 11.5, accent ? FontWeights.SemiBold : FontWeights.Normal,
-            accent ? Brushes.White : TextPrimary);
+        var label = Ui.Text(text, 11.5, accent ? FontWeights.SemiBold : FontWeights.Normal,
+            accent ? Brushes.White : Theme.TextPrimary, wrap: true);
         var border = new Border
         {
-            Background = accent ? AccentBrush : ControlBackground,
+            Background = accent ? Theme.AccentBrush : Theme.ControlBackground,
             CornerRadius = new CornerRadius(8),
             Padding = new Thickness(13, 5, 13, 5),
             Child = label,
             Cursor = Cursors.Hand
         };
-        border.MouseEnter += (_, _) => border.Background = accent ? AccentBrush : ControlHover;
-        border.MouseLeave += (_, _) => border.Background = accent ? AccentBrush : ControlBackground;
+        border.MouseEnter += (_, _) => border.Background = accent ? Theme.AccentBrush : Theme.ControlHover;
+        border.MouseLeave += (_, _) => border.Background = accent ? Theme.AccentBrush : Theme.ControlBackground;
         border.MouseLeftButtonUp += (_, e) =>
         {
             e.Handled = true;
             onClick();
         };
         return border;
-    }
-
-    private static SolidColorBrush Frozen(byte a, byte r, byte g, byte b)
-    {
-        var brush = new SolidColorBrush(Color.FromArgb(a, r, g, b));
-        brush.Freeze();
-        return brush;
     }
 }
