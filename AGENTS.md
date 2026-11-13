@@ -1,7 +1,9 @@
 # AGENTS.md · 项目规则
 
-> 📌 **文档基线**：2026-11-13 · v1.3.0（commit e7db5b3）移除逻辑编排编辑器，入口规则固定为代码默认
+> 📌 **文档基线**：2026-11-13 · 201cf0d
 > **更新文档 / 代码后，请更新此行**（日期 + 新 commit hash），并在 CHANGELOG 追加版本。
+
+> 生成文件，勿手改。改规则请改 `schema/agents.template.md`，再运行 `python tools/repo-kit/generate.py --root . --write`。
 
 只写代码里看不出来的信息。
 
@@ -56,6 +58,17 @@ dotnet publish src/TaskbarDrawer/TaskbarDrawer.csproj -c Release -r win-x64 `
 .\publish\TaskbarDrawer.exe --probe
 ```
 
+```bash
+python tools/repo-kit/check_repo.py --root .
+python tools/repo-kit/generate.py --root . --check
+```
+
+## 当前规模
+
+- 页面：1（critical=0）
+- 按 type：reference=1
+- 词表版本：2.4.0
+
 ## 详细规则
 
-- 暂无拆分；超过 150 词再按 knowledge-base 单项目规范拆到 `rules/`，用 @引用 加载
+- 暂无拆分；超过 150 词再按 knowledge-base 单项目规范拆到 `docs/`，用 @引用 加载

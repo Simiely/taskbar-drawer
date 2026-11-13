@@ -1,0 +1,15 @@
+# taskbar-drawer
+
+> 文档索引与机器可读入口：内容契约、类型化关系、证据与新鲜度。
+> 生成文件，勿手改。
+
+## Core
+
+- [README](./README.md)
+- [文档索引](./docs/index.md)
+
+## By type
+
+### reference
+
+- [文档索引](./docs/index.md) — 项目入口：用户说明、项目规则、开发文档与版本历史的导航。
