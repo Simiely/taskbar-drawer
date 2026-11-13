@@ -71,7 +71,7 @@ public static class ChipProjection
     public static string RuntimeTooltip(StashGroupSummary group)
     {
         string head = string.IsNullOrEmpty(group.Name)
-            ? $"第 {group.Id} 组 · {group.Count} 个窗口 · {group.State}"
+            ? $"编组 {group.Id} · {group.Count} 个窗口 · {group.State}"
             : group.SavedId != null
                 ? $"★ {group.Name} · {group.Count} 个窗口 · {group.State}"
                 : $"{group.Name} · {group.Count} 个窗口 · {group.State}";

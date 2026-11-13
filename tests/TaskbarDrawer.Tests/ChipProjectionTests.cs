@@ -49,7 +49,7 @@ public class ChipProjectionTests
         Assert.Equal("3·2", chip.Text);
         Assert.Equal(3, chip.GroupId);
         Assert.False(chip.Dormant);
-        Assert.Contains("第 3 组", chip.Tooltip);
+        Assert.Contains("编组 3", chip.Tooltip);
     }
 
     [Fact]
