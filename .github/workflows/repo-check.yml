@@ -1,0 +1,50 @@
+name: repo-check
+
+on:
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'schema/**'
+      - 'tools/**'
+      - 'src/**'
+      - 'tests/**'
+      - 'README.md'
+      - 'AGENTS.md'
+      - 'DEVELOPMENT.md'
+      - 'CHANGELOG.md'
+      - 'requirements.txt'
+      - '.github/**'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  invariants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt
+      - name: Invariants (monorepo)
+        run: python tools/repo-kit/check_repo.py --root .
+      - name: Generated artifacts up to date
+        run: python tools/repo-kit/generate.py --root . --check
+      - name: Kit lock
+        run: pwsh tools/update-repo-kit.ps1 -Check
+
+  dotnet:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build
+        run: dotnet build src/TaskbarDrawer/TaskbarDrawer.csproj -c Release
+      - name: Test
+        run: dotnet test tests/TaskbarDrawer.Tests/TaskbarDrawer.Tests.csproj -c Release
