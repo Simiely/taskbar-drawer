@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
@@ -7,6 +8,7 @@ using System.Windows.Media;
 using System.Windows.Media.Effects;
 using TaskbarDrawer.Core;
 using TaskbarDrawer.Interop;
+using Forms = System.Windows.Forms;
 
 namespace TaskbarDrawer.UI;
 
@@ -18,12 +20,22 @@ namespace TaskbarDrawer.UI;
 public sealed class SceneEditorWindow : Window
 {
     private readonly TextBlock _name;
+    private readonly TextBlock _title;
+    private readonly WrapPanel _positionRow = new();
+    private readonly WrapPanel _numberRow = new();
+    private readonly WrapPanel _colorRow = new();
     private readonly StackPanel _windowList = new();
     private readonly StackPanel _runningList = new();
     private readonly Border _runningHint;
     private readonly TextBlock _windowEmpty;
     private readonly TextBlock _runningEmpty;
     private ScrollViewer _scroll;
+
+    /// <summary>当前选中的场景标识（颜色 + 可选数字 + 角上位置）。</summary>
+    private SceneBadge _badge = SceneBadge.Default;
+
+    /// <summary>可选的 8 个颜色：由 AppShell 从设置里推过来，右键任意色块可以改。</summary>
+    private IReadOnlyList<string> _palette = SceneBadge.DefaultPalette;
 
     /// <summary>上一次渲染的数据签名：2.5 s 的 Prune 刷新不能把滚动位置打回顶部。</summary>
     private string _signature = "";
@@ -42,6 +54,8 @@ public sealed class SceneEditorWindow : Window
 
         _name = Ui.Text("", 10.5, FontWeights.Normal, Theme.TextMuted);
         _name.Margin = new Thickness(0, 3, 0, 0);
+
+        _title = Ui.Text("场景编辑", 15, FontWeights.SemiBold, Theme.TextPrimary);
 
         _runningHint = new Border
         {
@@ -83,6 +97,23 @@ public sealed class SceneEditorWindow : Window
     public event Action RenameRequested;
     public event Action DeleteRequested;
 
+    /// <summary>用户在编辑器里换了场景标识（颜色 / 数字 / 位置）。</summary>
+    public event Action<SceneBadge> BadgeChangeRequested;
+
+    /// <summary>右键改了调色板第 index 个色块（新颜色是 #RRGGBB）。</summary>
+    public event Action<int, string> PaletteColorRequested;
+
+    /// <summary>把这 8 个色块恢复成默认配色。</summary>
+    public event Action PaletteResetRequested;
+
+    /// <summary>AppShell 把当前生效的调色板推过来：只重建颜色一行，不影响其它内容。</summary>
+    public void SetPalette(IReadOnlyList<string> palette)
+    {
+        if (palette == null || palette.Count == 0) return;
+        _palette = palette.ToArray();
+        RebuildColorRow();
+    }
+
     /// <summary>由 AppShell 推送最新数据；数据没变化时不重建，避免打断滚动。</summary>
     public void Reload(SavedGroupDetail detail, IReadOnlyList<StashGroupSummary> runningScenes, int runningGroupId)
     {
@@ -93,6 +124,8 @@ public sealed class SceneEditorWindow : Window
         _signature = signature;
 
         _name.Text = string.IsNullOrWhiteSpace(detail.Name) ? "未命名场景" : detail.Name;
+        _badge = SceneBadge.Coerce(detail.Badge);
+        RebuildBadgeRows();
         _runningHint.Visibility = runningGroupId > 0 ? Visibility.Visible : Visibility.Collapsed;
 
         _windowList.Children.Clear();
@@ -132,6 +165,7 @@ public sealed class SceneEditorWindow : Window
     {
         var stack = new StackPanel { Margin = new Thickness(18, 16, 18, 16) };
         stack.Children.Add(BuildHeader());
+        stack.Children.Add(BuildBadgeSection());
         stack.Children.Add(_runningHint);
         stack.Children.Add(BuildWindowSection());
         stack.Children.Add(BuildAppendSection());
@@ -173,7 +207,7 @@ public sealed class SceneEditorWindow : Window
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
         var texts = new StackPanel();
-        texts.Children.Add(Ui.Text(Theme.SceneIcon + " 场景编辑", 15, FontWeights.SemiBold, Theme.TextPrimary));
+        texts.Children.Add(_title);
         texts.Children.Add(_name);
         Grid.SetColumn(texts, 0);
         grid.Children.Add(texts);
@@ -206,6 +240,207 @@ public sealed class SceneEditorWindow : Window
         return grid;
     }
 
+    private FrameworkElement BuildBadgeSection()
+    {
+        var panel = new StackPanel { Margin = new Thickness(0, 14, 0, 0) };
+        panel.Children.Add(SectionTitle("场景标识（叠在任务栏窗口图标的左上角或右上角）"));
+        panel.Children.Add(BuildChoiceRow("位置", _positionRow));
+        panel.Children.Add(BuildChoiceRow("数字", _numberRow));
+        panel.Children.Add(BuildChoiceRow("颜色", _colorRow));
+
+        var hint = Ui.Text("左键点色块选用；右键任意色块可改成自定义颜色。8 个色块所有场景共用，改完已用该颜色的场景会一起变。",
+            10.5, FontWeights.Normal, Theme.TextMuted, wrap: true);
+        hint.Margin = new Thickness(34, 6, 2, 0);
+        panel.Children.Add(hint);
+        return panel;
+    }
+
+    private static FrameworkElement BuildChoiceRow(string label, FrameworkElement cells)
+    {
+        var row = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(0, 6, 0, 0)
+        };
+        var text = Ui.Text(label, 10.5, FontWeights.Normal, Theme.TextMuted);
+        text.Width = 32;
+        text.Margin = new Thickness(2, 5, 0, 0);
+        row.Children.Add(text);
+        row.Children.Add(cells);
+        return row;
+    }
+
+    /// <summary>重建三行选项；选中的那一格用强调色标出来。</summary>
+    private void RebuildBadgeRows()
+    {
+        _positionRow.Children.Clear();
+        _positionRow.Children.Add(ChoiceCell("左上", !_badge.Right,
+            () => ChangeBadge(badge => badge.Right = false)));
+        _positionRow.Children.Add(ChoiceCell("右上", _badge.Right,
+            () => ChangeBadge(badge => badge.Right = true)));
+
+        _numberRow.Children.Clear();
+        _numberRow.Children.Add(ChoiceCell("无", _badge.Number == 0,
+            () => ChangeBadge(badge => badge.Number = 0)));
+        for (int n = 1; n <= 9; n++)
+        {
+            int number = n;
+            _numberRow.Children.Add(ChoiceCell(number.ToString(CultureInfo.InvariantCulture), _badge.Number == number,
+                () => ChangeBadge(badge => badge.Number = number)));
+        }
+
+        RebuildColorRow();
+    }
+
+    /// <summary>颜色行：8 个可右键改色的色块 + 恢复默认按钮。</summary>
+    private void RebuildColorRow()
+    {
+        _colorRow.Children.Clear();
+        for (int index = 0; index < _palette.Count; index++)
+        {
+            int slot = index;
+            string picked = _palette[index];
+            _colorRow.Children.Add(ColorCell(picked,
+                string.Equals(_badge.Color, picked, StringComparison.OrdinalIgnoreCase),
+                () => ChangeBadge(badge => badge.Color = picked),
+                () => EditPaletteColor(slot, picked)));
+        }
+
+        var reset = MakeAction("恢复默认", false, () => PaletteResetRequested?.Invoke());
+        reset.Margin = new Thickness(4, 2, 0, 2);
+        reset.ToolTip = "把这 8 个颜色恢复成默认配色；用了这些颜色的场景会按色块位置跟着换回来";
+        _colorRow.Children.Add(reset);
+    }
+
+    /// <summary>右键色块：用系统取色器改成任意颜色；确认后交给 AppShell 统一改配置和场景。</summary>
+    private void EditPaletteColor(int index, string color)
+    {
+        using var dialog = new Forms.ColorDialog
+        {
+            FullOpen = true,
+            AnyColor = true,
+            Color = ToDrawingColor(color)
+        };
+
+        IntPtr handle = new WindowInteropHelper(this).Handle;
+        Forms.DialogResult result = handle == IntPtr.Zero
+            ? dialog.ShowDialog()
+            : dialog.ShowDialog(new OwnerWindow(handle));
+        if (result != Forms.DialogResult.OK) return;
+
+        string picked = $"#{dialog.Color.R:X2}{dialog.Color.G:X2}{dialog.Color.B:X2}";
+        if (string.Equals(picked, color, StringComparison.OrdinalIgnoreCase)) return;
+        PaletteColorRequested?.Invoke(index, picked);
+    }
+
+    private static System.Drawing.Color ToDrawingColor(string hex)
+    {
+        string value = SceneBadge.NormalizeColor(hex);
+        return System.Drawing.Color.FromArgb(
+            Convert.ToInt32(value.Substring(1, 2), 16),
+            Convert.ToInt32(value.Substring(3, 2), 16),
+            Convert.ToInt32(value.Substring(5, 2), 16));
+    }
+
+    /// <summary>取色对话框要一个 IWin32Window 当 owner，否则可能被置顶的编辑器盖住。</summary>
+    private sealed class OwnerWindow : Forms.IWin32Window
+    {
+        public OwnerWindow(IntPtr handle) => Handle = handle;
+        public IntPtr Handle { get; }
+    }
+
+    /// <summary>在当前标识上改一处（颜色 / 数字 / 位置），然后通知 AppShell。</summary>
+    private void ChangeBadge(Action<SceneBadge> change)
+    {
+        var next = new SceneBadge { Color = _badge.Color, Number = _badge.Number, Right = _badge.Right };
+        change(next);
+        var normalized = next.Normalized();
+        if (normalized.SameAs(_badge)) return;
+
+        _badge = normalized;
+        RebuildBadgeRows();
+        BadgeChangeRequested?.Invoke(_badge);
+    }
+
+    private Border ChoiceCell(string text, bool selected, Action onClick)
+    {
+        var cell = new Border
+        {
+            Background = selected ? Theme.AccentBrush : Theme.ControlBackground,
+            BorderBrush = selected ? Theme.AccentBrush : Theme.PanelBorder,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(7),
+            Padding = new Thickness(9, 2, 9, 3),
+            Margin = new Thickness(0, 0, 6, 0),
+            Cursor = Cursors.Hand,
+            Child = Ui.Text(text, 11,
+                selected ? FontWeights.SemiBold : FontWeights.Normal,
+                selected ? Brushes.White : Theme.TextPrimary)
+        };
+        cell.MouseEnter += (_, _) =>
+        {
+            if (!selected) cell.Background = Theme.ControlHover;
+        };
+        cell.MouseLeave += (_, _) =>
+        {
+            if (!selected) cell.Background = Theme.ControlBackground;
+        };
+        cell.MouseLeftButtonDown += (_, e) => e.Handled = true;
+        cell.MouseLeftButtonUp += (_, e) =>
+        {
+            e.Handled = true;
+            if (!selected) onClick();
+        };
+        return cell;
+    }
+
+    private Border ColorCell(string color, bool selected, Action onClick, Action onEdit)
+    {
+        var swatch = new Border
+        {
+            Width = 16,
+            Height = 16,
+            CornerRadius = new CornerRadius(8),
+            Background = Ui.BadgeBrush(new SceneBadge { Color = color }),
+            // 深色底上黑色圆点几乎看不见，给每个色块描一圈细边把轮廓勾出来。
+            BorderBrush = Theme.Divider,
+            BorderThickness = new Thickness(1)
+        };
+        var cell = new Border
+        {
+            Background = Brushes.Transparent,
+            BorderBrush = selected ? Theme.TextPrimary : Brushes.Transparent,
+            BorderThickness = new Thickness(1.5),
+            CornerRadius = new CornerRadius(13),
+            Padding = new Thickness(4),
+            Margin = new Thickness(0, 0, 2, 0),
+            Cursor = Cursors.Hand,
+            Child = swatch,
+            ToolTip = "左键选用；右键修改这个色块"
+        };
+        cell.MouseEnter += (_, _) =>
+        {
+            if (!selected) cell.BorderBrush = Theme.TextSecondary;
+        };
+        cell.MouseLeave += (_, _) =>
+        {
+            if (!selected) cell.BorderBrush = Brushes.Transparent;
+        };
+        cell.MouseLeftButtonDown += (_, e) => e.Handled = true;
+        cell.MouseLeftButtonUp += (_, e) =>
+        {
+            e.Handled = true;
+            if (!selected) onClick();
+        };
+        cell.MouseRightButtonDown += (_, e) => e.Handled = true;
+        cell.MouseRightButtonUp += (_, e) =>
+        {
+            e.Handled = true;
+            onEdit();
+        };
+        return cell;
+    }
+
     private FrameworkElement BuildWindowSection()
     {
         var panel = new StackPanel { Margin = new Thickness(0, 16, 0, 0) };
@@ -224,7 +459,7 @@ public sealed class SceneEditorWindow : Window
     private FrameworkElement BuildAppendSection()
     {
         var panel = new StackPanel { Margin = new Thickness(0, 16, 0, 0) };
-        panel.Children.Add(SectionTitle(Theme.SceneIcon + " 把其它场景的窗口追加进来"));
+        panel.Children.Add(SectionTitle("把其它场景的窗口追加进来"));
         _runningList.Margin = new Thickness(0, 6, 0, 0);
         panel.Children.Add(_runningList);
         panel.Children.Add(_runningEmpty);
@@ -310,9 +545,11 @@ public sealed class SceneEditorWindow : Window
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
         var texts = new StackPanel();
+        string icon = SceneBadge.GlyphOf(group.Badge);
+        string prefix = icon.Length == 0 ? "" : icon + " ";
         string head = string.IsNullOrEmpty(group.Name)
-            ? $"{Theme.SceneIcon} 场景 {group.Id} · {group.Count} 个窗口"
-            : $"{Theme.SceneIcon} {group.Name} · {group.Count} 个窗口";
+            ? $"{prefix}场景 {group.Id} · {group.Count} 个窗口"
+            : $"{prefix}{group.Name} · {group.Count} 个窗口";
         var title = Ui.Text(head, 12, FontWeights.SemiBold, Theme.TextPrimary);
         title.TextTrimming = TextTrimming.CharacterEllipsis;
         texts.Children.Add(title);
@@ -368,6 +605,7 @@ public sealed class SceneEditorWindow : Window
     {
         var builder = new StringBuilder();
         builder.Append(detail.Id).Append('|').Append(detail.Name).Append('|')
+            .Append(BadgeKey(detail.Badge)).Append('|')
             .Append(runningGroupId).Append('|');
 
         foreach (var window in detail.Windows)
@@ -389,11 +627,16 @@ public sealed class SceneEditorWindow : Window
                     .Append(group.Expanded).Append(':')
                     .Append(group.SavedId).Append(':')
                     .Append(group.Name).Append(':')
+                    .Append(BadgeKey(group.Badge)).Append(':')
                     .Append(string.Join("/", group.Titles)).Append(';');
             }
         }
         return builder.ToString();
     }
+
+    /// <summary>标识参与数据签名：改颜色 / 数字 / 位置也要触发重绘。</summary>
+    private static string BadgeKey(SceneBadge badge)
+        => badge == null ? "-" : $"{badge.Color}/{badge.Number}/{(badge.Right ? "right" : "left")}";
 
     private static FrameworkElement SectionTitle(string text)
     {

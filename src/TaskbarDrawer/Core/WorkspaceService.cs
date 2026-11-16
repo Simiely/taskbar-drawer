@@ -30,11 +30,44 @@ public sealed class WorkspaceService
         _groups = SavedGroupStore.Load(out string warning);
         LoadWarning = warning;
 
+        // 1.6.7 及更早保存的是 emoji 图标：一次性换成「颜色 / 数字 / 位置」的纯色标识。
+        int migrated = MigrateLegacyBadges();
+
         // 1.6.4 及更早保存的副屏矩形多算了一次显示器原点（详见 DisplayRules.TryRepairLegacyRect）。
         // 升级后第一次启动就把这些场景修好，用户不用把每个场景重新存一遍。
         int repaired = RepairLegacyRects();
-        Diagnostics.Info("scene", $"加载场景 {_groups.Count} 个，修复旧版副屏坐标 {repaired} 个窗口");
-        if (repaired > 0) Persist();
+        Diagnostics.Info("scene",
+            $"加载场景 {_groups.Count} 个，迁移旧图标 {migrated} 个，修复旧版副屏坐标 {repaired} 个窗口");
+        if (repaired > 0 || migrated > 0) Persist();
+    }
+
+    /// <summary>旧 emoji 图标 → 场景标识；返回迁移了多少个场景。</summary>
+    private int MigrateLegacyBadges()
+    {
+        int migrated = 0;
+        foreach (var group in _groups)
+        {
+            if (group.Badge == null)
+            {
+                group.Badge = SceneBadge.FromLegacyEmoji(group.Emoji);
+                migrated++;
+            }
+            else
+            {
+                group.Badge = group.Badge.Normalized();
+            }
+
+            // 1.6.7 调色板里的灰色已换成黑色：旧场景一次性跟着迁移。
+            if (string.Equals(group.Badge.Color, SceneBadge.LegacyGray, StringComparison.OrdinalIgnoreCase))
+            {
+                group.Badge.Color = SceneBadge.DefaultPalette[^1];
+                migrated++;
+            }
+
+            // 旧字段读进来就丢掉：之后再落盘不会把它写回去。
+            group.Emoji = null;
+        }
+        return migrated;
     }
 
     /// <summary>把旧版本保存的副屏矩形换算回屏幕坐标；返回修复条数。</summary>
@@ -102,6 +135,7 @@ public sealed class WorkspaceService
             {
                 Id = g.Id,
                 Name = g.Name,
+                Badge = SceneBadge.Coerce(g.Badge),
                 Count = g.Windows.Count,
                 Titles = g.Windows.Select(w => w.Title).ToArray()
             })
@@ -118,6 +152,7 @@ public sealed class WorkspaceService
         {
             Id = group.Id,
             Name = group.Name,
+            Badge = SceneBadge.Coerce(group.Badge),
             Windows = group.Windows
                 .Select((window, index) => SceneEdit.Describe(index, window))
                 .ToArray()
@@ -205,6 +240,7 @@ public sealed class WorkspaceService
         {
             Id = Guid.NewGuid().ToString("N")[..6],
             Name = string.IsNullOrWhiteSpace(name) ? NextSceneName() : name.Trim(),
+            Badge = SceneBadge.Default,
             CreatedAt = DateTime.Now,
             Windows = windows
         };
@@ -380,6 +416,38 @@ public sealed class WorkspaceService
         return true;
     }
 
+    /// <summary>改场景标识（颜色 / 数字 / 位置）。只改快照；运行中的窗口由 StashAllService 同步。</summary>
+    public bool SetBadge(string id, SceneBadge badge)
+    {
+        var group = Find(id);
+        if (group == null) return false;
+        group.Badge = SceneBadge.Coerce(badge);
+        Persist();
+        return true;
+    }
+
+    /// <summary>
+    /// 调色板换了颜色：所有用旧颜色的场景一起换成新颜色（同时批量恢复默认也走这里）。
+    /// 返回受影响场景数；映射为「同时生效」，不会因为链式替换把颜色改乱。
+    /// </summary>
+    public int RemapBadgeColors(Func<string, string> remap)
+    {
+        if (remap == null) return 0;
+
+        int changed = 0;
+        foreach (var group in _groups)
+        {
+            if (group.Badge == null) continue;
+            string next = SceneBadge.NormalizeColor(remap(group.Badge.Color));
+            if (string.Equals(next, group.Badge.Color, StringComparison.OrdinalIgnoreCase)) continue;
+            group.Badge.Color = next;
+            changed++;
+        }
+
+        if (changed > 0) Persist();
+        return changed;
+    }
+
     public bool Delete(string id)
     {
         var group = Find(id);
@@ -405,7 +473,8 @@ public sealed class WorkspaceService
             {
                 ExePath = item.ProcessPath,
                 ProcessName = item.ProcessName,
-                Title = item.Title,
+                // 快照存干净标题：旧版 emoji 前缀只在场景展开期间挂在窗口上，不属于窗口自己的名字。
+                Title = SceneTitle.Strip(item.Title),
                 Left = rect.Left,
                 Top = rect.Top,
                 Width = rect.Width,
@@ -569,7 +638,8 @@ public sealed class WorkspaceService
             {
                 Handle = hwnd,
                 Path = path,
-                Title = NativeMethods.Title(hwnd),
+                // 缩掉场景前缀再比较标题，否则「同标题优先」会因为我们自己加的前缀失配。
+                Title = SceneTitle.Strip(NativeMethods.Title(hwnd)),
                 Visible = NativeMethods.IsWindowVisible(hwnd),
                 ToolWindow = (NativeMethods.ExStyle(hwnd) & NativeMethods.WS_EX_TOOLWINDOW) != 0
             });

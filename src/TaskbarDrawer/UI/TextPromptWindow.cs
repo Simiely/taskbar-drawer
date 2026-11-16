@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 
@@ -73,6 +74,8 @@ public sealed class TextPromptWindow : Window
         root.MouseLeftButtonDown += (_, e) =>
         {
             if (e.ButtonState != MouseButtonState.Pressed) return;
+            // 点在输入框上时交给 TextBox 自己处理（定位光标 / 选择文字），不要开始拖窗口。
+            if (e.OriginalSource is DependencyObject source && IsInsideInput(source)) return;
             try { DragMove(); } catch (InvalidOperationException) { /* 已松手 */ }
         };
         Content = root;
@@ -109,6 +112,10 @@ public sealed class TextPromptWindow : Window
         return window.ShowDialog() == true ? window._input.Text.Trim() : null;
     }
 
+    /// <summary>
+    /// 点按钮时不能冒泡到根 Border 的 DragMove：DragMove 会接管鼠标并吞掉后续 MouseLeftButtonUp，
+    /// 表现就是「取消 / 确定都没反应」。与场景编辑器的按钮保持一致。
+    /// </summary>
     private static Border MakeAction(string text, bool accent, Action onClick)
     {
         var label = Ui.Text(text, 11.5, accent ? FontWeights.SemiBold : FontWeights.Normal,
@@ -123,11 +130,19 @@ public sealed class TextPromptWindow : Window
         };
         border.MouseEnter += (_, _) => border.Background = accent ? Theme.AccentBrush : Theme.ControlHover;
         border.MouseLeave += (_, _) => border.Background = accent ? Theme.AccentBrush : Theme.ControlBackground;
+        border.MouseLeftButtonDown += (_, e) => e.Handled = true;
         border.MouseLeftButtonUp += (_, e) =>
         {
             e.Handled = true;
             onClick();
         };
         return border;
+    }
+
+    private static bool IsInsideInput(DependencyObject source)
+    {
+        for (var node = source; node != null; node = VisualTreeHelper.GetParent(node))
+            if (node is TextBoxBase) return true;
+        return false;
     }
 }

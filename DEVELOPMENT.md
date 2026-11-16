@@ -7,7 +7,7 @@
 
 - **做什么**：把一组窗口收进任务栏胶囊、原位展开；每次收纳都自动存成场景，关掉后还能按原位置拉起。
 - **不做什么**：不做窗口缩略图、不做虚拟桌面、不替换任务栏、不接管窗口管理（删除场景即完全交还系统）。
-- **状态**：v1.6.5，个人自用 + 开源；Win11 24H2。1.6.0 的按屏主路径已在双显示器上验证；1.6.1 单屏机 22 项实机验证全部通过（收纳 / 展开原位 / 快照带屏 / 回收即时落盘 / 500 ms 强杀恢复 / 二次启动唤起面板 / 稳态占用）。1.6.2 / 1.6.3 修复双屏下场景整组收起波及另一块屏、开关入口误清另一块屏的问题；1.6.4 修复提权重启时新实例被单实例互斥体挡掉的问题；1.6.5 修正副屏工作区坐标换算、同程序多窗口按标题配对，并加入按天滚动（保留 1 天）的诊断日志。跨屏行为以代码审查 + `DisplayRulesTests` 单测 + 用户回传的 `logs\app-*.log` 为准。
+- **状态**：v1.6.7，个人自用 + 开源；Win11 24H2。1.6.0 的按屏主路径已在双显示器上验证；1.6.1 单屏机 22 项实机验证全部通过（收纳 / 展开原位 / 快照带屏 / 回收即时落盘 / 500 ms 强杀恢复 / 二次启动唤起面板 / 稳态占用）。1.6.2 修复双屏下场景整组收起会波及另一块屏的问题；1.6.3 修开关入口按屏；1.6.4 修提权重启；1.6.5 修副屏场景坐标并加诊断日志（用户双屏日志确认 `actual == target`）；1.6.6 放开场景窗口手动最小化、加场景 emoji 与任务栏标题前缀、修重命名弹窗按钮；1.6.7 把场景 emoji 换成叠在窗口图标角上的纯几何标识（颜色圆点 / 数字 1–9，位置左上或右上）、移除标题前缀、加两个尺寸滑块（并排一行，默认 90% / 55%）、8 色可自定义与「恢复默认」，并把胶囊改成任务栏按钮式透明 / 悬停灰底。跨屏行为仍以代码审查 + `DisplayRulesTests` 单测为准
 - **约束**：Win11 不允许 DeskBand / 往任务栏塞子窗口，胶囊只能是自己画的 topmost 小窗。
 
 ## 二、架构说明
@@ -16,7 +16,7 @@
 
 - 命名 Mutex（`Local\TaskbarDrawer.SingleInstance`）保证单实例；第二个实例 `Set` 命名事件 `Local\TaskbarDrawer.ShowPanel`，由已运行实例唤起主面板。
 - `ShutdownMode.OnExplicitShutdown`：关面板 ≠ 退出，只能从托盘退出。
-- `Diagnostics`：默认写程序目录 `logs\app-yyyyMMdd.log`（按天分文件，启动与跨天时删除超过 1 天的旧日志；程序目录不可写时退回 `%LOCALAPPDATA%\TaskbarDrawer\logs`）。记录启动版本 / 显示器布局 / 提权状态、场景保存与还原的逐窗口匹配与摆位前后矩形、收纳 / 展开 / 单窗口决策、全局 `DispatcherUnhandledException` 与局部异常；`RegisterRescue` 在崩溃时交还隐藏窗口；`--probe` 挂到父控制台只读打印候选窗口。
+- `Diagnostics`：全局 `DispatcherUnhandledException` → 记日志 → 退出；`RegisterRescue` 在崩溃时交还隐藏窗口；`--probe` 挂到父控制台只读打印候选窗口。
 
 ### 2.2 分层
 
@@ -30,9 +30,11 @@
 核心对象：
 
 - `WindowEnumerator` / `WindowInfo`：候选窗口过滤（可见、有标题、非工具窗、非 cloaked、非本程序、非 shell）。
-- `WindowStash`：`Capture(hwnd)` 记录 `WINDOWPLACEMENT` 并转屏幕坐标 → `SW_HIDE`；`Restore` 还原；`Track` / `Refresh` 供「可见窗口接入场景」与「保存前刷新位置」用。
-- `StashAllService`：运行时状态机（`StashAll` / `ExpandGroup` / `ToggleGroup` / `StashGroup` / `Release` / `Prune` / `Adopt` / `LinkSaved`）。运行时组 = 场景的运行态。
-- `SavedGroups`：场景模型 + `saved-groups.json` 原子写（临时文件 + `File.Move`）。
+- `WindowStash`：`Capture(hwnd)` 记录 `WINDOWPLACEMENT` 并转屏幕坐标 → `SW_HIDE`；`Restore` 还原；`Track` / `Refresh` 供「可见窗口接入场景」与「保存前刷新位置」用；`SetSceneIcon` / `ClearSceneIcon` 给成员窗口挂 / 摘场景合成图标。
+- `StashAllService`：运行时状态机（`StashAll` / `ExpandGroup` / `ToggleGroup` / `StashGroup` / `Release` / `Prune` / `Adopt` / `LinkSaved` / `SetBadge`）。运行时组 = 场景的运行态。
+- `SavedGroups`：场景模型（含 `SceneBadge`）+ `saved-groups.json` 原子写（临时文件 + `File.Move`）。
+- `SceneBadge` / `SceneTitle`：场景标识（颜色 / 数字 / 位置）的取值约束、文字表示、旧 emoji 迁移，以及旧标题前缀清理的纯函数，单测覆盖。
+- `ISceneIconPainter` / `SceneIconPainter`：把场景标识与程序原图标合成一张 HICON（彩色圆底 + 可选白色数字，叠在图标左上 / 右上角），按窗口 DPI 出 32 / 16 px 两档，Set 到窗口后任务栏按钮显示「角标 + 程序图标」；纯几何绘制，不依赖 emoji 字体或位图资源。原图标与标识的大小分别由 `AppSettings.SceneAppIconSize`（0.55–1.0，默认 0.90）/ `SceneBadgeSize`（0.25–0.65，默认 0.55）控制；8 色调色板存在 `AppSettings.SceneBadgeColors`，右上角可自定义改色，改色 / 恢复默认通过 `WorkspaceService.RemapBadgeColors` + `StashAllService.RemapBadgeColors` 同时刷新快照与运行中的图标；面板拖动滑块时 `StashAllService.RefreshSceneIcons` 立即重画。
 - `WorkspaceService`：场景的保存 / 更新快照 / 关闭 / 还原；还原时已有窗口直接摆位，缺失的 `Process.Start` 后在 12 s 内轮询新窗口并摆位。
 - `SingleWindowMode` / `WindowActivator` / `WindowRecovery` / `HotkeyManager` / `AppSettings` / `AutoStart`：单窗口、抢前台、崩溃恢复、热键、配置、自启。
 - `Rules/RuleModel`（`RuleSet` / `RuleFlow` / `RuleStep`）：规则树 + 写死在代码里的默认树，不落盘。
@@ -45,7 +47,7 @@
 - `TaskbarChipWindow`：单枚胶囊（深色圆角、数量、tooltip）。
 - `MainPanelWindow`：主面板（场景列表 / 开关 / 热键）。
 - `SceneEditorWindow`：场景编辑小窗（移除窗口 / 追加其他正在运行的场景 / 重命名 / 删除）。只读数据 + 抛事件，写操作全部回 `AppShell` → `WorkspaceService`。
-- `Theme` / `Ui`：深色画刷、场景图标常量与统一字体 / 文本工厂，窗口只引用，不再各自定义颜色和字体。
+- `Theme` / `Ui`：深色画刷、统一字体 / 文本工厂与场景标识圆点控件，窗口只引用，不再各自定义颜色和字体。
 - `TrayService`（托盘 + 深色菜单）、`TextPromptWindow`（重命名）、`ToastWindow`、`DarkMenuRenderer`、`AppIcon`。
 
 ### 2.3 关键数据流
@@ -62,7 +64,7 @@
 入口事件：热键 / 场景胶囊点击 → 算 RuleFacts（一次枚举）→ RuleRunner 走规则树 → 命中动作 → 调上面这些方法
 ```
 
-术语只有两个：**场景**（持久化 + 运行态，图标 💾）与**单窗口模式**。运行时组是场景的运行态，靠 `SavedId` 与快照一一对应；正常路径下每个运行时组都有 `SavedId`。
+术语只有两个：**场景**（持久化 + 运行态，图标 ⭐）与**单窗口模式**。运行时组是场景的运行态，靠 `SavedId` 与快照一一对应；正常路径下每个运行时组都有 `SavedId`。
 
 场景快照里的 `Suppressed` 记录用户移除过的窗口（`SceneEdit.Key`：规范化 exe 路径 + 标题）。关闭场景时 `UpdateSnapshot` 会按它过滤，否则运行时组整份覆盖快照会把移除项又写回来；重新追加同名窗口时自动从集合里删掉。
 
@@ -123,8 +125,7 @@
 
 ## 四、数据文件与调试
 
-- `%LOCALAPPDATA%\TaskbarDrawer\settings.json`、`saved-groups.json`、`recovery.json`
-- 诊断日志：程序目录 `logs\app-yyyyMMdd.log`（不可写时退回 `%LOCALAPPDATA%\TaskbarDrawer\logs`），保留最近 1 天
+- `%LOCALAPPDATA%\TaskbarDrawer\settings.json`、`saved-groups.json`、`recovery.json`、`logs\`
 - `--probe`：确认候选窗口集合（判断「为什么这个窗口没被收进去」）
 - `dotnet test tests/TaskbarDrawer.Tests`：规则引擎回归测试（默认手感 / 步数与深度护栏 / 目录约束）
 - 面板「场景」区块：点整行收起 / 展开；「关闭窗口」真关，「编辑」只改快照

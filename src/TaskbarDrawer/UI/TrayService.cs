@@ -207,10 +207,12 @@ public sealed class TrayService : IDisposable
 
         foreach (var group in groups)
         {
-            // 和胶囊、主面板同一套图标：💾 场景。
+            // 和胶囊、主面板同一套标识：用场景自己选的颜色 / 数字。
+            string icon = SceneBadge.GlyphOf(group.Badge);
+            string prefix = icon.Length == 0 ? "" : icon + " ";
             string head = string.IsNullOrEmpty(group.Name)
-                ? $"{Theme.SceneIcon} 场景 {group.Id}"
-                : $"{Theme.SceneIcon} {group.Name}";
+                ? $"{prefix}场景 {group.Id}"
+                : $"{prefix}{group.Name}";
             var item = new Forms.ToolStripMenuItem($"{head} · {group.Count} 个窗口 · {group.State}");
             int id = group.Id;
             item.Click += (_, _) => SceneRequested?.Invoke(id);

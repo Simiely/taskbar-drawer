@@ -22,6 +22,19 @@ public sealed class StashedWindow
     /// <summary>true = 正被收在收纳区里；false = 组已展开、窗口在屏幕上。</summary>
     public bool Hidden { get; set; }
 
+    /// <summary>展开期间挂在窗口图标上的场景标识；null = 不挂。</summary>
+    public SceneBadge Badge { get; set; }
+
+    /// <summary>窗口自己的原图标（换成场景图标前记下，摘的时候原样放回）。</summary>
+    public IntPtr OriginalIconBig { get; set; }
+
+    public IntPtr OriginalIconSmall { get; set; }
+
+    /// <summary>合成出来的场景图标（本进程创建 / 持有，换图或摘图时必须销毁）。</summary>
+    public IntPtr SceneIconBig { get; set; }
+
+    public IntPtr SceneIconSmall { get; set; }
+
     /// <summary>
     /// 最近一次发出还原请求的时间。Prune 用它异步确认「还原是否真的成功」——
     /// SW_RESTORE / SW_HIDE 都是跨线程投递，调用返回瞬间的可见性不可信。
@@ -43,6 +56,14 @@ public sealed class StashedWindow
 public sealed class WindowStash
 {
     private readonly Dictionary<long, StashedWindow> _items = new();
+
+    /// <summary>合成场景图标；为 null 时退化为「只收窗口、不换图标」。</summary>
+    private readonly ISceneIconPainter _icons;
+
+    public WindowStash(ISceneIconPainter icons = null)
+    {
+        _icons = icons;
+    }
 
     public int Count => _items.Count;
 
@@ -78,7 +99,8 @@ public sealed class WindowStash
         {
             Handle = hwnd,
             GroupId = groupId,
-            Title = title,
+            // 记录干净标题：旧版 emoji 前缀是我们临时挂的，不属于窗口自己的名字。
+            Title = SceneTitle.Strip(title),
             ClassName = NativeMethods.ClassName(hwnd),
             ProcessId = pid,
             ProcessName = meta.Name,
@@ -101,6 +123,7 @@ public sealed class WindowStash
     {
         if (item == null || !NativeMethods.IsWindow(item.Handle)) return false;
 
+        ClearSceneDecoration(item);
         NativeMethods.ShowWindow(item.Handle, NativeMethods.SW_HIDE);
 
         item.Hidden = true;
@@ -122,6 +145,7 @@ public sealed class WindowStash
         // 展开期间用户可能挪过窗口 / 换过显示器，收起前重新记一次。
         RefreshPlacement(item);
 
+        ClearSceneDecoration(item);
         NativeMethods.ShowWindow(item.Handle, NativeMethods.SW_HIDE);
 
         item.Hidden = true;
@@ -188,13 +212,48 @@ public sealed class WindowStash
             $"target={target} actual={actual} max={item.Maximized} corrected={corrected}");
 
         item.Hidden = false;
+        // 回到屏幕后才换窗口图标：任务栏按钮会显示「场景标识 + 程序图标」。
+        ApplySceneIcon(item);
         return true;
     }
 
     public void RemoveGroup(int groupId)
     {
-        foreach (long key in _items.Where(p => p.Value.GroupId == groupId).Select(p => p.Key).ToArray())
-            _items.Remove(key);
+        foreach (var item in _items.Values.Where(i => i.GroupId == groupId).ToArray())
+        {
+            ClearSceneDecoration(item);
+            item.Badge = null;
+            _items.Remove(item.Handle.ToInt64());
+        }
+    }
+
+    /// <summary>给成员窗口挂场景标识；收起状态下只记录，等展开时再换图标。</summary>
+    public void SetSceneIcon(StashedWindow item, SceneBadge badge)
+    {
+        if (item == null) return;
+        item.Badge = SceneBadge.Coerce(badge);
+        if (!item.Hidden) ApplySceneIcon(item);
+    }
+
+    /// <summary>摘掉场景标识（窗口恢复成应用自己的图标与标题）。</summary>
+    public void ClearSceneIcon(StashedWindow item)
+    {
+        if (item == null) return;
+        item.Badge = null;
+        if (!item.Hidden) ClearSceneDecoration(item);
+    }
+
+    /// <summary>外观参数（图标间距）改了：已展开的窗口重新合成一次图标。</summary>
+    public void RefreshSceneIcons()
+    {
+        foreach (var item in _items.Values)
+        {
+            if (item.Badge == null || item.Hidden) continue;
+            if (!NativeMethods.IsWindow(item.Handle)) continue;
+            // 先放回应用自己的图标，下次 Apply 会按新参数重新取原图标、重新合成。
+            RemoveSceneIcon(item);
+            ApplySceneIcon(item);
+        }
     }
 
     /// <summary>按窗口此刻的实际位置刷新记录（保存场景前调用）。</summary>
@@ -210,6 +269,7 @@ public sealed class WindowStash
         item.Hidden = false;
         item.RestoreRequestedAt = default;
         item.StashedAt = DateTime.UtcNow;
+        ApplySceneIcon(item);
         _items[item.Handle.ToInt64()] = item;
         return true;
     }
@@ -223,6 +283,9 @@ public sealed class WindowStash
         int released = 0;
         foreach (var item in _items.Values.ToArray())
         {
+            // 场景没了：所有窗口（含仍在屏幕上的）都摘掉场景标识。
+            ClearSceneDecoration(item);
+            item.Badge = null;
             if (!item.Hidden) continue;
             if (ReleaseFallback(item.Handle)) released++;
         }
@@ -268,6 +331,16 @@ public sealed class WindowStash
                 ReleaseFallback(item.Handle);
                 item.RestoreRequestedAt = default;
             }
+
+            // 应用会自己改图标（浏览器切页面换 favicon 等）：图标丢了就补回来，
+            // 保证展开期间任务栏按钮上一直带着场景标识。
+            // 挂起的窗口跳过：读写图标要跨进程发消息，别让一个卡死的程序拖慢定时器。
+            if (item.Badge != null &&
+                NativeMethods.IsWindowVisible(item.Handle) &&
+                !NativeMethods.IsHungAppWindow(item.Handle))
+            {
+                ApplySceneIcon(item);
+            }
         }
         return changed;
     }
@@ -278,6 +351,149 @@ public sealed class WindowStash
     /// <summary>日志里的标题截断：完整标题可能很长，前 40 字足够认出窗口。</summary>
     private static string Brief(string title)
         => string.IsNullOrEmpty(title) ? "" : title.Length <= 40 ? title : title[..40] + "…";
+
+    /// <summary>
+    /// 给窗口换上「场景标识 + 程序图标」的合成图标（标识叠在程序图标角上）。
+    /// 图标句柄是系统级 USER 对象，可以跨进程设置；本进程负责在换图 / 摘图时销毁旧句柄。
+    /// </summary>
+    private void ApplySceneIcon(StashedWindow item)
+    {
+        if (_icons == null || item.Badge == null) return;
+        if (!NativeMethods.IsWindow(item.Handle) || item.Hidden) return;
+
+        IntPtr currentBig = NativeMethods.WindowIcon(item.Handle, big: true);
+        IntPtr currentSmall = NativeMethods.WindowIcon(item.Handle, big: false);
+        if (item.SceneIconBig != IntPtr.Zero &&
+            currentBig == item.SceneIconBig && currentSmall == item.SceneIconSmall)
+            return; // 已经是我们的图标：Prune 每 2.5 s 走到这里时直接跳过，不重画。
+
+        if (item.SceneIconBig == IntPtr.Zero)
+        {
+            // 第一次挂：记下窗口自己的图标，摘的时候原样放回去。
+            // 上一进程被强杀时窗口上会残留一张已销毁的 HICON：WM_GETICON 照样返回非零，
+            // 直接拿去画只会得到「原图标空白」。无效就先清掉，让系统回落到窗口类图标。
+            item.OriginalIconBig = CaptureOriginalIcon(item, currentBig, big: true);
+            item.OriginalIconSmall = CaptureOriginalIcon(item, currentSmall, big: false);
+            // 1.6.6 及更早版本把 emoji 写在标题里：升级后第一次挂图标时顺手清掉。
+            RemoveLegacyTitlePrefix(item);
+        }
+
+        // 画图标用的原图可以比「记下来用于还原的句柄」更宽容：类图标也没有时按 exe 抽一张。
+        // exe 抽出来的图标归本进程，画完立刻销毁，不留在窗口上。
+        IntPtr paintBig = PaintIcon(item, item.OriginalIconBig, big: true, out bool ownedBig);
+        IntPtr paintSmall = PaintIcon(item, item.OriginalIconSmall, big: false, out bool ownedSmall);
+        bool created;
+        try
+        {
+            created = _icons.TryCreate(item.Badge, paintBig, paintSmall,
+                NativeMethods.DpiOf(item.Handle), out IntPtr big, out IntPtr small);
+            if (created)
+            {
+                NativeMethods.SetWindowIcon(item.Handle, big: true, big);
+                NativeMethods.SetWindowIcon(item.Handle, big: false, small);
+
+                IntPtr oldBig = item.SceneIconBig;
+                IntPtr oldSmall = item.SceneIconSmall;
+                item.SceneIconBig = big;
+                item.SceneIconSmall = small;
+                if (oldBig != IntPtr.Zero) _icons.Release(oldBig);
+                if (oldSmall != IntPtr.Zero) _icons.Release(oldSmall);
+            }
+        }
+        finally
+        {
+            if (ownedBig) NativeMethods.DestroyIcon(paintBig);
+            if (ownedSmall) NativeMethods.DestroyIcon(paintSmall);
+        }
+    }
+
+    /// <summary>
+    /// 拿一张能用来画的原图标：先用记下的原图标，再退窗口类图标，
+    /// 最后按进程 exe 抽一张（资源管理器这类窗口的图标由 shell 单独给，类图标是空的）。
+    /// 只有 exe 抽出来的归本进程所有，调用方画完要销毁。
+    /// </summary>
+    private static IntPtr PaintIcon(StashedWindow item, IntPtr original, bool big, out bool owned)
+    {
+        owned = false;
+        if (NativeMethods.IsIconValid(original)) return original;
+
+        IntPtr classIcon = NativeMethods.ClassIcon(item.Handle, big);
+        if (NativeMethods.IsIconValid(classIcon)) return classIcon;
+
+        IntPtr exeIcon = NativeMethods.IconFromExecutable(item.ProcessPath, big);
+        if (NativeMethods.IsIconValid(exeIcon))
+        {
+            owned = true;
+            return exeIcon;
+        }
+        if (exeIcon != IntPtr.Zero) NativeMethods.DestroyIcon(exeIcon);
+        return IntPtr.Zero;
+    }
+
+    /// <summary>
+    /// 记下「还原时放回去」的图标句柄：有效就用；无效（多半是上一进程强杀后残留的
+    /// 已销毁 HICON）先清掉，让 WM_GETICON 回落到窗口类图标；类图标也没有（资源管理器
+    /// 这类窗口的图标由 shell 单独给）就按 exe 抽一张并设回窗口，免得摘图标后空着。
+    /// exe 这张不销毁：窗口还引用着它，销毁会立刻变成空图标。
+    /// </summary>
+    private static IntPtr CaptureOriginalIcon(StashedWindow item, IntPtr current, bool big)
+    {
+        if (NativeMethods.IsIconValid(current)) return current;
+
+        NativeMethods.SetWindowIcon(item.Handle, big, IntPtr.Zero);
+        IntPtr fallback = NativeMethods.WindowIcon(item.Handle, big);
+        if (NativeMethods.IsIconValid(fallback)) return fallback;
+
+        IntPtr exeIcon = NativeMethods.IconFromExecutable(item.ProcessPath, big);
+        if (NativeMethods.IsIconValid(exeIcon))
+        {
+            NativeMethods.SetWindowIcon(item.Handle, big, exeIcon);
+            return exeIcon;
+        }
+        if (exeIcon != IntPtr.Zero) NativeMethods.DestroyIcon(exeIcon);
+        return IntPtr.Zero;
+    }
+
+    /// <summary>把窗口图标放回它自己的样子，并销毁我们创建的句柄。</summary>
+    private void RemoveSceneIcon(StashedWindow item)
+    {
+        if (item.SceneIconBig == IntPtr.Zero && item.SceneIconSmall == IntPtr.Zero) return;
+
+        if (NativeMethods.IsWindow(item.Handle))
+        {
+            // 只把自己换上去的图标放回去：应用中途自己改过图标（浏览器换 favicon 等）就别覆盖它。
+            // 用大图标判断归属：ICON_BIG 读回来的是精确句柄，ICON_SMALL2 可能被系统换成缩放版。
+            if (NativeMethods.WindowIcon(item.Handle, big: true) == item.SceneIconBig)
+            {
+                NativeMethods.SetWindowIcon(item.Handle, big: true, item.OriginalIconBig);
+                NativeMethods.SetWindowIcon(item.Handle, big: false, item.OriginalIconSmall);
+            }
+        }
+        if (item.SceneIconBig != IntPtr.Zero) _icons?.Release(item.SceneIconBig);
+        if (item.SceneIconSmall != IntPtr.Zero) _icons?.Release(item.SceneIconSmall);
+        item.SceneIconBig = IntPtr.Zero;
+        item.SceneIconSmall = IntPtr.Zero;
+        item.OriginalIconBig = IntPtr.Zero;
+        item.OriginalIconSmall = IntPtr.Zero;
+    }
+
+    /// <summary>场景装饰（图标 + 旧版标题前缀）全部摘掉：窗口回到应用自己的样子。</summary>
+    private void ClearSceneDecoration(StashedWindow item)
+    {
+        RemoveSceneIcon(item);
+        RemoveLegacyTitlePrefix(item);
+    }
+
+    /// <summary>摘掉 1.6.6 及更早版本写在标题前的场景 emoji。</summary>
+    private static void RemoveLegacyTitlePrefix(StashedWindow item)
+    {
+        if (!NativeMethods.IsWindow(item.Handle)) return;
+        string current = NativeMethods.Title(item.Handle);
+        if (current.Length == 0) return;
+        string stripped = SceneTitle.Strip(current);
+        if (!string.Equals(current, stripped, StringComparison.Ordinal))
+            NativeMethods.SetTitle(item.Handle, stripped);
+    }
 
     private static void RefreshPlacement(StashedWindow item)
     {

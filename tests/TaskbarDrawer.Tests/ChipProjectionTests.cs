@@ -9,22 +9,24 @@ public class ChipProjectionTests
 {
     private static StashGroupSummary Group(
         int id, int count = 2, string? name = null, string? savedId = null, bool expanded = false,
-        params string[] titles) => new()
+        SceneBadge? badge = null, params string[] titles) => new()
     {
         Id = id,
         Count = count,
         Name = name,
         SavedId = savedId,
         Expanded = expanded,
+        Badge = badge ?? SceneBadge.Default,
         Titles = titles.Length == 0 ? new[] { "窗口一", "窗口二" } : titles
     };
 
     private static SavedGroupSummary Saved(
-        string id, string name = "场景一", int count = 2, params string[] titles) => new()
+        string id, string name = "场景一", int count = 2, SceneBadge? badge = null, params string[] titles) => new()
     {
         Id = id,
         Name = name,
         Count = count,
+        Badge = badge ?? SceneBadge.Default,
         Titles = titles.Length == 0 ? new[] { "窗口一", "窗口二" } : titles
     };
 
@@ -46,22 +48,40 @@ public class ChipProjectionTests
         var chips = ChipProjection.Chips(new[] { Group(3, count: 2) }, Array.Empty<SavedGroupSummary>());
 
         var chip = Assert.Single(chips);
-        Assert.Equal("💾场景", chip.Text);
+        Assert.Equal("场景", chip.Text);
+        Assert.Equal(SceneBadge.DefaultColor, chip.Badge.Color);
+        Assert.Equal(0, chip.Badge.Number);
+        Assert.False(chip.Badge.Right);
         Assert.Equal(3, chip.GroupId);
         Assert.False(chip.Dormant);
         Assert.Contains("场景 3", chip.Tooltip);
-        Assert.DoesNotContain("🧩", chip.Text);
+        Assert.Contains("●", chip.Tooltip);
     }
 
     [Fact]
-    public void Chips_运行中的场景带场景图标()
+    public void Chips_运行中的场景带默认标识()
     {
         var chips = ChipProjection.Chips(
             new[] { Group(1, name: "工作", savedId: "s1") }, Array.Empty<SavedGroupSummary>());
 
         var chip = Assert.Single(chips);
-        Assert.Equal("💾工作", chip.Text);
-        Assert.Contains("💾 工作", chip.Tooltip);
+        Assert.Equal("工作", chip.Text);
+        Assert.Contains("● 工作", chip.Tooltip);
+    }
+
+    [Fact]
+    public void Chips_使用场景自选标识()
+    {
+        var badge = new SceneBadge { Color = "#0A6CDE", Number = 3, Right = true };
+        var chips = ChipProjection.Chips(
+            new[] { Group(1, name: "剪辑", badge: badge) }, Array.Empty<SavedGroupSummary>());
+
+        var chip = Assert.Single(chips);
+        Assert.Equal("剪辑", chip.Text);
+        Assert.Equal("#0A6CDE", chip.Badge.Color);
+        Assert.Equal(3, chip.Badge.Number);
+        Assert.True(chip.Badge.Right);
+        Assert.Contains("③ 剪辑", chip.Tooltip);
     }
 
     [Fact]
@@ -70,11 +90,12 @@ public class ChipProjectionTests
         var chips = ChipProjection.Chips(Array.Empty<StashGroupSummary>(), new[] { Saved("s1", "写作") });
 
         var chip = Assert.Single(chips);
-        Assert.Equal("💾写作", chip.Text);
+        Assert.Equal("写作", chip.Text);
+        Assert.Equal(SceneBadge.DefaultColor, chip.Badge.Color);
         Assert.True(chip.Dormant);
         Assert.Equal(0, chip.GroupId);
         Assert.Contains("已关闭", chip.Tooltip);
-        Assert.Contains("💾 写作", chip.Tooltip);
+        Assert.Contains("● 写作", chip.Tooltip);
     }
 
     [Fact]

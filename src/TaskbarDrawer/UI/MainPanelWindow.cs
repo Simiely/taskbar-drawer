@@ -32,6 +32,10 @@ public sealed class MainPanelWindow : Window
     private readonly TextBlock _stashHotkeyValue;
     private readonly TextBlock _stashEditLabel;
     private readonly TextBlock _status;
+    private Slider _appIconSlider;
+    private TextBlock _appIconValue;
+    private Slider _badgeSlider;
+    private TextBlock _badgeValue;
 
     // 隐藏期间收到的数据：不建 UI，等 ShowPanel 时一次性补上。
     private IReadOnlyList<StashGroupSummary> _pendingGroups = Array.Empty<StashGroupSummary>();
@@ -98,6 +102,12 @@ public sealed class MainPanelWindow : Window
     public event Action<bool> AutoStartRequested;
     public event Action<uint, uint> HotkeyChangeRequested;
 
+    /// <summary>场景图标里程序原图标的大小（比例 0.55–1.0）。</summary>
+    public event Action<double> AppIconScaleRequested;
+
+    /// <summary>场景图标里场景标识的大小（比例 0.25–0.65）。</summary>
+    public event Action<double> SceneBadgeScaleRequested;
+
     /// <summary>面板隐藏时抛出当前位置（DIP），由组合根写入配置。</summary>
     public event Action<double, double> PositionChanged;
 
@@ -146,6 +156,15 @@ public sealed class MainPanelWindow : Window
 
     public void SetSingleWindow(bool value) => _singleRow.Set(value);
     public void SetAutoStart(bool value) => _autoStartRow.Set(value);
+
+    /// <summary>把配置里的两个尺寸套到滑块上（0.8 → 80%）。</summary>
+    public void SetSceneIconSizes(double appIconScale, double badgeScale)
+    {
+        _appIconSlider.Value = Math.Round(Math.Clamp(appIconScale, 0.55, 1.0) * 100);
+        _appIconValue.Text = $"{_appIconSlider.Value:0}%";
+        _badgeSlider.Value = Math.Round(Math.Clamp(badgeScale, 0.25, 0.65) * 100);
+        _badgeValue.Text = $"{_badgeSlider.Value:0}%";
+    }
 
     public void SetHotkeyText(string gesture) => _stashHotkeyValue.Text = gesture;
 
@@ -397,6 +416,7 @@ public sealed class MainPanelWindow : Window
         stack.Children.Add(BuildScenes());
         stack.Children.Add(Divider());
         stack.Children.Add(BuildToggles());
+        stack.Children.Add(BuildAppearance());
         stack.Children.Add(Divider());
         stack.Children.Add(BuildHotkeys(stashEdit));
 
@@ -421,7 +441,7 @@ public sealed class MainPanelWindow : Window
 
         var texts = new StackPanel();
         texts.Children.Add(Text("任务栏收纳", 16, FontWeights.SemiBold, Theme.TextPrimary));
-        var hint = Text("💾 场景 = 保存的窗口组合 · 单窗口模式下每个场景算一个窗口", 10.5, FontWeights.Normal, Theme.TextMuted);
+        var hint = Text("⭐ 场景 = 保存的窗口组合 · 单窗口模式下每个场景算一个窗口", 10.5, FontWeights.Normal, Theme.TextMuted);
         hint.Margin = new Thickness(0, 3, 0, 0);
         texts.Children.Add(hint);
         Grid.SetColumn(texts, 0);
@@ -451,7 +471,7 @@ public sealed class MainPanelWindow : Window
         var head = new Grid();
         head.ColumnDefinitions.Add(new ColumnDefinition());
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var title = Text(Theme.SceneIcon + " 场景", 11, FontWeights.SemiBold, Theme.TextSecondary);
+        var title = Text("场景", 11, FontWeights.SemiBold, Theme.TextSecondary);
         title.Margin = new Thickness(2, 0, 0, 0);
         head.Children.Add(title);
         _summary.HorizontalAlignment = HorizontalAlignment.Right;
@@ -477,7 +497,7 @@ public sealed class MainPanelWindow : Window
         var actions = new WrapPanel { Margin = new Thickness(0, 12, 0, 0) };
         var stashAction = CreateAction("＋ 新建场景", () => StashRequested?.Invoke(), accent: true);
         stashAction.Margin = new Thickness(0, 0, 8, 6);
-        stashAction.ToolTip = "把当前显示器上可见的窗口收成一个新场景并保存，任务栏留一枚 💾 胶囊";
+        stashAction.ToolTip = "把当前显示器上可见的窗口收成一个新场景并保存，任务栏留一枚 ⭐ 胶囊";
         actions.Children.Add(stashAction);
         var latestAction = CreateAction("展开最近的场景", () => ExpandLatestRequested?.Invoke());
         latestAction.Margin = new Thickness(0, 0, 8, 6);
@@ -487,7 +507,7 @@ public sealed class MainPanelWindow : Window
         actions.Children.Add(allAction);
         panel.Children.Add(actions);
 
-        var note = Text("💾 场景 = 保存下来的「软件 + 位置」。运行中点这一行收起 / 展开；「关闭窗口」才真的关掉，关完后场景留下，点一下按保存的位置重新打开。行上的「编辑」可以移除某个窗口，或把别的场景追加进来。",
+        var note = Text("⭐ 场景 = 保存下来的「软件 + 位置」。运行中点这一行收起 / 展开；「关闭窗口」才真的关掉，关完后场景留下，点一下按保存的位置重新打开。行上的「编辑」可以换场景图标、移除某个窗口，或把别的场景追加进来。",
             10.5, FontWeights.Normal, Theme.TextMuted);
         note.TextWrapping = TextWrapping.Wrap;
         note.Margin = new Thickness(2, 8, 0, 0);
@@ -515,6 +535,97 @@ public sealed class MainPanelWindow : Window
         return panel;
     }
 
+    /// <summary>外观：任务栏合成图标里原图标多大、角上的场景标识多大，随时可调。</summary>
+    private FrameworkElement BuildAppearance()
+    {
+        var panel = new StackPanel { Margin = new Thickness(0, 16, 0, 0) };
+        var title = Text("外观", 11, FontWeights.SemiBold, Theme.TextSecondary);
+        title.Margin = new Thickness(2, 0, 0, 0);
+        panel.Children.Add(title);
+
+        panel.Children.Add(BuildSizeRow(
+            "程序图标大小", SceneIconPainter.DefaultAppIconScale * 100, 55, 100,
+            v => AppIconScaleRequested?.Invoke(v), out _appIconSlider, out _appIconValue,
+            "标识大小", SceneIconPainter.DefaultBadgeScale * 100, 25, 65,
+            v => SceneBadgeScaleRequested?.Invoke(v), out _badgeSlider, out _badgeValue));
+
+        var note = Text("任务栏按钮上，场景标识画成小圆点（带数字时白字居中）叠在程序图标的左上角或右上角；两个滑块分别控制原图标和标识占图标边长的百分比。",
+            10.5, FontWeights.Normal, Theme.TextMuted);
+        note.TextWrapping = TextWrapping.Wrap;
+        note.Margin = new Thickness(2, 8, 0, 0);
+        panel.Children.Add(note);
+        return panel;
+    }
+
+    /// <summary>一行并排放两组「标签 + 百分比 + 滑块」，省掉一整行高度。</summary>
+    private FrameworkElement BuildSizeRow(
+        string leftLabel, double leftInitial, double leftMin, double leftMax,
+        Action<double> leftChanged, out Slider leftSlider, out TextBlock leftValue,
+        string rightLabel, double rightInitial, double rightMin, double rightMax,
+        Action<double> rightChanged, out Slider rightSlider, out TextBlock rightValue)
+    {
+        var grid = new Grid { Margin = new Thickness(2, 8, 2, 0) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition());
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(18) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition());
+
+        var left = BuildSizeField(leftLabel, leftMin, leftMax, leftInitial, leftChanged,
+            out leftSlider, out leftValue);
+        Grid.SetColumn(left, 0);
+        grid.Children.Add(left);
+
+        var right = BuildSizeField(rightLabel, rightMin, rightMax, rightInitial, rightChanged,
+            out rightSlider, out rightValue);
+        Grid.SetColumn(right, 2);
+        grid.Children.Add(right);
+        return grid;
+    }
+
+    /// <summary>一组「标签 + 百分比」标题加滑块；拖动时实时回调百分比对应的小数。</summary>
+    private FrameworkElement BuildSizeField(string label, double min, double max, double initial,
+        Action<double> changed, out Slider slider, out TextBlock value)
+    {
+        var stack = new StackPanel();
+
+        var head = new Grid();
+        head.ColumnDefinitions.Add(new ColumnDefinition());
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var name = Text(label, 11.5, FontWeights.Normal, Theme.TextPrimary);
+        name.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(name, 0);
+        head.Children.Add(name);
+
+        value = Text($"{initial:0}%", 11, FontWeights.SemiBold, Theme.TextPrimary);
+        value.MinWidth = 30;
+        value.TextAlignment = TextAlignment.Right;
+        value.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(value, 1);
+        head.Children.Add(value);
+
+        stack.Children.Add(head);
+
+        slider = new Slider
+        {
+            Minimum = min,
+            Maximum = max,
+            TickFrequency = 1,
+            IsSnapToTickEnabled = true,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 2, 0, 0),
+            Value = initial
+        };
+        TextBlock label2 = value;
+        slider.ValueChanged += (_, e) =>
+        {
+            label2.Text = $"{e.NewValue:0}%";
+            changed(e.NewValue / 100.0);
+        };
+        stack.Children.Add(slider);
+
+        return stack;
+    }
+
     private FrameworkElement BuildHotkeys(Border stashEdit)
     {
         var panel = new StackPanel { Margin = new Thickness(0, 16, 0, 0) };
@@ -524,7 +635,7 @@ public sealed class MainPanelWindow : Window
         panel.Children.Add(BuildHotkeyRow("新建场景 / 展开", _stashHotkeyValue, stashEdit));
         panel.Children.Add(_status);
 
-        var note = Text("托盘左键单击切换单窗口模式，双击打开主面板。💾 场景胶囊右键：重命名 / 关闭窗口 / 删除场景。移除或追加窗口请用场景行的「编辑」。",
+        var note = Text("托盘左键单击切换单窗口模式，双击打开主面板。⭐ 场景胶囊右键：重命名 / 关闭窗口 / 删除场景。换图标、移除或追加窗口请用场景行的「编辑」。",
             10.5, FontWeights.Normal, Theme.TextMuted);
         note.TextWrapping = TextWrapping.Wrap;
         note.Margin = new Thickness(2, 10, 0, 0);
@@ -563,6 +674,15 @@ public sealed class MainPanelWindow : Window
         return grid;
     }
 
+    /// <summary>场景标识的彩色圆点（有数字时带数字）；没有标识时返回 null。</summary>
+    private static FrameworkElement BadgeDot(SceneBadge badge, double size)
+    {
+        if (badge == null) return null;
+        var dot = Ui.Badge(badge, size);
+        dot.Margin = new Thickness(0, 0, 6, 0);
+        return dot;
+    }
+
     private Border BuildSceneRow(StashGroupSummary group)
     {
         var grid = new Grid();
@@ -580,9 +700,11 @@ public sealed class MainPanelWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 1, 7, 0)
         });
+        var rowBadge = BadgeDot(group.Badge, 14);
+        if (rowBadge != null) titleLine.Children.Add(rowBadge);
         titleLine.Children.Add(Text(string.IsNullOrEmpty(group.Name)
-            ? $"{Theme.SceneIcon} 场景 {group.Id} · {group.Count} 个窗口"
-            : $"{Theme.SceneIcon} {group.Name} · {group.Count} 个窗口", 12.5, FontWeights.SemiBold, Theme.TextPrimary));
+            ? $"场景 {group.Id} · {group.Count} 个窗口"
+            : $"{group.Name} · {group.Count} 个窗口", 12.5, FontWeights.SemiBold, Theme.TextPrimary));
         texts.Children.Add(titleLine);
 
         var subGrid = new Grid { Margin = new Thickness(14, 2, 8, 0) };
@@ -615,7 +737,7 @@ public sealed class MainPanelWindow : Window
         {
             var edit = CreateAction("编辑", () => SavedEditRequested?.Invoke(savedId), accent: true);
             edit.VerticalAlignment = VerticalAlignment.Center;
-            edit.ToolTip = "编辑场景：移除某个窗口、追加其他正在运行的场景、重命名或删除";
+            edit.ToolTip = "编辑场景：换场景图标、移除某个窗口、追加其他正在运行的场景、重命名或删除";
             Grid.SetColumn(edit, 2);
             grid.Children.Add(edit);
         }
@@ -657,7 +779,10 @@ public sealed class MainPanelWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 1, 7, 0)
         });
-        titleLine.Children.Add(Text(Theme.SceneIcon + " " + ShortName(group.Name), 12.5, FontWeights.SemiBold, Theme.TextPrimary));
+        var closedBadge = BadgeDot(group.Badge, 14);
+        if (closedBadge != null) titleLine.Children.Add(closedBadge);
+        titleLine.Children.Add(Text(ShortName(group.Name),
+            12.5, FontWeights.SemiBold, Theme.TextPrimary));
         texts.Children.Add(titleLine);
 
         var sub = Text($"{group.State} · {group.Count} 个窗口 · 点这一行打开", 10.5, FontWeights.SemiBold, Theme.TextMuted);
@@ -677,7 +802,7 @@ public sealed class MainPanelWindow : Window
 
         var edit = CreateAction("编辑", () => SavedEditRequested?.Invoke(id));
         edit.VerticalAlignment = VerticalAlignment.Center;
-        edit.ToolTip = "编辑场景：移除某个窗口、追加其他正在运行的场景、重命名或删除";
+        edit.ToolTip = "编辑场景：换场景图标、移除某个窗口、追加其他正在运行的场景、重命名或删除";
         Grid.SetColumn(edit, 2);
         grid.Children.Add(edit);
 

@@ -117,6 +117,7 @@ public static partial class NativeMethods
         IntPtr h, uint msg, IntPtr wParam, StringBuilder lParam, uint flags, uint timeout, out IntPtr result);
 
     private const uint WM_GETTEXT = 0x000D;
+    private const uint WM_SETTEXT = 0x000C;
     private const uint SMTO_ABORTIFHUNG = 0x0002;
 
     public static long ExStyle(IntPtr hwnd) => GetWindowLongPtrW(hwnd, GWL_EXSTYLE).ToInt64();
@@ -134,6 +135,19 @@ public static partial class NativeMethods
         IntPtr copied = SendMessageTimeoutW(
             hwnd, WM_GETTEXT, (IntPtr)sb.Capacity, sb, SMTO_ABORTIFHUNG, 120, out _);
         return copied == IntPtr.Zero ? "" : sb.ToString();
+    }
+
+    /// <summary>
+    /// 改窗口标题（清理 1.6.6 及更早版本写入的场景 emoji 前缀）。同样走 SendMessageTimeout：
+    /// SetWindowText 对跨进程窗口是同步 SendMessage，目标线程挂起时会卡住调用方。
+    /// </summary>
+    public static bool SetTitle(IntPtr hwnd, string title)
+    {
+        if (hwnd == IntPtr.Zero || title == null) return false;
+        var sb = new StringBuilder(title);
+        IntPtr copied = SendMessageTimeoutW(
+            hwnd, WM_SETTEXT, IntPtr.Zero, sb, SMTO_ABORTIFHUNG, 200, out _);
+        return copied != IntPtr.Zero;
     }
 
     public static string ClassName(IntPtr hwnd)

@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace TaskbarDrawer.Core;
 
@@ -36,6 +37,14 @@ public sealed class SavedGroup
 {
     public string Id { get; set; }
     public string Name { get; set; }
+
+    /// <summary>场景标识（颜色 + 可选数字 + 角上位置）；旧数据没有该字段时由旧 emoji 迁移得到。</summary>
+    public SceneBadge Badge { get; set; }
+
+    /// <summary>1.6.7 及更早版本的 emoji 图标，只用于读取旧数据，迁移后不再写回。</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string Emoji { get; set; }
+
     public DateTime CreatedAt { get; set; }
     public List<SavedWindow> Windows { get; set; } = new();
 
@@ -62,6 +71,7 @@ public sealed class SavedGroupDetail
 {
     public string Id { get; init; }
     public string Name { get; init; }
+    public SceneBadge Badge { get; init; }
     public IReadOnlyList<SavedWindowItem> Windows { get; init; } = Array.Empty<SavedWindowItem>();
 }
 
@@ -70,6 +80,7 @@ public sealed class SavedGroupSummary
 {
     public string Id { get; init; }
     public string Name { get; init; }
+    public SceneBadge Badge { get; init; }
     public int Count { get; init; }
 
     public IReadOnlyList<string> Titles { get; init; } = Array.Empty<string>();

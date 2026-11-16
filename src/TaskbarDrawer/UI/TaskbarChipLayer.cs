@@ -15,6 +15,9 @@ public sealed class ChipEntry
     public string Text { get; init; } = "";
     public string Tooltip { get; init; } = "";
 
+    /// <summary>场景标识：胶囊与右键菜单都显示它。</summary>
+    public SceneBadge Badge { get; init; } = SceneBadge.Default;
+
     /// <summary>true = 场景已展开，胶囊显示为蓝色。</summary>
     public bool Highlight { get; init; }
 
@@ -53,6 +56,7 @@ public sealed class TaskbarChipLayer : IDisposable
         public bool IsOverflow;
         public bool Active = true;
         public string Text = "";
+        public SceneBadge Badge;
 
         /// <summary>溢出胶囊代表的各场景（第 8 项起），右键菜单里逐项列出以便直达。</summary>
         public List<ChipEntry> Overflow = new();
@@ -120,7 +124,8 @@ public sealed class TaskbarChipLayer : IDisposable
             slot.Active = true;
             slot.Overflow = new List<ChipEntry>();
             slot.Text = entry.Text;
-            slot.Window.SetContent(entry.Text, entry.Tooltip, entry.Highlight);
+            slot.Badge = entry.Badge;
+            slot.Window.SetContent(entry.Badge, entry.Text, entry.Tooltip, entry.Highlight);
         }
 
         if (entries.Count > shown)
@@ -132,8 +137,9 @@ public sealed class TaskbarChipLayer : IDisposable
             slot.IsOverflow = true;
             slot.Active = true;
             slot.Text = $"+{rest.Count}";
+            slot.Badge = null;
             slot.Overflow = rest;
-            slot.Window.SetContent(slot.Text,
+            slot.Window.SetContent(null, slot.Text,
                 $"还有 {rest.Count} 个场景 · {restWindows} 个窗口\n点击打开主面板 · 右键逐场景切换",
                 rest.Any(e => e.Highlight));
         }
@@ -239,8 +245,10 @@ public sealed class TaskbarChipLayer : IDisposable
 
     private static string Describe(ChipEntry entry)
     {
-        if (entry.Dormant) return $"{Theme.SceneIcon} {entry.Name} · {entry.Count} 个窗口 · 已关闭";
-        return $"{Theme.SceneIcon} {entry.Name} · {entry.Count} 个窗口 · {(entry.Highlight ? "已展开" : "已收起")}";
+        string icon = SceneBadge.GlyphOf(entry.Badge);
+        string prefix = icon.Length == 0 ? "" : icon + " ";
+        if (entry.Dormant) return $"{prefix}{entry.Name} · {entry.Count} 个窗口 · 已关闭";
+        return $"{prefix}{entry.Name} · {entry.Count} 个窗口 · {(entry.Highlight ? "已展开" : "已收起")}";
     }
 
     /// <summary>
@@ -315,7 +323,8 @@ public sealed class TaskbarChipLayer : IDisposable
             if (vertical)
             {
                 // 竖排任务栏：宽度吃满任务栏内宽，胶囊从托盘上方往上叠。
-                widthPx = Math.Max(MinChipWidthPx, bar.Width - 12);
+                // 只留 4 px 边距，多出来的宽度给「标识 + 场景名」。
+                widthPx = Math.Max(MinChipWidthPx, bar.Width - 8);
                 heightPx = Math.Max(20, Math.Min(32, bar.Width - 24));
                 x = bar.Left + (bar.Width - widthPx) / 2;
                 y = anchor.Top - gap - heightPx;
@@ -335,7 +344,7 @@ public sealed class TaskbarChipLayer : IDisposable
             else
             {
                 heightPx = Math.Max(20, bar.Height - 12);
-                widthPx = WidthFor(slot.Text, heightPx);
+                widthPx = WidthFor(slot.Text, heightPx, slot.Badge != null);
                 x = anchor.Left - gap - widthPx;
                 y = bar.Top + (bar.Height - heightPx) / 2;
                 if (x < bar.Left + 4)
@@ -406,11 +415,11 @@ public sealed class TaskbarChipLayer : IDisposable
     private static bool Same(in NativeMethods.RECT a, in NativeMethods.RECT b)
         => a.Left == b.Left && a.Top == b.Top && a.Right == b.Right && a.Bottom == b.Bottom;
 
-    /// <summary>宽度随文字长度增长（<c>2·3</c> 窄、<c>12·34</c> 宽），按任务栏高度等比缩放。</summary>
-    private static int WidthFor(string text, int heightPx)
+    /// <summary>宽度随文字长度增长，按任务栏高度等比缩放；带场景标识时再加一枚圆点的宽度。</summary>
+    private static int WidthFor(string text, int heightPx, bool hasBadge = false)
     {
         int length = text?.Length ?? 0;
-        double scaled = (34 + length * 8) * heightPx / 28.0;
+        double scaled = (18 + length * 8 + (hasBadge ? 19 : 0)) * heightPx / 28.0;
         return Math.Max(MinChipWidthPx, (int)Math.Round(scaled));
     }
 

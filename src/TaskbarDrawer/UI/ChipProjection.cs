@@ -32,7 +32,8 @@ public static class ChipProjection
         {
             chips.Add(new ChipEntry
             {
-                Text = Theme.SceneIcon + ShortName(group.Name),
+                Text = ShortName(group.Name),
+                Badge = SceneBadge.Coerce(group.Badge),
                 Tooltip = RuntimeTooltip(group),
                 Highlight = group.Expanded,
                 GroupId = group.Id,
@@ -47,7 +48,8 @@ public static class ChipProjection
         {
             chips.Add(new ChipEntry
             {
-                Text = Theme.SceneIcon + ShortName(group.Name),
+                Text = ShortName(group.Name),
+                Badge = SceneBadge.Coerce(group.Badge),
                 Tooltip = SavedTooltip(group),
                 Highlight = false,
                 Dormant = true,
@@ -69,9 +71,10 @@ public static class ChipProjection
 
     public static string RuntimeTooltip(StashGroupSummary group)
     {
+        string icon = Prefix(group.Badge);
         string head = string.IsNullOrEmpty(group.Name)
-            ? $"{Theme.SceneIcon} 场景 {group.Id} · {group.Count} 个窗口 · {group.State}"
-            : $"{Theme.SceneIcon} {group.Name} · {group.Count} 个窗口 · {group.State}";
+            ? $"{icon}场景 {group.Id} · {group.Count} 个窗口 · {group.State}"
+            : $"{icon}{group.Name} · {group.Count} 个窗口 · {group.State}";
 
         var lines = new List<string> { head };
         foreach (string title in group.Titles.Take(3))
@@ -83,7 +86,8 @@ public static class ChipProjection
 
     public static string SavedTooltip(SavedGroupSummary group)
     {
-        var lines = new List<string> { $"{Theme.SceneIcon} {group.Name} · {group.Count} 个窗口 · 已关闭" };
+        string icon = Prefix(group.Badge);
+        var lines = new List<string> { $"{icon}{group.Name} · {group.Count} 个窗口 · 已关闭" };
         foreach (string title in group.Titles.Take(3))
         {
             string text = title ?? "";
@@ -92,5 +96,12 @@ public static class ChipProjection
         if (group.Count > 3) lines.Add("…");
         lines.Add("左键打开并还原窗口位置 · 右键管理");
         return string.Join("\n", lines);
+    }
+
+    /// <summary>文字里的标识前缀（① / ● + 空格）；没有标识时为空。</summary>
+    private static string Prefix(SceneBadge badge)
+    {
+        string glyph = SceneBadge.GlyphOf(badge);
+        return glyph.Length == 0 ? "" : glyph + " ";
     }
 }

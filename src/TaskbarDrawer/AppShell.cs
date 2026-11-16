@@ -17,6 +17,7 @@ public sealed class AppShell : IDisposable
 {
     private AppSettings _settings;
     private StashAllService _stash;
+    private SceneIconPainter _sceneIcons;
     private WorkspaceService _workspace;
     private SingleWindowMode _single;
     private HotkeyManager _hotkeys;
@@ -62,7 +63,8 @@ public sealed class AppShell : IDisposable
         StartShowSignal();
         _settings = AppSettings.Load();
 
-        _stash = new StashAllService();
+        _sceneIcons = new SceneIconPainter(_settings.SceneAppIconSize, _settings.SceneBadgeSize);
+        _stash = new StashAllService(_sceneIcons);
         // Changed 是同步广播：UI 构建一旦抛异常，会沿「业务方法 → RunRules → 入口 Safe」冒泡，
         // 结果是状态已改、界面没刷、日志还记在错误的 scope 上。隔离必须在订阅处收口。
         _stash.Changed += () => Safe("surface", UpdateSurface);
@@ -160,6 +162,8 @@ public sealed class AppShell : IDisposable
         _panel.SingleWindowRequested += value => Safe("panel.singleWindow", () => SetSingleWindowMode(value));
         _panel.AutoStartRequested += value => Safe("panel.autoStart", () => SetAutoStart(value));
         _panel.HotkeyChangeRequested += (modifiers, key) => Safe("panel.hotkey", () => ChangeHotkey(modifiers, key));
+        _panel.AppIconScaleRequested += value => Safe("panel.appIconSize", () => SetSceneIconSizes(value, null));
+        _panel.SceneBadgeScaleRequested += value => Safe("panel.badgeSize", () => SetSceneIconSizes(null, value));
 
         _single.Start();
         SetSingleWindowMode(_settings.SingleWindowMode, persist: false);
@@ -169,6 +173,7 @@ public sealed class AppShell : IDisposable
         _settings.Save();
         _tray.SetAutoStartChecked(autoStart);
         _panel.SetAutoStart(autoStart);
+        _panel.SetSceneIconSizes(_settings.SceneAppIconSize, _settings.SceneBadgeSize);
 
         _tray.SetStatus($"{_stashHotkey.Gesture} 新建场景 / 展开");
 
@@ -427,9 +432,9 @@ public sealed class AppShell : IDisposable
             }
             else
             {
-                _stash.LinkSaved(groupId, saved.Id, saved.Name);
+                _stash.LinkSaved(groupId, saved.Id, saved.Name, saved.Badge);
                 Feedback(WithElevationNote(
-                    $"{Theme.SceneIcon} 已收起 {count} 个窗口 · 新建场景「{saved.Name}」"), monitorDevice);
+                    $"{BadgeText(saved.Badge)}已收起 {count} 个窗口 · 新建场景「{saved.Name}」"), monitorDevice);
             }
         }
         else if (_stash.LastBlockedByElevation > 0)
@@ -487,7 +492,7 @@ public sealed class AppShell : IDisposable
         int shown = _stash.ExpandNewest(monitorDevice);
         if (shown > 0) CollapseOtherScenes(_stash.LastExpandedGroupId);
         Feedback(shown > 0
-            ? $"{Theme.SceneIcon} 已展开「{SceneLabel(_stash.LastExpandedGroupId)}」· {shown} 个窗口"
+            ? $"{BadgeText(BadgeOfGroup(_stash.LastExpandedGroupId))}已展开「{SceneLabel(_stash.LastExpandedGroupId)}」· {shown} 个窗口"
             : "这块屏幕上没有已收起的场景", monitorDevice);
         UpdateSurface();
     }
@@ -519,6 +524,20 @@ public sealed class AppShell : IDisposable
     {
         var group = _stash.Groups().FirstOrDefault(g => g.Id == groupId);
         return string.IsNullOrEmpty(group?.Name) ? $"场景 {groupId}" : group.Name;
+    }
+
+    /// <summary>运行时组当前的场景标识（没有关联快照时退回默认标识）。</summary>
+    private SceneBadge BadgeOfGroup(int groupId)
+    {
+        var group = _stash.Groups().FirstOrDefault(g => g.Id == groupId);
+        return SceneBadge.Coerce(group?.Badge);
+    }
+
+    /// <summary>提示文字里的标识前缀（① / ● + 空格）。</summary>
+    private static string BadgeText(SceneBadge badge)
+    {
+        string glyph = SceneBadge.GlyphOf(badge);
+        return glyph.Length == 0 ? "" : glyph + " ";
     }
 
     /// <summary>面板场景行的「关闭窗口」：有关联快照就按场景关闭，否则兜底直接关这个场景的窗口。</summary>
@@ -563,7 +582,7 @@ public sealed class AppShell : IDisposable
         string monitor = _stash.MonitorOfGroup(groupId) ?? _workspace.MonitorOfSaved(saved);
         int closed = _workspace.Close(_stash, groupId);
         Feedback(closed > 0
-            ? $"{Theme.SceneIcon} 已关闭「{saved.Name}」· {closed} 个窗口"
+            ? $"{BadgeText(saved.Badge)}已关闭「{saved.Name}」· {closed} 个窗口"
             : $"「{saved.Name}」没有可关闭的窗口", monitor);
         UpdateSurface();
     }
@@ -630,7 +649,7 @@ public sealed class AppShell : IDisposable
             var (moved, launched, busy, failed) = _workspace.Restore(
                 group,
                 managed,
-                hwnd => _stash.Adopt(hwnd, group.Id, group.Name),
+                hwnd => _stash.Adopt(hwnd, group.Id, group.Name, group.Badge),
                 hwnd => _dispatcher.BeginInvoke(new Action(() => AdoptRestoredWindow(group, hwnd))),
                 () =>
                 {
@@ -657,7 +676,7 @@ public sealed class AppShell : IDisposable
     private void AdoptRestoredWindow(SavedGroup group, IntPtr hwnd)
     {
         if (_disposed) return;
-        if (_stash.Adopt(hwnd, group.Id, group.Name)) UpdateSurface();
+        if (_stash.Adopt(hwnd, group.Id, group.Name, group.Badge)) UpdateSurface();
     }
 
     private void RenameSavedGroup(string id, Window owner = null)
@@ -683,6 +702,76 @@ public sealed class AppShell : IDisposable
         }));
     }
 
+    /// <summary>改场景标识：快照、运行时组、已展开成员窗口的图标一起更新。</summary>
+    private void SetSceneBadge(string id, SceneBadge badge)
+    {
+        if (_disposed) return;
+        var group = _workspace.Find(id);
+        if (group == null) return;
+
+        var normalized = SceneBadge.Coerce(badge);
+        if (!_workspace.SetBadge(id, normalized)) return;
+        // 正在运行的组同步重画窗口图标；收起的成员等展开时再挂。
+        _stash.SetBadge(id, normalized);
+        Feedback($"{BadgeText(normalized)}场景标识已更新");
+        UpdateSurface();
+    }
+
+    /// <summary>
+    /// 改调色板里的一个色块：所有用这个颜色的场景一起换，配置与快照同时落盘。
+    /// 两个色块被改成同一颜色时无法区分，按「先出现的色块」处理。
+    /// </summary>
+    private void ChangePaletteColor(int index, string color)
+    {
+        if (_disposed) return;
+        if (!SceneBadge.TryNormalizeColor(color, out string next)) return;
+
+        var palette = _settings.BadgePalette().ToList();
+        if (index < 0 || index >= palette.Count) return;
+        string previous = palette[index];
+        if (string.Equals(previous, next, StringComparison.OrdinalIgnoreCase)) return;
+
+        palette[index] = next;
+        _settings.SceneBadgeColors = palette;
+        _settings.Save();
+
+        ApplyPaletteRemap(value =>
+            string.Equals(value, previous, StringComparison.OrdinalIgnoreCase) ? next : value);
+        Feedback($"调色板第 {index + 1} 色已改为 {next}");
+    }
+
+    /// <summary>把这 8 个色块恢复默认：按色块位置把场景从当前色换回默认色。</summary>
+    private void ResetBadgePalette()
+    {
+        if (_disposed) return;
+
+        var defaults = SceneBadge.DefaultPalette;
+        var current = _settings.BadgePalette();
+
+        // 先按原配色建一张「同时生效」的映射表：直接逐个替换会出现链式改色。
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < defaults.Count && i < current.Count; i++)
+        {
+            if (!map.ContainsKey(current[i])) map[current[i]] = defaults[i];
+        }
+
+        _settings.SceneBadgeColors = defaults.ToList();
+        _settings.Save();
+
+        ApplyPaletteRemap(value => map.TryGetValue(value ?? "", out string target) ? target : value);
+        Feedback("场景标识颜色已恢复默认");
+    }
+
+    /// <summary>调色板变化后统一刷新：场景快照、运行中窗口图标、编辑器色块与胶囊。</summary>
+    private void ApplyPaletteRemap(Func<string, string> remap)
+    {
+        _workspace.RemapBadgeColors(remap);
+        _stash.RemapBadgeColors(remap);
+        _sceneEditor?.SetPalette(_settings.BadgePalette());
+        RefreshSceneEditor();
+        UpdateSurface();
+    }
+
     /// <summary>
     /// 删除场景：删掉快照，并把这个场景的窗口交回桌面（不关闭、不移动已经可见的窗口）。
     /// </summary>
@@ -702,7 +791,7 @@ public sealed class AppShell : IDisposable
         if (_workspace.Delete(id))
         {
             string note = groupId != 0 ? " · 窗口留在桌面上" : "";
-            Feedback($"{Theme.SceneIcon} 已删除场景「{group.Name}」{note}");
+            Feedback($"{BadgeText(group.Badge)}已删除场景「{group.Name}」{note}");
         }
         else if (released > 0)
         {
@@ -734,10 +823,15 @@ public sealed class AppShell : IDisposable
         }
 
         var editor = new SceneEditorWindow();
+        editor.SetPalette(_settings.BadgePalette());
         editor.RemoveWindowRequested += index => Safe("sceneEditor.remove", () => RemoveSceneWindow(savedId, index));
         editor.AppendSceneRequested += groupId => Safe("sceneEditor.append", () => AppendRunningSceneToScene(savedId, groupId));
         editor.RenameRequested += () => Safe("sceneEditor.rename", () => RenameSavedGroup(savedId, editor));
         editor.DeleteRequested += () => Safe("sceneEditor.delete", () => DissolveScene(savedId));
+        editor.BadgeChangeRequested += badge => Safe("sceneEditor.badge", () => SetSceneBadge(savedId, badge));
+        editor.PaletteColorRequested += (index, color) =>
+            Safe("sceneEditor.paletteColor", () => ChangePaletteColor(index, color));
+        editor.PaletteResetRequested += () => Safe("sceneEditor.paletteReset", ResetBadgePalette);
         editor.Closed += (_, _) =>
         {
             if (!ReferenceEquals(_sceneEditor, editor)) return;
@@ -818,7 +912,7 @@ public sealed class AppShell : IDisposable
             return;
         }
 
-        Feedback($"{Theme.SceneIcon} 已从场景移除「{result.Title}」· 还剩 {result.Count} 个窗口");
+        Feedback($"已从场景移除「{result.Title}」· 还剩 {result.Count} 个窗口");
         UpdateSurface();
     }
 
@@ -843,7 +937,7 @@ public sealed class AppShell : IDisposable
             return;
         }
 
-        string message = $"{Theme.SceneIcon} 已追加 {result.Added} 个窗口到场景";
+        string message = $"已追加 {result.Added} 个窗口到场景";
         if (result.Skipped > 0) message += $"（{result.Skipped} 个已在场景里）";
         Feedback(message);
         UpdateSurface();
@@ -886,6 +980,30 @@ public sealed class AppShell : IDisposable
         _panel?.SetAutoStart(actual);
         if (actual != value) Feedback("开机自启写入失败，设置已还原");
         else Feedback(value ? "开机自启已开启" : "开机自启已关闭");
+    }
+
+    /// <summary>面板里拖尺寸滑块：立即重画已展开窗口的合成图标，并写入配置。</summary>
+    private void SetSceneIconSizes(double? appIconScale, double? badgeScale)
+    {
+        double appIcon = appIconScale.HasValue
+            ? Math.Round(Math.Clamp(appIconScale.Value, SceneIconPainter.MinAppIconScale,
+                SceneIconPainter.MaxAppIconScale), 2)
+            : _settings.SceneAppIconSize;
+        double badge = badgeScale.HasValue
+            ? Math.Round(Math.Clamp(badgeScale.Value, SceneIconPainter.MinBadgeScale,
+                SceneIconPainter.MaxBadgeScale), 2)
+            : _settings.SceneBadgeSize;
+
+        // 滑块每一格都会回调：值没变就什么都不做，别跟着重画图标。
+        if (Math.Abs(_settings.SceneAppIconSize - appIcon) < 0.0001 &&
+            Math.Abs(_settings.SceneBadgeSize - badge) < 0.0001) return;
+
+        _settings.SceneAppIconSize = appIcon;
+        _settings.SceneBadgeSize = badge;
+        _settings.Save();
+        _sceneIcons.AppIconScale = appIcon;
+        _sceneIcons.BadgeScale = badge;
+        _stash.RefreshSceneIcons();
     }
 
     private void UpdateSurface()

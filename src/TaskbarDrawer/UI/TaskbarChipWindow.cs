@@ -4,26 +4,27 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using TaskbarDrawer.Core;
 using TaskbarDrawer.Interop;
 
 namespace TaskbarDrawer.UI;
 
 /// <summary>
-/// 一枚任务栏胶囊：贴住任务栏的 topmost 无边框小窗，显示「组号·窗口数」（如 <c>2·3</c>）。
-/// 已收起的组用中性灰，已展开的组用系统蓝高亮，一眼能看出哪组正在屏幕上。
+/// 一枚任务栏胶囊：贴住任务栏的 topmost 无边框小窗，显示「场景标识 + 场景名」。
+/// 视觉跟任务栏按钮一致：静止时完全透明，鼠标悬停叠一层半透明灰；
+/// 已展开的场景常驻一层更淡的灰，一眼能看出哪个场景正在屏幕上。
 /// Win11 不支持 DeskBand，所以它是独立窗口——样式必须带 TOOLWINDOW（不进 Alt+Tab）+
 /// NOACTIVATE（点击不抢前台），但<b>不能</b>带 TRANSPARENT（那是鼠标穿透，会点不到）。
 /// </summary>
 public sealed class TaskbarChipWindow : Window
 {
-    private static readonly SolidColorBrush NormalBackground = Theme.Frozen(0xE6, 0x2C, 0x2C, 0x2E);
-    private static readonly SolidColorBrush NormalHover = Theme.Frozen(0xF5, 0x3A, 0x3A, 0x3C);
-    private static readonly SolidColorBrush ExpandedBackground = Theme.Frozen(0xE6, 0x0A, 0x6C, 0xDE);
-    private static readonly SolidColorBrush ExpandedHover = Theme.Frozen(0xF5, 0x1A, 0x7C, 0xEE);
-    private static readonly SolidColorBrush EdgeNormal = Theme.Frozen(0x2E, 0xFF, 0xFF, 0xFF);
-    private static readonly SolidColorBrush EdgeExpanded = Theme.Frozen(0x00, 0x00, 0x00, 0x00);
+    private static readonly SolidColorBrush NormalBackground = Brushes.Transparent;
+    private static readonly SolidColorBrush NormalHover = Theme.Frozen(0x2E, 0xFF, 0xFF, 0xFF);
+    private static readonly SolidColorBrush ExpandedBackground = Theme.Frozen(0x1A, 0xFF, 0xFF, 0xFF);
+    private static readonly SolidColorBrush ExpandedHover = Theme.Frozen(0x3D, 0xFF, 0xFF, 0xFF);
 
     private readonly Border _root;
+    private readonly ContentControl _badge;
     private readonly TextBlock _text;
     private readonly ToolTip _tooltip;
     private IntPtr _hwnd;
@@ -44,6 +45,15 @@ public sealed class TaskbarChipWindow : Window
         Width = 54;
         Height = 26;
 
+        _badge = new ContentControl
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 5, 0),
+            Visibility = Visibility.Collapsed,
+            IsTabStop = false,
+            Focusable = false
+        };
+
         _text = new TextBlock
         {
             Text = "",
@@ -51,24 +61,31 @@ public sealed class TaskbarChipWindow : Window
             FontFamily = Ui.Font,
             FontSize = 11.5,
             FontWeight = FontWeights.SemiBold,
-            VerticalAlignment = VerticalAlignment.Center
+            VerticalAlignment = VerticalAlignment.Center,
+            TextAlignment = TextAlignment.Center,
+            // 竖排任务栏只有 ~100 px 宽：场景名太长时省略，而不是被窗口边缘硬切掉。
+            TextTrimming = TextTrimming.CharacterEllipsis
         };
 
-        var panel = new StackPanel
+        var panel = new Grid
         {
-            Orientation = Orientation.Horizontal,
-            HorizontalAlignment = HorizontalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Center
         };
-        panel.Children.Add(BuildStackIcon());
+        panel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        Grid.SetColumn(_badge, 0);
+        Grid.SetColumn(_text, 1);
+        panel.Children.Add(_badge);
         panel.Children.Add(_text);
 
         _root = new Border
         {
             CornerRadius = new CornerRadius(13),
             Background = NormalBackground,
-            BorderBrush = EdgeNormal,
-            BorderThickness = new Thickness(1),
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(8, 0, 8, 0),
             Child = panel,
             Cursor = Cursors.Hand
         };
@@ -131,9 +148,11 @@ public sealed class TaskbarChipWindow : Window
         HwndSource.FromHwnd(_hwnd)?.AddHook(WndProc);
     }
 
-    /// <summary>设置显示文字、悬浮提示与展开态配色。</summary>
-    public void SetContent(string text, string tooltip, bool expanded)
+    /// <summary>设置场景标识、显示文字、悬浮提示与展开态配色。</summary>
+    public void SetContent(SceneBadge badge, string text, string tooltip, bool expanded)
     {
+        _badge.Content = badge == null ? null : Ui.Badge(badge, 14);
+        _badge.Visibility = badge == null ? Visibility.Collapsed : Visibility.Visible;
         _text.Text = text;
         _tooltip.Content = tooltip;
         _tooltip.IsEnabled = !string.IsNullOrEmpty(tooltip);
@@ -173,15 +192,9 @@ public sealed class TaskbarChipWindow : Window
     private void ApplyVisual()
     {
         if (_expanded)
-        {
             _root.Background = _hovering ? ExpandedHover : ExpandedBackground;
-            _root.BorderBrush = EdgeExpanded;
-        }
         else
-        {
             _root.Background = _hovering ? NormalHover : NormalBackground;
-            _root.BorderBrush = EdgeNormal;
-        }
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -192,35 +205,5 @@ public sealed class TaskbarChipWindow : Window
             return new IntPtr(NativeMethods.MA_NOACTIVATE);
         }
         return IntPtr.Zero;
-    }
-
-    private static UIElement BuildStackIcon()
-    {
-        var grid = new Grid
-        {
-            Width = 13,
-            Height = 12,
-            Margin = new Thickness(0, 0, 6, 0),
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        grid.Children.Add(new Border
-        {
-            Width = 12,
-            Height = 8,
-            CornerRadius = new CornerRadius(2),
-            Background = Theme.Frozen(0x4D, 0xFF, 0xFF, 0xFF),
-            HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Top
-        });
-        grid.Children.Add(new Border
-        {
-            Width = 12,
-            Height = 8,
-            CornerRadius = new CornerRadius(2),
-            Background = Theme.Frozen(0xD9, 0xFF, 0xFF, 0xFF),
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Bottom
-        });
-        return grid;
     }
 }

@@ -21,6 +21,12 @@ public sealed class SingleWindowMode : IDisposable
     private bool _applying;
     private bool _disposed;
 
+    /// <summary>
+    /// 被本模式最小化的窗口。切回场景内同伴时只恢复这些；
+    /// 用户自己点最小化的窗口不在集合里，不会被自动弹回来。
+    /// </summary>
+    private readonly HashSet<long> _selfMinimized = new();
+
     public SingleWindowMode(Dispatcher dispatcher)
     {
         _dispatcher = dispatcher;
@@ -81,6 +87,8 @@ public sealed class SingleWindowMode : IDisposable
         {
             _coalesce.Stop();
             _pending = IntPtr.Zero;
+            // 关掉开关后不再替用户恢复窗口；集合清空，避免下次打开时误弹旧窗口。
+            _selfMinimized.Clear();
             return;
         }
         // 打开开关的瞬间先执行一次：此刻屏幕上可能已经有很多窗口。
@@ -154,13 +162,18 @@ public sealed class SingleWindowMode : IDisposable
             var groupOf = GroupOf;
             int group = groupOf != null ? groupOf(foreground) : 0;
 
+            // 已经被用户还原 / 关掉的窗口从「自己最小化」集合里清出去，
+            // 免得下次切回同伴时对已不在最小化状态的窗口发还原请求。
+            _selfMinimized.RemoveWhere(hwnd =>
+                !NativeMethods.IsWindow(new IntPtr(hwnd)) || !NativeMethods.IsIconic(new IntPtr(hwnd)));
+
             // 多显示器：单窗口模式只管前台所在的那块屏幕——在哪块屏操作，就只影响哪块屏，
             // 另一块屏上的窗口保持原样。
             IntPtr monitor = NativeMethods.MonitorFromWindow(foreground, NativeMethods.MONITOR_DEFAULTTONEAREST);
             monitorDevice = NativeMethods.MonitorDeviceOf(foreground);
 
-            // 前台属于某个组：先把组里被最小化的同伴恢复（不抢焦点）。
-            // 这样「切回组内任意一个窗口」时整组都会回到屏幕上。
+            // 前台属于某个组：先把组里「被本模式最小化」的同伴恢复（不抢焦点）。
+            // 用户手动最小化的场景窗口跳过：手动最小化是明确意图，不能马上弹回来。
             if (group > 0)
             {
                 foreach (var member in WindowEnumerator.Enumerate(includeMinimized: true))
@@ -169,6 +182,7 @@ public sealed class SingleWindowMode : IDisposable
                     if (groupOf(member.Handle) != group) continue;
                     if (NativeMethods.MonitorFromWindow(member.Handle, NativeMethods.MONITOR_DEFAULTTONEAREST) != monitor) continue;
                     if (!NativeMethods.IsIconic(member.Handle)) continue;
+                    if (!_selfMinimized.Remove(member.Handle.ToInt64())) continue;
                     NativeMethods.ShowNoActivate(member.Handle);
                 }
             }
@@ -192,7 +206,8 @@ public sealed class SingleWindowMode : IDisposable
                     continue;
                 }
 
-                NativeMethods.ShowWindow(candidate.Handle, NativeMethods.SW_MINIMIZE);
+                if (NativeMethods.ShowWindow(candidate.Handle, NativeMethods.SW_MINIMIZE))
+                    _selfMinimized.Add(candidate.Handle.ToInt64());
                 minimized++;
             }
         }
@@ -225,6 +240,7 @@ public sealed class SingleWindowMode : IDisposable
         if (_disposed) return;
         _disposed = true;
         _enabled = false;
+        _selfMinimized.Clear();
         _coalesce.Stop();
         if (_hook != IntPtr.Zero)
         {

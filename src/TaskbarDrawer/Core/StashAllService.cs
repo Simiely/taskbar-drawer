@@ -14,6 +14,9 @@ public sealed class StashGroup
 
     /// <summary>场景的名字（保存 / 重命名后同步到这里）。</summary>
     public string Name { get; set; }
+
+    /// <summary>场景标识（颜色 / 数字 / 位置）：展开期间会画在成员窗口图标的角上。</summary>
+    public SceneBadge Badge { get; set; } = SceneBadge.Default;
 }
 
 /// <summary>给托盘菜单 / 任务栏胶囊 / 主面板用的只读分组摘要。</summary>
@@ -35,6 +38,9 @@ public sealed class StashGroupSummary
     /// <summary>场景名字。</summary>
     public string Name { get; init; }
 
+    /// <summary>场景标识（颜色 / 数字 / 位置）。</summary>
+    public SceneBadge Badge { get; init; } = SceneBadge.Default;
+
     public string State => Expanded ? "已展开" : "已收起";
 }
 
@@ -46,9 +52,14 @@ public sealed class StashGroupSummary
 /// </summary>
 public sealed class StashAllService
 {
-    private readonly WindowStash _stash = new();
+    private readonly WindowStash _stash;
     private readonly List<StashGroup> _groups = new();
     private int _nextGroupId = 1;
+
+    public StashAllService(ISceneIconPainter icons = null)
+    {
+        _stash = new WindowStash(icons);
+    }
 
     /// <summary>下一次 ExpandNewest 从比它更旧的组开始选，实现多组轮转；按显示器各自独立。</summary>
     private readonly Dictionary<string, int> _rotateFrom = new(StringComparer.Ordinal);
@@ -78,7 +89,8 @@ public sealed class StashAllService
                     Expanded = items.Length > 0 && items.Any(i => !i.Hidden),
                     Titles = items.Select(i => i.Title).ToArray(),
                     SavedId = g.SavedId,
-                    Name = g.Name
+                    Name = g.Name,
+                    Badge = SceneBadge.Coerce(g.Badge)
                 };
             })
             .Where(g => g.Count > 0)
@@ -166,12 +178,16 @@ public sealed class StashAllService
     public string SavedIdOf(int groupId) => _groups.FirstOrDefault(g => g.Id == groupId)?.SavedId;
 
     /// <summary>保存后把运行时组和场景记关联起来：胶囊从此显示自定义名字。</summary>
-    public void LinkSaved(int groupId, string savedId, string name)
+    public void LinkSaved(int groupId, string savedId, string name, SceneBadge badge)
     {
         var group = _groups.FirstOrDefault(g => g.Id == groupId);
         if (group == null) return;
         group.SavedId = savedId;
         group.Name = name;
+        group.Badge = SceneBadge.Coerce(badge);
+        // 组的标识也可能在收起状态下改过：先把标识记到每个成员上，展开时直接生效。
+        foreach (var item in _stash.Items.Where(i => i.GroupId == groupId))
+            _stash.SetSceneIcon(item, group.Badge);
         Changed?.Invoke();
     }
 
@@ -188,11 +204,61 @@ public sealed class StashAllService
     }
 
     /// <summary>
+    /// 改场景标识：已经展开的成员窗口任务栏图标立刻重画；收起的成员等展开时再挂。
+    /// </summary>
+    public void SetBadge(string savedId, SceneBadge badge)
+    {
+        var normalized = SceneBadge.Coerce(badge);
+        bool changed = false;
+        foreach (var group in _groups.Where(g => g.SavedId == savedId))
+        {
+            group.Badge = normalized;
+            foreach (var item in _stash.Items.Where(i => i.GroupId == group.Id))
+                _stash.SetSceneIcon(item, normalized);
+            changed = true;
+        }
+        if (changed) Changed?.Invoke();
+    }
+
+    /// <summary>
+    /// 调色板换了颜色：运行时组的标识颜色一起换，已展开成员窗口的任务栏图标立即重画；
+    /// 恢复默认也走同一条路，映射一次性算好，避免链式替换。
+    /// </summary>
+    public int RemapBadgeColors(Func<string, string> remap)
+    {
+        if (remap == null) return 0;
+
+        int changed = 0;
+        foreach (var group in _groups)
+        {
+            if (group.Badge == null) continue;
+            string next = SceneBadge.NormalizeColor(remap(group.Badge.Color));
+            if (string.Equals(next, group.Badge.Color, StringComparison.OrdinalIgnoreCase)) continue;
+
+            group.Badge = new SceneBadge
+            {
+                Color = next,
+                Number = group.Badge.Number,
+                Right = group.Badge.Right
+            };
+            foreach (var item in _stash.Items.Where(i => i.GroupId == group.Id))
+                _stash.SetSceneIcon(item, group.Badge);
+            changed++;
+        }
+
+        if (changed > 0) Changed?.Invoke();
+        return changed;
+    }
+
+    /// <summary>图标尺寸参数变了：已展开窗口的合成图标按新尺寸重画。</summary>
+    public void RefreshSceneIcons() => _stash.RefreshSceneIcons();
+
+    /// <summary>
     /// 把从场景拉起的窗口接入运行时组（保持可见，不隐藏）。
     /// 这样打开后的组和普通场景一样：点胶囊收起 / 展开，而不是反复关掉再开。
     /// 窗口已属于别的组时不动它，避免拆散别的场景。
     /// </summary>
-    public bool Adopt(IntPtr hwnd, string savedId, string name)
+    public bool Adopt(IntPtr hwnd, string savedId, string name, SceneBadge badge)
     {
         if (hwnd == IntPtr.Zero) return false;
         _stash.Prune();
@@ -207,12 +273,15 @@ public sealed class StashAllService
                 Id = groupId,
                 CreatedAt = DateTime.Now,
                 SavedId = savedId,
-                Name = name
+                Name = name,
+                Badge = SceneBadge.Coerce(badge)
             });
         }
 
         var item = _stash.Capture(hwnd, groupId);
         if (item == null) return false;
+        // 展开中的场景窗口图标换成「场景标识 + 程序图标」，任务栏按钮一眼能看出属于哪个场景。
+        _stash.SetSceneIcon(item, _groups.First(g => g.Id == groupId).Badge);
         _stash.Track(item);
         Changed?.Invoke();
         return true;
@@ -266,6 +335,8 @@ public sealed class StashAllService
         int shown = 0;
         foreach (var item in _stash.Items.Where(i => i.GroupId == groupId && i.Hidden).ToArray())
         {
+            // 收起期间标识可能改过：展开前把当前标识记到成员上，Restore 会据此换窗口图标。
+            _stash.SetSceneIcon(item, group.Badge);
             if (_stash.Restore(item.Handle.ToInt64())) shown++;
         }
 
@@ -328,6 +399,9 @@ public sealed class StashAllService
         {
             if (_stash.Restore(item.Handle.ToInt64())) shown++;
         }
+        // 场景没了，场景图标也要跟着摘掉（对已可见窗口同样生效）。
+        foreach (var item in _stash.Items.Where(i => i.GroupId == groupId).ToArray())
+            _stash.ClearSceneIcon(item);
 
         _stash.RemoveGroup(groupId);
         _groups.Remove(group);
