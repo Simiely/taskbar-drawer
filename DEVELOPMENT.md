@@ -7,7 +7,7 @@
 
 - **做什么**：把一组窗口收进任务栏胶囊、原位展开；每次收纳都自动存成场景，关掉后还能按原位置拉起。
 - **不做什么**：不做窗口缩略图、不做虚拟桌面、不替换任务栏、不接管窗口管理（删除场景即完全交还系统）。
-- **状态**：v1.6.4，个人自用 + 开源；Win11 24H2。1.6.0 的按屏主路径已在双显示器上验证；1.6.1 单屏机 22 项实机验证全部通过（收纳 / 展开原位 / 快照带屏 / 回收即时落盘 / 500 ms 强杀恢复 / 二次启动唤起面板 / 稳态占用）。1.6.2 / 1.6.3 修复双屏下场景整组收起波及另一块屏、开关入口误清另一块屏的问题；1.6.4 修复提权重启时新实例被单实例互斥体挡掉的问题。跨屏行为以代码审查 + `DisplayRulesTests` 单测为准（本机单屏，未实机复测双屏）。
+- **状态**：v1.6.5，个人自用 + 开源；Win11 24H2。1.6.0 的按屏主路径已在双显示器上验证；1.6.1 单屏机 22 项实机验证全部通过（收纳 / 展开原位 / 快照带屏 / 回收即时落盘 / 500 ms 强杀恢复 / 二次启动唤起面板 / 稳态占用）。1.6.2 / 1.6.3 修复双屏下场景整组收起波及另一块屏、开关入口误清另一块屏的问题；1.6.4 修复提权重启时新实例被单实例互斥体挡掉的问题；1.6.5 修正副屏工作区坐标换算、同程序多窗口按标题配对，并加入按天滚动（保留 1 天）的诊断日志。跨屏行为以代码审查 + `DisplayRulesTests` 单测 + 用户回传的 `logs\app-*.log` 为准。
 - **约束**：Win11 不允许 DeskBand / 往任务栏塞子窗口，胶囊只能是自己画的 topmost 小窗。
 
 ## 二、架构说明
@@ -16,7 +16,7 @@
 
 - 命名 Mutex（`Local\TaskbarDrawer.SingleInstance`）保证单实例；第二个实例 `Set` 命名事件 `Local\TaskbarDrawer.ShowPanel`，由已运行实例唤起主面板。
 - `ShutdownMode.OnExplicitShutdown`：关面板 ≠ 退出，只能从托盘退出。
-- `Diagnostics`：全局 `DispatcherUnhandledException` → 记日志 → 退出；`RegisterRescue` 在崩溃时交还隐藏窗口；`--probe` 挂到父控制台只读打印候选窗口。
+- `Diagnostics`：默认写程序目录 `logs\app-yyyyMMdd.log`（按天分文件，启动与跨天时删除超过 1 天的旧日志；程序目录不可写时退回 `%LOCALAPPDATA%\TaskbarDrawer\logs`）。记录启动版本 / 显示器布局 / 提权状态、场景保存与还原的逐窗口匹配与摆位前后矩形、收纳 / 展开 / 单窗口决策、全局 `DispatcherUnhandledException` 与局部异常；`RegisterRescue` 在崩溃时交还隐藏窗口；`--probe` 挂到父控制台只读打印候选窗口。
 
 ### 2.2 分层
 
@@ -123,7 +123,8 @@
 
 ## 四、数据文件与调试
 
-- `%LOCALAPPDATA%\TaskbarDrawer\settings.json`、`saved-groups.json`、`recovery.json`、`logs\`
+- `%LOCALAPPDATA%\TaskbarDrawer\settings.json`、`saved-groups.json`、`recovery.json`
+- 诊断日志：程序目录 `logs\app-yyyyMMdd.log`（不可写时退回 `%LOCALAPPDATA%\TaskbarDrawer\logs`），保留最近 1 天
 - `--probe`：确认候选窗口集合（判断「为什么这个窗口没被收进去」）
 - `dotnet test tests/TaskbarDrawer.Tests`：规则引擎回归测试（默认手感 / 步数与深度护栏 / 目录约束）
 - 面板「场景」区块：点整行收起 / 展开；「关闭窗口」真关，「编辑」只改快照

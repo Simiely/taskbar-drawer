@@ -195,6 +195,22 @@ public static partial class NativeMethods
         return ok;
     }
 
+    /// <summary>全部显示器信息（诊断日志用）。</summary>
+    public static List<MONITORINFOEX> AllMonitors()
+    {
+        var list = new List<MONITORINFOEX>();
+        EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr mon, IntPtr hdc, ref RECT r, IntPtr data) =>
+        {
+            var mi = new MONITORINFOEX { cbSize = Marshal.SizeOf<MONITORINFOEX>() };
+            if (GetMonitorInfoW(mon, ref mi)) list.Add(mi);
+            return true;
+        }, IntPtr.Zero);
+        return list;
+    }
+
+    /// <summary>MONITORINFOF_PRIMARY：这块是不是主显示器。</summary>
+    public static bool IsPrimary(MONITORINFOEX monitor) => (monitor.dwFlags & 1) != 0;
+
     /// <summary>矩形最近的显示器（MONITOR_DEFAULTTONEAREST）：目标屏被拔掉时也不会返回空。</summary>
     public static bool TryGetMonitorOfRect(RECT rect, out MONITORINFOEX info)
     {
@@ -260,26 +276,30 @@ public static partial class NativeMethods
     }
 
     // ---------- 工作区坐标 ↔ 屏幕坐标 ----------
-    // WINDOWPLACEMENT.rcNormalPosition 用的是「工作区坐标」（原点 = 所在显示器工作区左上角）。
-    // 跨时刻保存的矩形必须先转成屏幕坐标，否则任务栏/AppBar 改变工作区原点时会整体平移。
+    // WINDOWPLACEMENT.rcNormalPosition 用的是「工作区坐标」：Windows 只扣掉本显示器上
+    // 任务栏 / AppBar 占掉的那一条（rcWork - rcMonitor），<b>不会</b>扣掉显示器在虚拟桌面里的原点。
+    // 早先按「绝对工作区原点」换算（加了显示器原点），副屏上的矩形会整体平移一整块屏宽，
+    // 还原时表现为「窗口跑到另一块屏 / 贴边」——1.6.5 修正为任务栏偏移量。
+    // 参考：JDK awt_Frame.cpp 的 SetWindowPlacement 换算 x - (rcWork.left - rcMonitor.left)。
 
-    public static POINT WorkOriginOfWindow(IntPtr hwnd)
+    /// <summary>窗口所在显示器的任务栏偏移量（rcWork - rcMonitor），用来在屏幕坐标与工作区坐标间换算。</summary>
+    public static POINT WorkspaceOffsetOfWindow(IntPtr hwnd)
         => TryGetMonitorOfWindow(hwnd, out var info)
-            ? new POINT { X = info.rcWork.Left, Y = info.rcWork.Top }
+            ? new POINT { X = info.rcWork.Left - info.rcMonitor.Left, Y = info.rcWork.Top - info.rcMonitor.Top }
             : default;
 
     /// <summary>
-    /// 按设备名找显示器的工作区原点（隐藏窗口的矩形是哨兵值，不能按窗口位置反查）。
+    /// 按设备名找显示器的任务栏偏移量（隐藏窗口的矩形是哨兵值，不能按窗口位置反查）。
     /// 显示器被拔掉 / 设备名变化时退回「目标矩形最近的显示器」，保证换算与
     /// DisplayRules.EnsureVisible 用的是同一块屏。
     /// </summary>
-    public static POINT WorkOriginOfDevice(string device, RECT fallbackRect)
+    public static POINT WorkspaceOffsetOfDevice(string device, RECT fallbackRect)
     {
         if (TryGetMonitorOfDevice(device, out var info))
-            return new POINT { X = info.rcWork.Left, Y = info.rcWork.Top };
+            return new POINT { X = info.rcWork.Left - info.rcMonitor.Left, Y = info.rcWork.Top - info.rcMonitor.Top };
 
         if (TryGetMonitorOfRect(fallbackRect, out var nearest))
-            return new POINT { X = nearest.rcWork.Left, Y = nearest.rcWork.Top };
+            return new POINT { X = nearest.rcWork.Left - nearest.rcMonitor.Left, Y = nearest.rcWork.Top - nearest.rcMonitor.Top };
 
         Diagnostics.Write("window placement", new InvalidOperationException(
             $"找不到保存的显示器 {device ?? "(未记录)"}，按 (0,0) 换算"));

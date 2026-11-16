@@ -61,7 +61,8 @@ dotnet publish src/TaskbarDrawer/TaskbarDrawer.csproj -c Release -r win-x64 `
 | `settings.json` | 热键、面板位置、单窗口模式、开机自启 |
 | `saved-groups.json` | 场景：软件路径 + 窗口位置 |
 | `recovery.json` | 当前被隐藏的窗口，异常退出后下次启动自动救回 |
-| `logs\` | 崩溃与局部异常日志，滚动保留 10 份 |
+
+诊断日志默认写在**程序所在目录**的 `logs\app-yyyyMMdd.log`（按天分文件、自动删除超过 1 天的旧日志）；程序目录不可写时退回 `%LOCALAPPDATA%\TaskbarDrawer\logs`。排查「窗口位置不对」时直接提供当天这个文件即可。
 
 删掉整个目录即可恢复出厂设置。
 

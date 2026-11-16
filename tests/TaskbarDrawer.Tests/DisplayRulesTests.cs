@@ -112,4 +112,90 @@ public class DisplayRulesTests
         Assert.Null(DisplayRules.MonitorOf(window));
         Assert.Null(DisplayRules.MonitorOf(Array.Empty<SavedWindow>()));
     }
+
+    [Fact]
+    public void PickRestoreCandidate_Prefers_Same_Title_On_Target_Screen()
+    {
+        // 同程序两个窗口：枚举顺序是 B、A，保存项要 A。旧实现取第一个，会把 A 摆到 B 的位置。
+        var candidates = new[]
+        {
+            Candidate(1, "B", @"\\.\DISPLAY1", 1920, 0),
+            Candidate(2, "A", @"\\.\DISPLAY1", 0, 0)
+        };
+        var saved = Saved("A", @"\\.\DISPLAY1", 0, 0, 900, 700);
+
+        Assert.Equal(1, DisplayRules.PickRestoreCandidate(candidates, saved));
+    }
+
+    [Fact]
+    public void PickRestoreCandidate_Moves_Title_Match_Back_From_Other_Screen()
+    {
+        // 程序重启后系统把窗口开在主屏：标题相同就认它，按屏过滤会得到「没有窗口可摆」。
+        var candidates = new[] { Candidate(7, "A", @"\\.\DISPLAY1", 100, 100) };
+        var saved = Saved("A", @"\\.\DISPLAY2", 2100, 100, 900, 700);
+
+        Assert.Equal(0, DisplayRules.PickRestoreCandidate(candidates, saved));
+    }
+
+    [Fact]
+    public void PickRestoreCandidate_Falls_Back_To_Nearest_Rect()
+    {
+        var candidates = new[]
+        {
+            Candidate(1, "别的标题", @"\\.\DISPLAY2", 3000, 500),
+            Candidate(2, "另一个标题", @"\\.\DISPLAY2", 2200, 120)
+        };
+        var saved = Saved("期望标题", @"\\.\DISPLAY2", 2100, 100, 900, 700);
+
+        Assert.Equal(1, DisplayRules.PickRestoreCandidate(candidates, saved));
+        Assert.Equal(-1, DisplayRules.PickRestoreCandidate(Array.Empty<DisplayRules.RestoreCandidate>(), saved));
+    }
+
+    private static DisplayRules.RestoreCandidate Candidate(
+        long handle, string title, string device, int left, int top)
+        => new()
+        {
+            Handle = handle,
+            Title = title,
+            MonitorDevice = device,
+            Rect = Rect(left, top, 900, 700)
+        };
+
+    private static SavedWindow Saved(string title, string device, int left, int top, int width, int height)
+        => new()
+        {
+            Title = title,
+            MonitorDevice = device,
+            Left = left,
+            Top = top,
+            Width = width,
+            Height = height
+        };
+
+    [Fact]
+    public void TryRepairLegacyRect_Fixes_Secondary_Monitor_Offset()
+    {
+        // 1.6.4 及更早：副屏矩形被多加了一次显示器原点。旧数据 (4020,100)-(5020,800)
+        // 其实是副屏上的 (2100,100)-(3100,800)。
+        var bounds = Rect(1920, 0, 1920, 1080);
+        var legacy = Rect(4020, 100, 1000, 700);
+
+        Assert.True(DisplayRules.TryRepairLegacyRect(legacy, bounds, bounds, out var repaired));
+        Assert.Equal(Rect(2100, 100, 1000, 700), repaired);
+    }
+
+    [Fact]
+    public void TryRepairLegacyRect_Leaves_Valid_Secondary_Rect_Alone()
+    {
+        var bounds = Rect(1920, 0, 1920, 1080);
+        Assert.False(DisplayRules.TryRepairLegacyRect(Rect(2100, 100, 1000, 700), bounds, bounds, out _));
+    }
+
+    [Fact]
+    public void TryRepairLegacyRect_Does_Not_Touch_Primary_Monitor_Rects()
+    {
+        // 主屏原点为 (0,0)，旧数据本来就是对的：任何合法矩形都不能被搬走。
+        var bounds = Rect(0, 0, 1920, 1080);
+        Assert.False(DisplayRules.TryRepairLegacyRect(Rect(100, 100, 900, 700), bounds, bounds, out _));
+    }
 }

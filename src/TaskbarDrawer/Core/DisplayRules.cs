@@ -97,4 +97,94 @@ public static class DisplayRules
         }
         return null;
     }
+
+    /// <summary>
+    /// 还原时的候选窗口（同程序、可见、未被其它场景占用）。只带匹配所需字段。
+    /// </summary>
+    public sealed class RestoreCandidate
+    {
+        public long Handle { get; init; }
+        public string Title { get; init; }
+        public string MonitorDevice { get; init; }
+        public NativeMethods.RECT Rect { get; init; }
+    }
+
+    /// <summary>
+    /// 从同程序的候选窗口里挑出「最像保存项」的那个，返回下标（-1 = 没有候选）。
+    /// 优先级：同屏 + 同名 → 同名（标题相同就是那个窗口，即使开在别的屏也要挪回去）
+    /// → 同屏最近 → 任意屏最近。旧实现按枚举顺序取第一个，同程序多窗口会互相换位。
+    /// </summary>
+    public static int PickRestoreCandidate(IReadOnlyList<RestoreCandidate> candidates, SavedWindow saved)
+    {
+        if (candidates == null || candidates.Count == 0 || saved == null) return -1;
+
+        string device = MonitorOf(saved);
+        string title = saved.Title?.Trim();
+        var savedRect = NativeMethods.RECT.FromLTRB(
+            saved.Left, saved.Top, saved.Left + saved.Width, saved.Top + saved.Height);
+
+        int best = -1;
+        long bestDistance = long.MaxValue;
+
+        // 1) 同屏 + 同名；2) 同名（跨屏也算：程序重启后系统常把它开在主屏）。
+        for (int pass = 0; pass < 2; pass++)
+        {
+            if (string.IsNullOrEmpty(title)) break;
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                var candidate = candidates[i];
+                if (!string.Equals(candidate.Title?.Trim(), title, StringComparison.OrdinalIgnoreCase)) continue;
+                if (pass == 0 && !BelongsTo(device, candidate.MonitorDevice)) continue;
+                return i;
+            }
+        }
+
+        // 3) 同屏最近；4) 任意屏最近。
+        for (int pass = 0; pass < 2; pass++)
+        {
+            best = -1;
+            bestDistance = long.MaxValue;
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                var candidate = candidates[i];
+                if (pass == 0 && !BelongsTo(device, candidate.MonitorDevice)) continue;
+                long distance = RectDistance(candidate.Rect, savedRect);
+                if (distance >= bestDistance) continue;
+                best = i;
+                bestDistance = distance;
+            }
+            if (best >= 0) return best;
+        }
+
+        return -1;
+    }
+
+    private static long RectDistance(NativeMethods.RECT a, NativeMethods.RECT b)
+        => Math.Abs((long)a.Left - b.Left) + Math.Abs((long)a.Top - b.Top) +
+           Math.Abs((long)a.Width - b.Width) + Math.Abs((long)a.Height - b.Height);
+
+    /// <summary>
+    /// 1.6.4 及更早版本把「绝对工作区原点」当成了 WINDOWPLACEMENT 的工作区坐标，
+    /// 副屏上的保存矩形被多加了一次显示器原点（主屏原点为 0，所以只有副屏中招）。
+    /// 修复判据：保存矩形完全不在记录的显示器上，而减去显示器原点后能落回该显示器。
+    /// 主屏（原点 0）的旧数据本来就正确，这里不会误改。
+    /// </summary>
+    public static bool TryRepairLegacyRect(
+        NativeMethods.RECT saved, NativeMethods.RECT monitorBounds, NativeMethods.RECT monitorWork,
+        out NativeMethods.RECT repaired)
+    {
+        repaired = saved;
+        if (saved.IsEmpty || monitorBounds.IsEmpty) return false;
+
+        // 现在就在记录的显示器上：可能是新版数据，也可能是旧版主屏数据，都不能动。
+        if (VisibleRatio(saved, monitorBounds) >= MinVisibleRatio) return false;
+
+        var shifted = NativeMethods.RECT.FromLTRB(
+            saved.Left - monitorBounds.Left, saved.Top - monitorBounds.Top,
+            saved.Right - monitorBounds.Left, saved.Bottom - monitorBounds.Top);
+        if (VisibleRatio(shifted, monitorWork) < MinVisibleRatio) return false;
+
+        repaired = shifted;
+        return true;
+    }
 }

@@ -29,6 +29,42 @@ public sealed class WorkspaceService
     {
         _groups = SavedGroupStore.Load(out string warning);
         LoadWarning = warning;
+
+        // 1.6.4 及更早保存的副屏矩形多算了一次显示器原点（详见 DisplayRules.TryRepairLegacyRect）。
+        // 升级后第一次启动就把这些场景修好，用户不用把每个场景重新存一遍。
+        int repaired = RepairLegacyRects();
+        Diagnostics.Info("scene", $"加载场景 {_groups.Count} 个，修复旧版副屏坐标 {repaired} 个窗口");
+        if (repaired > 0) Persist();
+    }
+
+    /// <summary>把旧版本保存的副屏矩形换算回屏幕坐标；返回修复条数。</summary>
+    private int RepairLegacyRects()
+    {
+        int repaired = 0;
+        foreach (var group in _groups)
+        {
+            foreach (var window in group.Windows)
+            {
+                if (string.IsNullOrEmpty(window.MonitorDevice)) continue;
+                if (window.Width <= 0 || window.Height <= 0) continue;
+                if (!NativeMethods.TryGetMonitorOfDevice(window.MonitorDevice, out var monitor)) continue;
+
+                var saved = NativeMethods.RECT.FromLTRB(
+                    window.Left, window.Top, window.Left + window.Width, window.Top + window.Height);
+                if (!DisplayRules.TryRepairLegacyRect(saved, monitor.rcMonitor, monitor.rcWork, out var fixedRect))
+                    continue;
+
+                window.Left = fixedRect.Left;
+                window.Top = fixedRect.Top;
+                window.Width = fixedRect.Width;
+                window.Height = fixedRect.Height;
+                repaired++;
+                Diagnostics.Info("scene",
+                    $"旧坐标修复 scene={group.Name} exe={Path.GetFileName(window.ExePath)} " +
+                    $"「{Brief(window.Title)}」 {saved} → {fixedRect} device={window.MonitorDevice}");
+            }
+        }
+        return repaired;
     }
 
     /// <summary>落盘失败：场景仍在内存里可用，但重启后会丢，必须让用户知道。</summary>
@@ -229,45 +265,78 @@ public sealed class WorkspaceService
         int busy = 0;
         int failed = 0;
 
+        Diagnostics.Info("scene",
+            $"还原开始 scene={group.Name}({group.Id}) windows={group.Windows.Count} 已被其它场景管理={excluded?.Count ?? 0}");
+
         foreach (var saved in group.Windows)
         {
             string exe = Normalize(saved.ExePath);
             if (exe == null) continue;
 
-            // 快照里记了屏幕：只接管同一块屏上的窗口，另一块屏的同程序窗口不动。
-            // 那块屏已经拔掉时不再按屏限制，否则用户会看到「程序都没找到」。
             string expectedDevice = DisplayRules.MonitorOf(saved);
             bool deviceExists = expectedDevice == null ||
                                 NativeMethods.TryGetMonitorOfDevice(expectedDevice, out _);
+            Diagnostics.Info("scene",
+                $"保存项 exe={Path.GetFileName(saved.ExePath)} 「{Brief(saved.Title)}」 " +
+                $"device={expectedDevice ?? "(未记录)"} 屏存在={deviceExists} " +
+                $"rect=({saved.Left},{saved.Top},{saved.Left + saved.Width},{saved.Top + saved.Height}) " +
+                $"max={saved.Maximized}");
 
-            bool SameExe(TopWindow w) =>
-                w.Visible && w.Title.Length > 0 && !w.ToolWindow && Normalize(w.Path) == exe;
-
-            bool OnTargetScreen(TopWindow w) =>
-                !deviceExists || NativeMethods.MonitorDeviceOf(w.Handle) == expectedDevice;
-
-            var match = windows.FirstOrDefault(w =>
-                SameExe(w) && OnTargetScreen(w) &&
-                !used.Contains(w.Handle.ToInt64()) &&
-                (excluded == null || !excluded.Contains(w.Handle.ToInt64())));
-            if (match != null)
+            // 同程序的可见候选窗口：排除本轮已经用掉的、以及属于其它场景的。
+            // 不再要求「必须和保存时同一块屏」：程序重启后系统通常把窗口开在主屏，
+            // 按屏过滤只会得到 busy、用户看到「位置没恢复」；现在会把它挪回保存屏。
+            var sameExe = windows
+                .Where(w => w.Visible && w.Title.Length > 0 && !w.ToolWindow && Normalize(w.Path) == exe)
+                .ToArray();
+            var candidates = new List<DisplayRules.RestoreCandidate>();
+            foreach (var window in sameExe)
             {
-                ApplyPlacement(match.Handle, saved);
-                used.Add(match.Handle.ToInt64());
-                if (adopt == null || adopt(match.Handle)) moved++;
-                else failed++;
+                long handle = window.Handle.ToInt64();
+                if (used.Contains(handle)) continue;
+                if (excluded != null && excluded.Contains(handle)) continue;
+
+                NativeMethods.GetWindowRect(window.Handle, out var rect);
+                candidates.Add(new DisplayRules.RestoreCandidate
+                {
+                    Handle = handle,
+                    Title = window.Title,
+                    MonitorDevice = NativeMethods.MonitorDeviceOf(window.Handle),
+                    Rect = rect
+                });
+            }
+
+            if (candidates.Count > 0)
+            {
+                Diagnostics.Info("scene", "  候选 " + string.Join("; ", candidates.Select(c =>
+                    $"0x{c.Handle:X}「{Brief(c.Title)}」{c.MonitorDevice} {c.Rect}")));
+            }
+
+            int index = DisplayRules.PickRestoreCandidate(candidates, saved);
+            if (index >= 0)
+            {
+                var match = candidates[index];
+                var hwnd = new IntPtr(match.Handle);
+                Diagnostics.Info("scene", $"  → 匹配 0x{match.Handle:X}「{Brief(match.Title)}」");
+                ApplyPlacement(hwnd, saved);
+                used.Add(match.Handle);
+                if (adopt == null || adopt(hwnd)) moved++;
+                else
+                {
+                    failed++;
+                    Diagnostics.Info("scene", "  → 接入运行时组失败（可能已属于别的场景）");
+                }
                 continue;
             }
 
-            // 同类窗口存在，但已经在别的场景里，或只在另一块屏幕上：
-            // 既不能挪它（会破坏别人的窗口位置），也不能再启动一个副本。
-            if (windows.Any(w => SameExe(w) &&
-                    ((excluded != null && excluded.Contains(w.Handle.ToInt64())) || !OnTargetScreen(w))))
+            // 同程序窗口存在，但全被其它场景管理：既不能挪，也不能再开一个副本。
+            if (sameExe.Any(w => excluded != null && excluded.Contains(w.Handle.ToInt64())))
             {
                 busy++;
+                Diagnostics.Info("scene", "  → busy：同程序窗口已在其它场景");
                 continue;
             }
 
+            Diagnostics.Info("scene", "  → 没有可接管的窗口，准备启动程序");
             pending.Add(saved);
         }
 
@@ -278,6 +347,8 @@ public sealed class WorkspaceService
         else
             onComplete?.Invoke();
 
+        Diagnostics.Info("scene",
+            $"还原结束 scene={group.Name} 已摆位={moved} 启动={launchedPending.Count} 跳过={busy} 失败={failed}");
         return (moved, launchedPending.Count, busy, failed);
     }
 
@@ -323,6 +394,9 @@ public sealed class WorkspaceService
                 MonitorDevice = item.MonitorDevice,
                 Maximized = item.Maximized
             });
+            Diagnostics.Info("scene",
+                $"保存窗口 hwnd=0x{item.Handle.ToInt64():X} exe={Path.GetFileName(item.ProcessPath)} " +
+                $"「{Brief(item.Title)}」 device={item.MonitorDevice} rect={rect} max={item.Maximized}");
         }
         return windows;
     }
@@ -333,10 +407,14 @@ public sealed class WorkspaceService
     {
         Task.Run(() =>
         {
+            var startedAt = DateTime.UtcNow;
             try
             {
                 var remaining = new List<SavedWindow>(pending);
                 var deadline = DateTime.UtcNow.AddSeconds(12);
+                Diagnostics.Info("scene", $"等待新窗口 pending={remaining.Count}: " +
+                    string.Join("; ", remaining.Select(s =>
+                        $"{Path.GetFileName(s.ExePath)}「{Brief(s.Title)}」device={DisplayRules.MonitorOf(s) ?? "(未记录)"}")));
 
                 while (remaining.Count > 0 && DateTime.UtcNow < deadline)
                 {
@@ -354,16 +432,44 @@ public sealed class WorkspaceService
 
                         // 刚启动的窗口一律接管：系统通常把它开在主屏，不能按保存的屏幕过滤，
                         // 否则等待项永远匹配不上（摆位后窗口会被移到保存的那块屏）。
-                        var match = windows.FirstOrDefault(w =>
-                            w.Visible && w.Title.Length > 0 && !w.ToolWindow &&
-                            !known.Contains(w.Handle.ToInt64()) && Normalize(w.Path) == exe);
-                        if (match == null) continue;
+                        // 同程序可能同时出现多个窗口，按标题优先匹配，避免按枚举顺序互相换位。
+                        var candidates = new List<DisplayRules.RestoreCandidate>();
+                        foreach (var window in windows)
+                        {
+                            if (!window.Visible || window.Title.Length == 0 || window.ToolWindow) continue;
+                            if (known.Contains(window.Handle.ToInt64())) continue;
+                            if (Normalize(window.Path) != exe) continue;
 
-                        ApplyPlacement(match.Handle, saved);
-                        known.Add(match.Handle.ToInt64());
-                        onWindowReady?.Invoke(match.Handle);
+                            NativeMethods.GetWindowRect(window.Handle, out var rect);
+                            candidates.Add(new DisplayRules.RestoreCandidate
+                            {
+                                Handle = window.Handle.ToInt64(),
+                                Title = window.Title,
+                                MonitorDevice = NativeMethods.MonitorDeviceOf(window.Handle),
+                                Rect = rect
+                            });
+                        }
+
+                        int index = DisplayRules.PickRestoreCandidate(candidates, saved);
+                        if (index < 0) continue;
+
+                        var match = candidates[index];
+                        var hwnd = new IntPtr(match.Handle);
+                        Diagnostics.Info("scene",
+                            $"  新窗口出现 0x{match.Handle:X}「{Brief(match.Title)}」device={match.MonitorDevice} " +
+                            $"← 保存项「{Brief(saved.Title)}」");
+                        ApplyPlacement(hwnd, saved);
+                        known.Add(match.Handle);
+                        onWindowReady?.Invoke(hwnd);
                         remaining.Remove(saved);
                     }
+                }
+
+                foreach (var left in remaining)
+                {
+                    Diagnostics.Info("scene",
+                        $"  等待超时 {Math.Round((DateTime.UtcNow - startedAt).TotalSeconds, 1)}s " +
+                        $"exe={Path.GetFileName(left.ExePath)}「{Brief(left.Title)}」");
                 }
             }
             finally
@@ -396,16 +502,27 @@ public sealed class WorkspaceService
     {
         if (hwnd == IntPtr.Zero || !NativeMethods.IsWindow(hwnd)) return;
 
+        NativeMethods.GetWindowRect(hwnd, out var before);
+        string deviceBefore = NativeMethods.MonitorDeviceOf(hwnd);
+
         NativeMethods.ShowWindow(hwnd, NativeMethods.SW_RESTORE);
+        var target = NativeMethods.RECT.FromLTRB(
+            saved.Left, saved.Top, saved.Left + saved.Width, saved.Top + saved.Height);
         if (saved.Width > 0 && saved.Height > 0)
         {
             // 目标屏可能已经拔掉 / 分辨率变了：先夹回最近的工作区，否则窗口会落在屏幕外。
-            var rect = DisplayRules.EnsureVisible(NativeMethods.RECT.FromLTRB(
-                saved.Left, saved.Top, saved.Left + saved.Width, saved.Top + saved.Height));
-            NativeMethods.SetWindowPos(hwnd, IntPtr.Zero, rect.Left, rect.Top, rect.Width, rect.Height,
+            target = DisplayRules.EnsureVisible(target);
+            NativeMethods.SetWindowPos(hwnd, IntPtr.Zero, target.Left, target.Top, target.Width, target.Height,
                 NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
         }
         if (saved.Maximized) NativeMethods.ShowWindow(hwnd, NativeMethods.SW_SHOWMAXIMIZED);
+
+        NativeMethods.GetWindowRect(hwnd, out var after);
+        Diagnostics.Info("scene",
+            $"摆位 hwnd=0x{hwnd.ToInt64():X} 「{Brief(saved.Title)}」 saved=({saved.Left},{saved.Top}," +
+            $"{saved.Left + saved.Width},{saved.Top + saved.Height}) target={target} " +
+            $"before={before}({deviceBefore ?? "?"}) after={after}({NativeMethods.MonitorDeviceOf(hwnd) ?? "?"}) " +
+            $"max={saved.Maximized}");
     }
 
     /// <summary>已关闭场景属于哪块屏幕：按快照里记录的显示器判断（旧快照退回矩形推断）。</summary>
@@ -458,6 +575,10 @@ public sealed class WorkspaceService
 
     private static string Normalize(string path)
         => string.IsNullOrWhiteSpace(path) ? null : path.Replace('\\', '/').ToLowerInvariant();
+
+    /// <summary>日志里的标题截断：完整标题可能很长，前 40 字足够认出窗口。</summary>
+    private static string Brief(string title)
+        => string.IsNullOrEmpty(title) ? "" : title.Length <= 40 ? title : title[..40] + "…";
 }
 
 /// <summary>从场景移除一个窗口的结果；错误文案可直接展示给用户。</summary>

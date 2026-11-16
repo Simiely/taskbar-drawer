@@ -104,9 +104,12 @@ public sealed class SingleWindowMode : IDisposable
 
         if (target == null)
         {
+            Diagnostics.Info("single", $"开关应用：鼠标所在屏 {monitor ?? "(未知)"} 没有可接管窗口");
             NoCandidateOnScreen?.Invoke();
             return;
         }
+        Diagnostics.Info("single",
+            $"开关应用：鼠标屏={monitor ?? "(未知)"} 目标=0x{target.Handle.ToInt64():X}「{target.Title}」");
         Apply(target.Handle);
     }
 
@@ -144,6 +147,7 @@ public sealed class SingleWindowMode : IDisposable
 
         int minimized = 0;
         int collapsedCount = 0;
+        string monitorDevice = null;
         _applying = true;
         try
         {
@@ -153,7 +157,7 @@ public sealed class SingleWindowMode : IDisposable
             // 多显示器：单窗口模式只管前台所在的那块屏幕——在哪块屏操作，就只影响哪块屏，
             // 另一块屏上的窗口保持原样。
             IntPtr monitor = NativeMethods.MonitorFromWindow(foreground, NativeMethods.MONITOR_DEFAULTTONEAREST);
-            string monitorDevice = NativeMethods.MonitorDeviceOf(foreground);
+            monitorDevice = NativeMethods.MonitorDeviceOf(foreground);
 
             // 前台属于某个组：先把组里被最小化的同伴恢复（不抢焦点）。
             // 这样「切回组内任意一个窗口」时整组都会回到屏幕上。
@@ -197,6 +201,12 @@ public sealed class SingleWindowMode : IDisposable
             _applying = false;
         }
 
+        if (minimized + collapsedCount > 0)
+        {
+            Diagnostics.Info("single",
+                $"应用 前台=0x{foreground.ToInt64():X} screen={monitorDevice ?? "(未知)"} " +
+                $"最小化={minimized} 收回场景={collapsedCount}");
+        }
         if (minimized + collapsedCount > 0) Applied?.Invoke(minimized + collapsedCount);
     }
 

@@ -137,6 +137,8 @@ public sealed class StashAllService
                 : IntPtr.Zero
         });
         groupId = newGroupId;
+        Diagnostics.Info("scene",
+            $"收纳新场景 group={newGroupId} screen={monitorDevice} 收起={hidden} 管理员跳过={LastBlockedByElevation}");
         Changed?.Invoke();
         return hidden;
     }
@@ -271,6 +273,8 @@ public sealed class StashAllService
             WindowActivator.Activate(group.ForegroundBefore);
 
         if (shown > 0) Changed?.Invoke();
+        Diagnostics.Info("scene",
+            $"展开 group={groupId}「{group.Name}」 screen={NativeMethods.MonitorDeviceOfCursor()} 个数={shown}");
         return shown;
     }
 
@@ -294,6 +298,11 @@ public sealed class StashAllService
         }
 
         if (hidden > 0) Changed?.Invoke();
+        if (hidden > 0 || !string.IsNullOrEmpty(monitorDevice))
+        {
+            Diagnostics.Info("scene",
+                $"收起 group={groupId}「{group.Name}」 screen={monitorDevice ?? "(整组)"} 个数={hidden}");
+        }
         return hidden;
     }
 

@@ -107,6 +107,9 @@ public sealed class WindowStash
         item.RestoreRequestedAt = default;
         item.StashedAt = DateTime.UtcNow;
         _items[item.Handle.ToInt64()] = item;
+        Diagnostics.Info("stash",
+            $"收起 hwnd=0x{item.Handle.ToInt64():X} 「{Brief(item.Title)}」 device={item.MonitorDevice} " +
+            $"rect={item.Placement.rcNormalPosition} max={item.Maximized}");
         return true;
     }
 
@@ -124,6 +127,9 @@ public sealed class WindowStash
         item.Hidden = true;
         item.RestoreRequestedAt = default;
         item.StashedAt = DateTime.UtcNow;
+        Diagnostics.Info("stash",
+            $"再收起 hwnd=0x{item.Handle.ToInt64():X} 「{Brief(item.Title)}」 device={item.MonitorDevice} " +
+            $"rect={item.Placement.rcNormalPosition} max={item.Maximized}");
         return true;
     }
 
@@ -151,9 +157,10 @@ public sealed class WindowStash
             placement.showCmd = item.Maximized
                 ? NativeMethods.SW_SHOWMAXIMIZED
                 : NativeMethods.SW_SHOWNORMAL;
-            // 保存的是屏幕坐标，SetWindowPlacement 要的是工作区坐标：按目标矩形所在显示器的工作区原点换算。
+            // 保存的是屏幕坐标，SetWindowPlacement 要的是工作区坐标：按目标矩形所在显示器的
+            // 任务栏偏移量换算（不是绝对工作区原点，否则副屏会整体平移一整块屏宽）。
             placement.rcNormalPosition = NativeMethods.ToWorkspaceCoordinates(
-                target, NativeMethods.WorkOriginOfDevice(item.MonitorDevice, target));
+                target, NativeMethods.WorkspaceOffsetOfDevice(item.MonitorDevice, target));
             NativeMethods.SetWindowPlacement(item.Handle, ref placement);
         }
 
@@ -162,6 +169,7 @@ public sealed class WindowStash
         item.RestoreRequestedAt = DateTime.UtcNow;
 
         // 个别应用会在 ShowWindow 后重排布局；再按保存的窗口矩形校正一次，确保「原位回去」。
+        bool corrected = false;
         if (!item.Maximized && !target.IsEmpty)
         {
             NativeMethods.GetWindowRect(item.Handle, out var now);
@@ -170,8 +178,14 @@ public sealed class WindowStash
             {
                 NativeMethods.SetWindowPos(item.Handle, IntPtr.Zero, target.Left, target.Top,
                     target.Width, target.Height, NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
+                corrected = true;
             }
         }
+
+        NativeMethods.GetWindowRect(item.Handle, out var actual);
+        Diagnostics.Info("stash",
+            $"展开 hwnd=0x{item.Handle.ToInt64():X} 「{Brief(item.Title)}」 device={item.MonitorDevice} " +
+            $"target={target} actual={actual} max={item.Maximized} corrected={corrected}");
 
         item.Hidden = false;
         return true;
@@ -261,6 +275,10 @@ public sealed class WindowStash
     /// <summary>收进之后多久才承认「窗口又回到屏幕上了」（留给异步 ShowWindow 落地）。</summary>
     private static readonly long PruneGraceTicks = TimeSpan.FromMilliseconds(700).Ticks;
 
+    /// <summary>日志里的标题截断：完整标题可能很长，前 40 字足够认出窗口。</summary>
+    private static string Brief(string title)
+        => string.IsNullOrEmpty(title) ? "" : title.Length <= 40 ? title : title[..40] + "…";
+
     private static void RefreshPlacement(StashedWindow item)
     {
         var placement = new NativeMethods.WINDOWPLACEMENT
@@ -270,9 +288,10 @@ public sealed class WindowStash
         bool hasPlacement = NativeMethods.GetWindowPlacement(item.Handle, ref placement);
         // rcNormalPosition 用的是「工作区坐标」，窗口矩形是屏幕坐标。任务栏位置 / DPI 变化后
         // 工作区原点会变，直接把 rcNormal 存下来再写回去会整体平移，所以统一转成屏幕坐标保存。
+        // 换算只扣任务栏偏移量（rcWork - rcMonitor），不能加显示器在虚拟桌面里的原点。
         if (hasPlacement)
             placement.rcNormalPosition = NativeMethods.ToScreenCoordinates(
-                placement.rcNormalPosition, NativeMethods.WorkOriginOfWindow(item.Handle));
+                placement.rcNormalPosition, NativeMethods.WorkspaceOffsetOfWindow(item.Handle));
 
         item.Placement = placement;
         item.Maximized = NativeMethods.IsZoomed(item.Handle) ||
