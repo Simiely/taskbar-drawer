@@ -19,7 +19,7 @@ related: []
 
 ## 当前状态
 
-- 版本 **1.6.7**，main 最新提交 `ece668fa`（2026-11-16 17:51）
+- 版本 **1.6.7**，main 最新提交 `51f3bfa`（2026-11-16 18:12，本页随该提交入库）
 - 本轮已完成：场景标识改为彩色圆点 / 数字（可选 1–9、左上 / 右上）；8 个色块可右键改成任意颜色 + 「恢复默认」；第八色由灰改黑；图标 / 标识尺寸默认 90% / 55% 且两个滑块并排一行；`settings.json` 升到 v4
 - 验证结果：`dotnet build` 0 警告 0 错误；`dotnet test` 71 项全过；`check_repo.py` PASS；远端 tree 与发布副本逐 blob 比对零差异
 - 主线一句话：`AppShell` 是组合根，收纳走 `StashAllService`（运行时组），快照走 `WorkspaceService`，两者靠 `SavedGroup.Id` / `StashGroup.SavedId` 关联；窗口隐藏与图标装饰在 `WindowStash`
