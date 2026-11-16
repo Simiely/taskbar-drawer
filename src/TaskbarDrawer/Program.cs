@@ -25,28 +25,52 @@ public static class Program
 
         Diagnostics.Init();
 
-        using var mutex = new Mutex(true, MutexName, out bool createdNew);
+        // 「以管理员身份重启」时旧实例还没退干净：等它释放单实例互斥体再接管。
+        // 否则新实例会把自己当成「第二次启动」，唤起旧实例后自己退出，看起来像重启失败。
+        bool elevatedRestart = first is "--elevated-restart";
+        var mutex = AcquireSingleInstance(elevatedRestart, out bool createdNew);
         if (!createdNew)
         {
+            mutex?.Dispose();
             AttachConsoleForOutput();
             Console.WriteLine("任务栏收纳已在运行，已唤起主面板。");
             SignalExistingInstance();
             return 0;
         }
 
-        // 常驻程序：只在托盘 + 任务栏小条里出现，主线程跑 WPF 消息循环。
-        var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
-        var shell = new AppShell();
-        Diagnostics.RegisterRescue(shell.EmergencyRelease);
-        app.DispatcherUnhandledException += (_, e) =>
+        using (mutex)
         {
-            Diagnostics.HandleDispatcherException(e.Exception);
-            e.Handled = true;
-            Environment.Exit(1);
-        };
+            // 常驻程序：只在托盘 + 任务栏小条里出现，主线程跑 WPF 消息循环。
+            var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+            var shell = new AppShell();
+            Diagnostics.RegisterRescue(shell.EmergencyRelease);
+            app.DispatcherUnhandledException += (_, e) =>
+            {
+                Diagnostics.HandleDispatcherException(e.Exception);
+                e.Handled = true;
+                Environment.Exit(1);
+            };
 
-        shell.Initialize();
-        return app.Run();
+            shell.Initialize();
+            return app.Run();
+        }
+    }
+
+    /// <summary>
+    /// 取单实例互斥体。waitForPrevious 为 true（提权重启）时最多等 10 秒，
+    /// 让旧实例走完退出流程；普通启动只试一次，拿到已存在就返回 false。
+    /// </summary>
+    private static Mutex AcquireSingleInstance(bool waitForPrevious, out bool createdNew)
+    {
+        DateTime deadline = DateTime.UtcNow.AddMilliseconds(waitForPrevious ? 10000 : 0);
+        while (true)
+        {
+            var mutex = new Mutex(true, MutexName, out createdNew);
+            if (createdNew) return mutex;
+            mutex.Dispose();
+            if (DateTime.UtcNow >= deadline) return null;
+            Thread.Sleep(100);
+        }
     }
 
     /// <summary>通知已运行的实例打开主面板（不依赖窗口广播，消息专用窗口收不到 HWND_BROADCAST）。</summary>

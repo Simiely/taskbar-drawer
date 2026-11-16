@@ -985,6 +985,7 @@ public sealed class AppShell : IDisposable
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
             {
                 FileName = exe,
+                Arguments = "--elevated-restart",
                 UseShellExecute = true,
                 Verb = "runas"
             });
