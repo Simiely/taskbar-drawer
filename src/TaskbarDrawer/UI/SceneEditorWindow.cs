@@ -23,6 +23,7 @@ public sealed class SceneEditorWindow : Window
     private readonly Border _runningHint;
     private readonly TextBlock _windowEmpty;
     private readonly TextBlock _runningEmpty;
+    private ScrollViewer _scroll;
 
     /// <summary>上一次渲染的数据签名：2.5 s 的 Prune 刷新不能把滚动位置打回顶部。</summary>
     private string _signature = "";
@@ -112,7 +113,17 @@ public sealed class SceneEditorWindow : Window
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
-        NativeMethods.ApplyToolWindowStyle(new WindowInteropHelper(this).Handle);
+        IntPtr hwnd = new WindowInteropHelper(this).Handle;
+        NativeMethods.ApplyToolWindowStyle(hwnd);
+
+        // 高度上限按编辑器实际所在的显示器算：SystemParameters.WorkArea 永远是主屏，
+        // 主屏 4K + 副屏 1080p 时编辑器会比副屏还高，底部按钮点不到。
+        if (NativeMethods.GetWindowRect(hwnd, out var rect) &&
+            NativeMethods.TryGetMonitorOfRect(rect, out var monitor))
+        {
+            double workHeight = monitor.rcWork.Height / (NativeMethods.DpiOfDevice(monitor.szDevice) / 96.0);
+            _scroll.MaxHeight = Math.Max(240, workHeight - 80);
+        }
     }
 
     // ---------- 布局 ----------
@@ -129,6 +140,15 @@ public sealed class SceneEditorWindow : Window
         stack.Children.Add(Divider());
         stack.Children.Add(BuildFooter());
 
+        // 初始值按主屏算，OnSourceInitialized 里再按实际所在显示器重算。
+        _scroll = new ScrollViewer
+        {
+            Content = stack,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            MaxHeight = Math.Max(240, SystemParameters.WorkArea.Height - 80)
+        };
+
         return new Border
         {
             Background = Theme.PanelBackground,
@@ -142,13 +162,7 @@ public sealed class SceneEditorWindow : Window
                 Opacity = 0.55,
                 Color = Colors.Black
             },
-            Child = new ScrollViewer
-            {
-                Content = stack,
-                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-                MaxHeight = Math.Max(240, SystemParameters.WorkArea.Height - 80)
-            }
+            Child = _scroll
         };
     }
 

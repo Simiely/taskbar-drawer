@@ -140,7 +140,10 @@ public sealed class WindowStash
 
         NativeMethods.ShowWindow(item.Handle, NativeMethods.SW_RESTORE);
 
-        if (!item.Placement.rcNormalPosition.IsEmpty)
+        // 目标屏可能已经拔掉 / 分辨率变了：先把保存的矩形夹回最近的工作区，
+        // 否则窗口会「可见但落在桌面外」——任务栏有按钮，屏幕上却找不到。
+        var target = DisplayRules.EnsureVisible(item.Placement.rcNormalPosition);
+        if (!target.IsEmpty)
         {
             var placement = item.Placement;
             placement.length = Marshal.SizeOf<NativeMethods.WINDOWPLACEMENT>();
@@ -148,9 +151,9 @@ public sealed class WindowStash
             placement.showCmd = item.Maximized
                 ? NativeMethods.SW_SHOWMAXIMIZED
                 : NativeMethods.SW_SHOWNORMAL;
-            // 保存的是屏幕坐标，SetWindowPlacement 要的是工作区坐标：按「此刻」该显示器的工作区原点换算。
+            // 保存的是屏幕坐标，SetWindowPlacement 要的是工作区坐标：按目标矩形所在显示器的工作区原点换算。
             placement.rcNormalPosition = NativeMethods.ToWorkspaceCoordinates(
-                placement.rcNormalPosition, NativeMethods.WorkOriginOfDevice(item.MonitorDevice, item.Handle));
+                target, NativeMethods.WorkOriginOfDevice(item.MonitorDevice, target));
             NativeMethods.SetWindowPlacement(item.Handle, ref placement);
         }
 
@@ -159,7 +162,6 @@ public sealed class WindowStash
         item.RestoreRequestedAt = DateTime.UtcNow;
 
         // 个别应用会在 ShowWindow 后重排布局；再按保存的窗口矩形校正一次，确保「原位回去」。
-        var target = item.Placement.rcNormalPosition;
         if (!item.Maximized && !target.IsEmpty)
         {
             NativeMethods.GetWindowRect(item.Handle, out var now);

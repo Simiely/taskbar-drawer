@@ -42,7 +42,7 @@ dotnet publish src/TaskbarDrawer/TaskbarDrawer.csproj -c Release -r win-x64 `
   --self-contained false -p:PublishSingleFile=true -o publish
 ```
 
-产物是单个 `publish\TaskbarDrawer.exe`（约 320 KB，需要 .NET 8 运行时）。
+产物是单个 `publish\TaskbarDrawer.exe`（约 400 KB，需要 .NET 8 运行时）。
 
 ## 命令行
 
@@ -69,7 +69,8 @@ dotnet publish src/TaskbarDrawer/TaskbarDrawer.csproj -c Release -r win-x64 `
 
 - 收纳的是普通桌面窗口；UWP、管理员权限更高的窗口可能收不进去
 - 胶囊与 Win11 任务栏共用 topmost 波段，极少数时刻会被任务栏短暂盖住，2 秒内自动重贴
-- 面板位置以 DIP 记忆，双屏不同缩放比例时可能偏移（恢复时会拉回工作区）
+- 胶囊只贴在主任务栏：开启「在所有显示器上显示任务栏」时，副屏任务栏没有胶囊入口，副屏上的场景请用热键或主面板操作
+- 面板位置以 DIP 记忆，双屏不同缩放比例时可能偏移（首次定位按目标屏 DPI 计算，恢复位置时会拉回工作区）
 - 场景按 exe 路径重新启动；同路径软件已卸载时该项会被跳过
 - 不需要管理员权限，也不修改任何系统设置
 

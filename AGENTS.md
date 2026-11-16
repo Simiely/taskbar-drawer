@@ -21,7 +21,8 @@
 3. **「收起」是 `SW_HIDE` 不是最小化**：要同时记录 `WINDOWPLACEMENT`（换算成屏幕坐标），还原后尺寸偏差 > 2 px 用 `SetWindowPos` 校正。
 4. **运行时组只是场景的运行态**：`StashAllService` 持句柄，`saved-groups.json` 存快照，二者靠 `SavedId` 一一对应。收纳 = `StashAll` + `SaveFrom` + `LinkSaved`，正常路径下不允许出现没有 `SavedId` 的组；保存失败要 `Release` 回桌面，不能留孤儿组。
 5. **外围状态必须兜底**：热键注册失败（1409 被占用）要回退默认组合并提示；`recovery.json` 记录当前隐藏的窗口，退出走 `ReleaseAll`、未处理异常走 `RegisterRescue`，否则被隐藏的窗口永远留在桌面外。
-6. **多显示器按屏隔离**：`StashAll` / `ExpandNewest` / `ExpandAll` / `CollapseExpandedScenes` 都带显示器参数；场景归属优先按可见窗口实测，全部收起时用 `StashedWindow.MonitorDevice`（收起时记录）。前台是本程序 / shell 时用鼠标位置（`MonitorDeviceOfCursor`）判断当前屏。
+6. **多显示器按屏隔离（屏幕未知时 fail-closed）**：`StashAll` / `ExpandNewest` / `ExpandAll` / `CollapseExpandedScenes` / `HasUntrackedVisibleWindows` 的显示器参数**必填**；屏幕判断失败时入口直接提示并返回，绝不能把「不知道哪块屏」当成「所有屏」（旧写法 `monitorDevice == null || …` 是 bug）。归屏比较统一走 `DisplayRules.BelongsTo`；场景归属优先按可见窗口实测，全部收起时用 `StashedWindow.MonitorDevice`（收起时记录）。前台是本程序 / shell 时用鼠标位置（`MonitorDeviceOfCursor`）判断当前屏。`SavedWindow.MonitorDevice` 让还原只匹配同一块屏的窗口，旧快照按保存矩形推断。
+7. **窗口落点必须兜底**：还原 / 摆位统一过 `DisplayRules.EnsureVisible`（`MonitorFromRect(MONITOR_DEFAULTTONEAREST)` 的工作区，交集 < 30% 就夹回），拔掉副屏或换分辨率后窗口不会停在桌面外。纯几何规则放在 `Core/DisplayRules.cs`，不碰句柄，由 `DisplayRulesTests` 覆盖。
 
 ## 约定
 

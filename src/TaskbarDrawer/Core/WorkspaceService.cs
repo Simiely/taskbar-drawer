@@ -20,7 +20,25 @@ public sealed class WorkspaceService
         public bool ToolWindow;
     }
 
-    private readonly List<SavedGroup> _groups = SavedGroupStore.Load();
+    private readonly List<SavedGroup> _groups;
+
+    /// <summary>启动时加载场景文件的问题（损坏 / 无权限）；正常时为 null。</summary>
+    public string LoadWarning { get; }
+
+    public WorkspaceService()
+    {
+        _groups = SavedGroupStore.Load(out string warning);
+        LoadWarning = warning;
+    }
+
+    /// <summary>落盘失败：场景仍在内存里可用，但重启后会丢，必须让用户知道。</summary>
+    public event Action<string> SaveFailed;
+
+    private void Persist()
+    {
+        if (SavedGroupStore.Save(_groups)) return;
+        SaveFailed?.Invoke("场景保存失败（磁盘满 / 无权限），本次运行改动的场景重启后会丢失");
+    }
 
     public IReadOnlyList<SavedGroupSummary> Summaries()
         => _groups
@@ -71,7 +89,7 @@ public sealed class WorkspaceService
 
         string key = SceneEdit.Key(removed);
         if (key.Length > 0 && !group.Suppressed.Contains(key)) group.Suppressed.Add(key);
-        SavedGroupStore.Save(_groups);
+        Persist();
 
         return new SceneEditResult
         {
@@ -101,7 +119,7 @@ public sealed class WorkspaceService
             };
         }
 
-        SavedGroupStore.Save(_groups);
+        Persist();
         return new SceneAppendResult { Ok = true, Added = added, Skipped = skipped };
     }
 
@@ -136,7 +154,7 @@ public sealed class WorkspaceService
             Windows = windows
         };
         _groups.Add(group);
-        SavedGroupStore.Save(_groups);
+        Persist();
         return group;
     }
 
@@ -163,7 +181,7 @@ public sealed class WorkspaceService
         if (visible.Count == 0) return;
 
         group.Windows = visible;
-        SavedGroupStore.Save(_groups);
+        Persist();
     }
 
     /// <summary>
@@ -199,7 +217,8 @@ public sealed class WorkspaceService
         SavedGroup group,
         IReadOnlySet<long> excluded,
         Func<IntPtr, bool> adopt,
-        Action<IntPtr> adoptLater)
+        Action<IntPtr> adoptLater,
+        Action onComplete = null)
     {
         // 只枚举一次：matches 与 known 用同一份快照，避免两次枚举之间窗口状态变化导致重复匹配。
         var windows = TopLevelWindows();
@@ -215,12 +234,22 @@ public sealed class WorkspaceService
             string exe = Normalize(saved.ExePath);
             if (exe == null) continue;
 
-            bool Matches(TopWindow w) =>
-                w.Visible && w.Title.Length > 0 && !w.ToolWindow &&
-                !used.Contains(w.Handle.ToInt64()) && Normalize(w.Path) == exe;
+            // 快照里记了屏幕：只接管同一块屏上的窗口，另一块屏的同程序窗口不动。
+            // 那块屏已经拔掉时不再按屏限制，否则用户会看到「程序都没找到」。
+            string expectedDevice = DisplayRules.MonitorOf(saved);
+            bool deviceExists = expectedDevice == null ||
+                                NativeMethods.TryGetMonitorOfDevice(expectedDevice, out _);
+
+            bool SameExe(TopWindow w) =>
+                w.Visible && w.Title.Length > 0 && !w.ToolWindow && Normalize(w.Path) == exe;
+
+            bool OnTargetScreen(TopWindow w) =>
+                !deviceExists || NativeMethods.MonitorDeviceOf(w.Handle) == expectedDevice;
 
             var match = windows.FirstOrDefault(w =>
-                Matches(w) && (excluded == null || !excluded.Contains(w.Handle.ToInt64())));
+                SameExe(w) && OnTargetScreen(w) &&
+                !used.Contains(w.Handle.ToInt64()) &&
+                (excluded == null || !excluded.Contains(w.Handle.ToInt64())));
             if (match != null)
             {
                 ApplyPlacement(match.Handle, saved);
@@ -230,12 +259,10 @@ public sealed class WorkspaceService
                 continue;
             }
 
-            // 同类窗口存在但已经在别的场景里：不再启动第二个实例，也不把它挪走。
-            // 这里不能复用 Matches：used 会让「刚配给上一条记录的窗口」失去资格，
-            // 但「已在别组」的判断与重复匹配无关。
-            if (excluded != null && windows.Any(w =>
-                    w.Visible && w.Title.Length > 0 && !w.ToolWindow &&
-                    Normalize(w.Path) == exe && excluded.Contains(w.Handle.ToInt64())))
+            // 同类窗口存在，但已经在别的场景里，或只在另一块屏幕上：
+            // 既不能挪它（会破坏别人的窗口位置），也不能再启动一个副本。
+            if (windows.Any(w => SameExe(w) &&
+                    ((excluded != null && excluded.Contains(w.Handle.ToInt64())) || !OnTargetScreen(w))))
             {
                 busy++;
                 continue;
@@ -244,9 +271,14 @@ public sealed class WorkspaceService
             pending.Add(saved);
         }
 
-        int launched = pending.Count(Launch);
-        if (launched > 0) PositionLater(pending, known, adoptLater);
-        return (moved, launched, busy, failed);
+        // 只有真正启动成功的才值得等窗口出现；启动失败的项目等 12 s 也不会出现。
+        var launchedPending = pending.Where(Launch).ToList();
+        if (launchedPending.Count > 0)
+            PositionLater(launchedPending, known, adoptLater, onComplete);
+        else
+            onComplete?.Invoke();
+
+        return (moved, launchedPending.Count, busy, failed);
     }
 
     public bool Rename(string id, string name)
@@ -254,7 +286,7 @@ public sealed class WorkspaceService
         var group = Find(id);
         if (group == null || string.IsNullOrWhiteSpace(name)) return false;
         group.Name = name.Trim();
-        SavedGroupStore.Save(_groups);
+        Persist();
         return true;
     }
 
@@ -263,7 +295,7 @@ public sealed class WorkspaceService
         var group = Find(id);
         if (group == null) return false;
         _groups.Remove(group);
-        SavedGroupStore.Save(_groups);
+        Persist();
         return true;
     }
 
@@ -288,6 +320,7 @@ public sealed class WorkspaceService
                 Top = rect.Top,
                 Width = rect.Width,
                 Height = rect.Height,
+                MonitorDevice = item.MonitorDevice,
                 Maximized = item.Maximized
             });
         }
@@ -295,35 +328,47 @@ public sealed class WorkspaceService
     }
 
     /// <summary>启动后等主窗口出现再摆位：Process.Start 返回时窗口往往还没建好。</summary>
-    private static void PositionLater(List<SavedWindow> pending, HashSet<long> known, Action<IntPtr> onWindowReady)
+    private static void PositionLater(
+        List<SavedWindow> pending, HashSet<long> known, Action<IntPtr> onWindowReady, Action onComplete)
     {
         Task.Run(() =>
         {
-            var remaining = new List<SavedWindow>(pending);
-            var deadline = DateTime.UtcNow.AddSeconds(12);
-
-            while (remaining.Count > 0 && DateTime.UtcNow < deadline)
+            try
             {
-                Thread.Sleep(450);
-                foreach (var saved in remaining.ToArray())
+                var remaining = new List<SavedWindow>(pending);
+                var deadline = DateTime.UtcNow.AddSeconds(12);
+
+                while (remaining.Count > 0 && DateTime.UtcNow < deadline)
                 {
-                    string exe = Normalize(saved.ExePath);
-                    if (exe == null)
+                    Thread.Sleep(450);
+                    // 每个 tick 只枚举一次：早先是每条等待记录各枚举一遍，等待项多时是 N 倍开销。
+                    var windows = TopLevelWindows();
+                    foreach (var saved in remaining.ToArray())
                     {
+                        string exe = Normalize(saved.ExePath);
+                        if (exe == null)
+                        {
+                            remaining.Remove(saved);
+                            continue;
+                        }
+
+                        // 刚启动的窗口一律接管：系统通常把它开在主屏，不能按保存的屏幕过滤，
+                        // 否则等待项永远匹配不上（摆位后窗口会被移到保存的那块屏）。
+                        var match = windows.FirstOrDefault(w =>
+                            w.Visible && w.Title.Length > 0 && !w.ToolWindow &&
+                            !known.Contains(w.Handle.ToInt64()) && Normalize(w.Path) == exe);
+                        if (match == null) continue;
+
+                        ApplyPlacement(match.Handle, saved);
+                        known.Add(match.Handle.ToInt64());
+                        onWindowReady?.Invoke(match.Handle);
                         remaining.Remove(saved);
-                        continue;
                     }
-
-                    var match = TopLevelWindows().FirstOrDefault(w =>
-                        w.Visible && w.Title.Length > 0 && !w.ToolWindow &&
-                        !known.Contains(w.Handle.ToInt64()) && Normalize(w.Path) == exe);
-                    if (match == null) continue;
-
-                    ApplyPlacement(match.Handle, saved);
-                    known.Add(match.Handle.ToInt64());
-                    onWindowReady?.Invoke(match.Handle);
-                    remaining.Remove(saved);
                 }
+            }
+            finally
+            {
+                onComplete?.Invoke();
             }
         });
     }
@@ -354,11 +399,17 @@ public sealed class WorkspaceService
         NativeMethods.ShowWindow(hwnd, NativeMethods.SW_RESTORE);
         if (saved.Width > 0 && saved.Height > 0)
         {
-            NativeMethods.SetWindowPos(hwnd, IntPtr.Zero, saved.Left, saved.Top, saved.Width, saved.Height,
+            // 目标屏可能已经拔掉 / 分辨率变了：先夹回最近的工作区，否则窗口会落在屏幕外。
+            var rect = DisplayRules.EnsureVisible(NativeMethods.RECT.FromLTRB(
+                saved.Left, saved.Top, saved.Left + saved.Width, saved.Top + saved.Height));
+            NativeMethods.SetWindowPos(hwnd, IntPtr.Zero, rect.Left, rect.Top, rect.Width, rect.Height,
                 NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
         }
         if (saved.Maximized) NativeMethods.ShowWindow(hwnd, NativeMethods.SW_SHOWMAXIMIZED);
     }
+
+    /// <summary>已关闭场景属于哪块屏幕：按快照里记录的显示器判断（旧快照退回矩形推断）。</summary>
+    public string MonitorOfSaved(SavedGroup group) => group == null ? null : DisplayRules.MonitorOf(group.Windows);
 
     /// <summary>全部顶层窗口（含隐藏的，关闭组里收起来的窗口要用到）。</summary>
     private static List<TopWindow> TopLevelWindows()

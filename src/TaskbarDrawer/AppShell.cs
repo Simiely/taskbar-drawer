@@ -36,6 +36,8 @@ public sealed class AppShell : IDisposable
     private Thread _signalThread;
     private bool _disposed;
     private bool _showPending;
+    /// <summary>正在打开（等窗口出现）的场景：同一场景连点两次会重复启动实例。</summary>
+    private readonly HashSet<string> _restoringScenes = new(StringComparer.Ordinal);
 
     /// <summary>
     /// 版本标识：csproj 的 Version + MSBuild 写的构建时间。
@@ -67,6 +69,10 @@ public sealed class AppShell : IDisposable
 
         // 场景：收纳时立刻抓快照落盘，之后可一键关闭 / 还原，跨启动保留。
         _workspace = new WorkspaceService();
+        // 写盘失败不能静默：场景还在内存里能用，但重启就会丢，必须当场告诉用户。
+        // 延后一拍再提示：失败往往发生在「已收起 / 已改名」的成功提示之前，同步弹会被覆盖。
+        _workspace.SaveFailed += message => Safe("workspace.save", () =>
+            _dispatcher.BeginInvoke(new Action(() => Feedback(message)), DispatcherPriority.Background));
 
         // 被收纳的窗口如果被外部还原 / 关闭，计数要跟着变，不能让胶囊一直显示旧数字。
         _pruneTimer = new DispatcherTimer(DispatcherPriority.Background)
@@ -77,12 +83,15 @@ public sealed class AppShell : IDisposable
         {
             if (_disposed) return;
             if (_stash.Count > 0) _stash.Prune();
-            // 隐藏集合变化时落一份回收记录：强杀 / 断电后下次启动能把窗口救回来。
+            // 兜底落盘：隐藏集合变化的第一时间由 UpdateSurface 写，这里只补外部还原 / 关闭。
             WindowRecovery.Save(_stash.Items);
         });
         _pruneTimer.Start();
 
         _single = new SingleWindowMode(Dispatcher.CurrentDispatcher);
+        // 打开开关时这块屏幕上没有可接管的窗口：提示用户，而不是默默什么都不做。
+        _single.NoCandidateOnScreen += () => Safe("single.none", () =>
+            Feedback("这块屏幕上没有可接管的窗口"));
         // 让单窗口模式认识场景：同一场景展开的窗口当成一个整体，而不是互斥的多个窗口。
         _single.GroupOf = hwnd => _stash.GroupIdOf(hwnd);
         // 切到别的场景 / 别的窗口时，别的场景整组收回胶囊（而不是最小化成一排任务栏按钮）。
@@ -183,7 +192,9 @@ public sealed class AppShell : IDisposable
         }
 
         // 启动反馈：底部浮窗一闪，确认程序已经在跑、热键是什么。
-        ToastWindow.Show($"任务栏收纳 v{ShortVersion} 已启动 · {_stashHotkey.Gesture} 新建场景 / 展开");
+        // 场景文件损坏 / 无权限时把原因一并带出来，不能静默当成「没有场景」。
+        string started = $"任务栏收纳 v{ShortVersion} 已启动 · {_stashHotkey.Gesture} 新建场景 / 展开";
+        ToastWindow.Show(_workspace.LoadWarning == null ? started : $"{_workspace.LoadWarning} · {started}");
     }
 
     /// <summary>消息专用窗口：只用来收 WM_HOTKEY，不占屏幕、不进任务栏。</summary>
@@ -237,12 +248,18 @@ public sealed class AppShell : IDisposable
             if (_panel != null && _panel.Recording) return;
             // 屏幕在执行前算一次：收纳之后前台窗口就没了，动作里再取会取错屏。
             string monitor = ActiveMonitorDevice();
+            if (monitor == null)
+            {
+                // 判断不出屏幕就什么都不做：宁可让用户重试，也不能把「不知道哪块屏」当成「所有屏」。
+                Feedback("无法判断当前屏幕，请把鼠标移到目标屏幕后重试");
+                return;
+            }
             RunRules(RuleTriggerKind.Hotkey, () => new RuleFacts
             {
                 MonitorDevice = monitor,
                 HasUntrackedWindows = _stash.HasUntrackedVisibleWindows(monitor),
                 HasExpandedScene = _stash.Groups().Any(g =>
-                    g.Expanded && (monitor == null || _stash.MonitorOfGroup(g.Id) == monitor))
+                    g.Expanded && _stash.MonitorOfGroup(g.Id) == monitor)
             });
         });
     }
@@ -301,12 +318,12 @@ public sealed class AppShell : IDisposable
             if (!string.IsNullOrEmpty(facts.SavedId)) RestoreSavedGroup(facts.SavedId);
         });
         runner.Do(RuleCatalog.ActionOpenPanel, (_, _) => OpenPanel());
-        runner.Do(RuleCatalog.ActionToast, (_, step) =>
+        runner.Do(RuleCatalog.ActionToast, (facts, step) =>
         {
             string text = step.Args != null && step.Args.TryGetValue("text", out var value) && !string.IsNullOrWhiteSpace(value)
                 ? value
                 : "已执行";
-            ToastWindow.Show(text);
+            ToastWindow.Show(text, facts.MonitorDevice);
         });
 
         return runner;
@@ -354,9 +371,10 @@ public sealed class AppShell : IDisposable
     }
 
     /// <summary>统一的用户反馈：底部浮窗弹一条，随后自动消失；托盘提示同步更新。</summary>
-    private void Feedback(string message)
+    /// <param name="monitorDevice">提示出现在哪块屏幕；null = 鼠标所在屏幕。</param>
+    private void Feedback(string message, string monitorDevice = null)
     {
-        ToastWindow.Show(message);
+        ToastWindow.Show(message, monitorDevice);
         _tray?.SetStatus(message);
     }
 
@@ -364,27 +382,40 @@ public sealed class AppShell : IDisposable
     private void CollapseExpandedScenes(string monitorDevice = null)
     {
         if (_disposed) return;
-        _single.SuspendTemporarily();
 
-        // 多显示器：只在当前这块屏幕上收，另一块屏的场景保持展开。
+        // 多显示器：只在当前这块屏幕上收，另一块屏的场景保持展开。屏幕未知时不动任何窗口。
         monitorDevice ??= ActiveMonitorDevice();
+        if (monitorDevice == null)
+        {
+            Feedback("无法判断当前屏幕，请把鼠标移到目标屏幕后重试");
+            return;
+        }
+
+        _single.SuspendTemporarily();
         int hidden = 0;
         foreach (var group in _stash.Groups()
                      .Where(g => g.Expanded)
-                     .Where(g => monitorDevice == null || _stash.MonitorOfGroup(g.Id) == monitorDevice)
+                     .Where(g => _stash.MonitorOfGroup(g.Id) == monitorDevice)
                      .ToArray())
             hidden += _stash.StashGroup(group.Id);
 
-        Feedback(hidden > 0 ? $"已收起 {hidden} 个窗口" : "这块屏幕上没有可收起的窗口");
+        Feedback(hidden > 0 ? $"已收起 {hidden} 个窗口" : "这块屏幕上没有可收起的窗口", monitorDevice);
         UpdateSurface();
     }
 
     private void NewScene(string monitorDevice = null)
     {
         if (_disposed) return;
-        _single.SuspendTemporarily();
+
         // 托盘 / 面板按钮进来时没有「前台业务窗口」，按鼠标位置判断当前屏幕。
         monitorDevice ??= ActiveMonitorDevice();
+        if (monitorDevice == null)
+        {
+            Feedback("无法判断当前屏幕，请把鼠标移到目标屏幕后重试");
+            return;
+        }
+
+        _single.SuspendTemporarily();
         int count = _stash.StashAll(out int groupId, monitorDevice);
         if (count > 0)
         {
@@ -393,22 +424,22 @@ public sealed class AppShell : IDisposable
             if (saved == null)
             {
                 _stash.Release(groupId);
-                Feedback("这些窗口读不到程序路径，无法存成场景");
+                Feedback("这些窗口读不到程序路径，无法存成场景", monitorDevice);
             }
             else
             {
                 _stash.LinkSaved(groupId, saved.Id, saved.Name);
                 Feedback(WithElevationNote(
-                    $"{Theme.SceneIcon} 已收起 {count} 个窗口 · 新建场景「{saved.Name}」"));
+                    $"{Theme.SceneIcon} 已收起 {count} 个窗口 · 新建场景「{saved.Name}」"), monitorDevice);
             }
         }
         else if (_stash.LastBlockedByElevation > 0)
         {
-            Feedback($"{_stash.LastBlockedByElevation} 个窗口以管理员身份运行，需以管理员身份重启本程序才能收纳");
+            Feedback($"{_stash.LastBlockedByElevation} 个窗口以管理员身份运行，需以管理员身份重启本程序才能收纳", monitorDevice);
         }
         else
         {
-            Feedback("这块屏幕上没有可收起的窗口");
+            Feedback("这块屏幕上没有可收起的窗口", monitorDevice);
         }
         UpdateSurface();
     }
@@ -422,12 +453,14 @@ public sealed class AppShell : IDisposable
         if (!_single.Enabled) return 0;
 
         // 多显示器：只收起和这个场景在同一块屏幕上的场景，另一块屏上的场景保持不动。
+        // 场景属于哪块屏都判断不出来时，一个都不收：宁可少收，不要跨屏误收。
         string monitor = _stash.MonitorOfGroup(keepGroupId);
+        if (monitor == null) return 0;
 
         int hidden = 0;
         foreach (var group in _stash.Groups().Where(g => g.Id != keepGroupId && g.Expanded).ToArray())
         {
-            if (monitor != null && _stash.MonitorOfGroup(group.Id) != monitor) continue;
+            if (_stash.MonitorOfGroup(group.Id) != monitor) continue;
             hidden += _stash.StashGroup(group.Id);
         }
         return hidden;
@@ -443,14 +476,21 @@ public sealed class AppShell : IDisposable
     private void ExpandLatest(string monitorDevice = null)
     {
         if (_disposed) return;
-        _single.SuspendTemporarily();
+
         // 只在这块屏幕上找「最近的场景」，不要把另一块屏的场景调过来。
         monitorDevice ??= ActiveMonitorDevice();
+        if (monitorDevice == null)
+        {
+            Feedback("无法判断当前屏幕，请把鼠标移到目标屏幕后重试");
+            return;
+        }
+
+        _single.SuspendTemporarily();
         int shown = _stash.ExpandNewest(monitorDevice);
         if (shown > 0) CollapseOtherScenes(_stash.LastExpandedGroupId);
         Feedback(shown > 0
             ? $"{Theme.SceneIcon} 已展开「{SceneLabel(_stash.LastExpandedGroupId)}」· {shown} 个窗口"
-            : "这块屏幕上没有已收起的场景");
+            : "这块屏幕上没有已收起的场景", monitorDevice);
         UpdateSurface();
     }
 
@@ -460,18 +500,20 @@ public sealed class AppShell : IDisposable
         if (_disposed) return;
         _single.SuspendTemporarily();
         string label = SceneLabel(groupId);
+        // 提示跟着场景走：在任务栏胶囊上操作副屏场景时，提示出现在副屏而不是主屏。
+        string monitor = _stash.MonitorOfGroup(groupId);
         var (expanded, count) = _stash.ToggleGroup(groupId);
         if (count == 0)
-            Feedback($"「{label}」已经不存在");
+            Feedback($"「{label}」已经不存在", monitor);
         else if (expanded)
         {
             int collapsed = CollapseOtherScenes(groupId);
             Feedback(collapsed > 0
                 ? $"已展开「{label}」· {count} 个窗口 · 其它场景已收起"
-                : $"已展开「{label}」· {count} 个窗口");
+                : $"已展开「{label}」· {count} 个窗口", monitor);
         }
         else
-            Feedback($"已收起「{label}」· {count} 个窗口");
+            Feedback($"已收起「{label}」· {count} 个窗口", monitor);
         UpdateSurface();
     }
 
@@ -493,7 +535,7 @@ public sealed class AppShell : IDisposable
         }
 
         int closed = _workspace.Close(_stash, groupId);
-        Feedback(closed > 0 ? $"已关闭 {closed} 个窗口" : "没有可关闭的窗口");
+        Feedback(closed > 0 ? $"已关闭 {closed} 个窗口" : "没有可关闭的窗口", _stash.MonitorOfGroup(groupId));
         UpdateSurface();
     }
 
@@ -514,29 +556,37 @@ public sealed class AppShell : IDisposable
         int groupId = _stash.GroupIdOfSaved(savedId);
         if (groupId == 0)
         {
-            Feedback($"「{saved.Name}」已经没有打开的窗口");
+            Feedback($"「{saved.Name}」已经没有打开的窗口", _workspace.MonitorOfSaved(saved));
             return;
         }
 
         // 关之前按当前位置再存一次，下次打开才是用户最后摆放的样子。
         _workspace.UpdateSnapshot(saved, _stash, groupId);
+        string monitor = _stash.MonitorOfGroup(groupId) ?? _workspace.MonitorOfSaved(saved);
         int closed = _workspace.Close(_stash, groupId);
         Feedback(closed > 0
             ? $"{Theme.SceneIcon} 已关闭「{saved.Name}」· {closed} 个窗口"
-            : $"「{saved.Name}」没有可关闭的窗口");
+            : $"「{saved.Name}」没有可关闭的窗口", monitor);
         UpdateSurface();
     }
 
     private void ExpandAll(string monitorDevice = null)
     {
         if (_disposed) return;
-        _single.SuspendTemporarily();
+
         // 全部展开也只作用于当前这块屏幕；要做另一块屏，就去那块屏上操作。
         monitorDevice ??= ActiveMonitorDevice();
+        if (monitorDevice == null)
+        {
+            Feedback("无法判断当前屏幕，请把鼠标移到目标屏幕后重试");
+            return;
+        }
+
+        _single.SuspendTemporarily();
         int shown = _stash.ExpandAll(monitorDevice);
         Feedback(shown > 0
             ? $"已展开这块屏幕上的全部场景 · {shown} 个窗口"
-            : "这块屏幕上没有已收起的场景");
+            : "这块屏幕上没有已收起的场景", monitorDevice);
         UpdateSurface();
     }
 
@@ -568,21 +618,41 @@ public sealed class AppShell : IDisposable
             return;
         }
 
+        // 同一场景正在等窗口出现时再点一次，会重复启动实例 / 重复摆位：先挡住。
+        if (!_restoringScenes.Add(id))
+        {
+            Feedback($"「{group.Name}」正在打开，请稍候", _workspace.MonitorOfSaved(group));
+            return;
+        }
+
         _single.SuspendTemporarily();
         var managed = new HashSet<long>(_stash.Items.Select(i => i.Handle.ToInt64()));
-        var (moved, launched, busy, failed) = _workspace.Restore(
-            group,
-            managed,
-            hwnd => _stash.Adopt(hwnd, group.Id, group.Name),
-            hwnd => _dispatcher.BeginInvoke(new Action(() => AdoptRestoredWindow(group, hwnd))));
+        try
+        {
+            var (moved, launched, busy, failed) = _workspace.Restore(
+                group,
+                managed,
+                hwnd => _stash.Adopt(hwnd, group.Id, group.Name),
+                hwnd => _dispatcher.BeginInvoke(new Action(() => AdoptRestoredWindow(group, hwnd))),
+                () =>
+                {
+                    try { _dispatcher.BeginInvoke(new Action(() => _restoringScenes.Remove(id))); }
+                    catch { /* 退出中：集合生命周期已经结束 */ }
+                });
 
-        string message = moved + launched > 0
-            ? $"正在打开「{group.Name}」· {moved + launched} 个窗口"
-            : $"「{group.Name}」的程序都没找到";
-        if (busy > 0) message += $"（{busy} 个窗口已在其它场景中，未重复打开）";
-        if (failed > 0) message += $"（{failed} 个窗口未能接入场景）";
-        Feedback(message);
-        UpdateSurface();
+            string message = moved + launched > 0
+                ? $"正在打开「{group.Name}」· {moved + launched} 个窗口"
+                : $"「{group.Name}」的程序都没找到";
+            if (busy > 0) message += $"（{busy} 个窗口已在其它场景或其它屏幕上，未重复打开）";
+            if (failed > 0) message += $"（{failed} 个窗口未能接入场景）";
+            Feedback(message, _workspace.MonitorOfSaved(group));
+            UpdateSurface();
+        }
+        catch
+        {
+            _restoringScenes.Remove(id);
+            throw;
+        }
     }
 
     /// <summary>把刚摆好位置的窗口接入运行时组（后台线程回调，已在 UI 线程上执行）。</summary>
@@ -722,7 +792,21 @@ public sealed class AppShell : IDisposable
             return;
         }
 
-        editor.Reload(detail, _stash.Groups(), _stash.GroupIdOfSaved(detail.Id));
+        // 只把同一块屏幕上的运行场景给编辑器：跨屏追加会把「一块屏一个场景」的约束破掉。
+        string monitor = SceneMonitor(detail.Id);
+        var running = _stash.Groups()
+            .Where(g => monitor == null || _stash.MonitorOfGroup(g.Id) == monitor)
+            .ToArray();
+        editor.Reload(detail, running, _stash.GroupIdOfSaved(detail.Id));
+    }
+
+    /// <summary>场景属于哪块屏幕：运行组优先用实测，已关闭的用快照记录。</summary>
+    private string SceneMonitor(string savedId)
+    {
+        var saved = _workspace.Find(savedId);
+        if (saved == null) return null;
+        int groupId = _stash.GroupIdOfSaved(savedId);
+        return groupId != 0 ? _stash.MonitorOfGroup(groupId) : _workspace.MonitorOfSaved(saved);
     }
 
     /// <summary>从场景快照移除一个窗口（不关闭当前正在运行的窗口）。</summary>
@@ -743,6 +827,16 @@ public sealed class AppShell : IDisposable
     /// <summary>把一个正在运行的其他场景追加进场景快照（下次打开场景生效）。</summary>
     private void AppendRunningSceneToScene(string savedId, int groupId)
     {
+        // 场景归属一块屏：把另一块屏的运行场景并进来，之后收起 / 展开就会跨屏。
+        string target = SceneMonitor(savedId);
+        string source = _stash.MonitorOfGroup(groupId);
+        if (target != null && source != null && target != source)
+        {
+            Feedback("不能把另一块屏幕上的场景加进来");
+            UpdateSurface();
+            return;
+        }
+
         var result = _workspace.AppendRunningScene(savedId, _stash, groupId);
         if (!result.Ok)
         {
@@ -796,6 +890,12 @@ public sealed class AppShell : IDisposable
     private void UpdateSurface()
     {
         if (_disposed) return;
+
+        // 隐藏集合的任何变化（收纳 / 展开 / 外部还原 / 剪枝）都会走到这里：
+        // 立刻落一份回收记录，别把「刚藏完就强杀」的窗口留给下一次启动。
+        // Save 内部按句柄签名去重，重复调用不会产生多余的磁盘写入。
+        WindowRecovery.Save(_stash.Items);
+
         var groups = _stash.Groups();
         // 面板 / 托盘只列场景：dormant 是只剩快照、没有窗口的那些。
         var dormant = ChipProjection.Dormant(groups, _workspace.Summaries());

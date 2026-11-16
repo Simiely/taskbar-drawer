@@ -50,8 +50,8 @@ public sealed class StashAllService
     private readonly List<StashGroup> _groups = new();
     private int _nextGroupId = 1;
 
-    /// <summary>下一次 ExpandNewest 从比它更旧的组开始选，实现多组轮转。</summary>
-    private int _rotateFromId = int.MaxValue;
+    /// <summary>下一次 ExpandNewest 从比它更旧的组开始选，实现多组轮转；按显示器各自独立。</summary>
+    private readonly Dictionary<string, int> _rotateFrom = new(StringComparer.Ordinal);
 
     /// <summary>仍被跟踪的窗口总数（含已展开的组）。</summary>
     public int Count => _stash.Count;
@@ -87,13 +87,14 @@ public sealed class StashAllService
 
     /// <summary>
     /// 把屏幕上「还不属于任何场景」的窗口收成新的一组；没有可收的窗口时不建组。
-    /// monitorDevice 指定只收哪块屏幕的窗口（null = 全部屏幕），
-    /// 多显示器下每块屏幕各自形成独立场景，互不打扰。
+    /// monitorDevice 必填：只收这块屏幕的窗口，多显示器下每块屏幕各自形成独立场景。
+    /// 屏幕未知时返回 0（fail-closed）——绝不把「不知道哪块屏」当成「所有屏」。
     /// groupId 返回新建组的组号（0 = 没有建组），供上层立刻保存成场景。
     /// </summary>
-    public int StashAll(out int groupId, string monitorDevice = null)
+    public int StashAll(out int groupId, string monitorDevice)
     {
         groupId = 0;
+        if (string.IsNullOrEmpty(monitorDevice)) return 0;
         _stash.Prune();
         SyncGroups();
 
@@ -108,7 +109,7 @@ public sealed class StashAllService
             if (_stash.Contains(candidate.Handle.ToInt64())) continue;
 
             // 只看当前这块屏幕：在显示器 1 操作时不要动显示器 2 的窗口。
-            if (monitorDevice != null && NativeMethods.MonitorDeviceOf(candidate.Handle) != monitorDevice) continue;
+            if (!DisplayRules.BelongsTo(monitorDevice, NativeMethods.MonitorDeviceOf(candidate.Handle))) continue;
 
             // 管理员窗口：本程序不是管理员时 SW_HIDE 会被 UIPI 拒绝（ShowWindow 返回 false），
             // 硬收只会留下一个点不开的空胶囊，所以跳过并计数，由界面提示原因。
@@ -131,7 +132,7 @@ public sealed class StashAllService
             Id = newGroupId,
             CreatedAt = DateTime.Now,
             ForegroundBefore = IsEligibleActivationTarget(foreground) &&
-                               (monitorDevice == null || NativeMethods.MonitorDeviceOf(foreground) == monitorDevice)
+                               DisplayRules.BelongsTo(monitorDevice, NativeMethods.MonitorDeviceOf(foreground))
                 ? foreground
                 : IntPtr.Zero
         });
@@ -234,21 +235,24 @@ public sealed class StashAllService
     /// 展开一组仍收着的窗口。多组时按组号从新到旧轮转：这次展开第 3 组，下次第 2 组，
     /// 到最旧后回到最新。早先固定取「最新一个未展开组」，会导致热键永远只在同一组上来回，
     /// 更旧的组只能去点胶囊或面板。
-    /// monitorDevice 限定只在这块屏幕上轮转（null = 全部屏幕）。
+    /// monitorDevice 必填：只在这块屏幕上轮转，轮转指针也按屏幕各自记录，互不影响。
     /// </summary>
-    public int ExpandNewest(string monitorDevice = null)
+    public int ExpandNewest(string monitorDevice)
     {
+        if (string.IsNullOrEmpty(monitorDevice)) return 0;
+
         var collapsed = Groups()
             .Where(g => !g.Expanded)
-            .Where(g => monitorDevice == null || MonitorOfGroup(g.Id) == monitorDevice)
+            .Where(g => DisplayRules.BelongsTo(monitorDevice, MonitorOfGroup(g.Id)))
             .OrderByDescending(g => g.Id)
             .ToArray();
         if (collapsed.Length == 0) return 0;
 
-        var next = collapsed.FirstOrDefault(g => g.Id < _rotateFromId) ?? collapsed[0];
-        _rotateFromId = next.Id;
-        LastExpandedGroupId = next.Id;
-        return ExpandGroup(next.Id);
+        _rotateFrom.TryGetValue(monitorDevice, out int fromId);
+        int nextId = DisplayRules.NextRotation(collapsed.Select(g => g.Id).ToArray(), fromId);
+        _rotateFrom[monitorDevice] = nextId;
+        LastExpandedGroupId = nextId;
+        return ExpandGroup(nextId);
     }
 
     /// <summary>展开某一组（组继续保留，随时可再收起）。</summary>
@@ -315,14 +319,16 @@ public sealed class StashAllService
         return shown;
     }
 
-    /// <summary>展开全部组（组都保留）。monitorDevice 限定只展开这块屏幕上的场景（null = 全部屏幕）。</summary>
-    public int ExpandAll(string monitorDevice = null)
+    /// <summary>展开全部组（组都保留）。monitorDevice 必填：只展开这块屏幕上的场景。</summary>
+    public int ExpandAll(string monitorDevice)
     {
+        if (string.IsNullOrEmpty(monitorDevice)) return 0;
+
         int shown = 0;
         // 从旧到新依次还原：最后激活的是最新一组的前台窗口。
         foreach (var group in Groups()
                      .Where(g => !g.Expanded)
-                     .Where(g => monitorDevice == null || MonitorOfGroup(g.Id) == monitorDevice)
+                     .Where(g => DisplayRules.BelongsTo(monitorDevice, MonitorOfGroup(g.Id)))
                      .OrderBy(g => g.Id))
             shown += ExpandGroup(group.Id);
         return shown;
@@ -350,12 +356,15 @@ public sealed class StashAllService
     /// <summary>
     /// 这块屏幕上是否还有不属于任何场景的窗口（规则里的条件卡片要用）。
     /// 多显示器下按屏判断：另一块屏上有窗口不算，避免在空屏幕上误判「该新建场景」。
+    /// 屏幕未知时返回 false（fail-closed）。
     /// </summary>
-    public bool HasUntrackedVisibleWindows(string monitorDevice = null)
+    public bool HasUntrackedVisibleWindows(string monitorDevice)
     {
+        if (string.IsNullOrEmpty(monitorDevice)) return false;
+
         foreach (var candidate in WindowEnumerator.Enumerate(includeMinimized: false))
         {
-            if (monitorDevice != null && NativeMethods.MonitorDeviceOf(candidate.Handle) != monitorDevice) continue;
+            if (!DisplayRules.BelongsTo(monitorDevice, NativeMethods.MonitorDeviceOf(candidate.Handle))) continue;
             if (!_stash.Contains(candidate.Handle.ToInt64())) return true;
         }
         return false;

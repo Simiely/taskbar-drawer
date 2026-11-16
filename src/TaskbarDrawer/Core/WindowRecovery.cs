@@ -79,6 +79,7 @@ public static class WindowRecovery
 
                 NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
                 if (entry.ProcessId != 0 && pid != entry.ProcessId) continue;
+                if (!ProcessIdentityMatches(pid, entry.ProcessStartTicks)) continue;
                 if (!string.Equals(NativeMethods.Title(hwnd), entry.Title, StringComparison.Ordinal)) continue;
 
                 // 已经可见：它自己回来了或用户已处理，不要再碰。
@@ -101,6 +102,24 @@ public static class WindowRecovery
         if (remaining.Count == 0) Clear();
         else WriteEntries(remaining);
         return recovered;
+    }
+
+    /// <summary>
+    /// 进程身份校验：PID 会被系统复用，只比 PID + 标题可能认错窗口。
+    /// 记录里存了启动时间时按启动时间严格比对；读不到（权限 / 进程已退出）就放弃这一条。
+    /// </summary>
+    private static bool ProcessIdentityMatches(uint pid, long startTicks)
+    {
+        if (startTicks == 0) return true;
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById((int)pid);
+            return process.StartTime.ToUniversalTime().Ticks == startTicks;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>原子写入一组回收记录（临时文件 + 替换），由 Save / Recover 共用。</summary>

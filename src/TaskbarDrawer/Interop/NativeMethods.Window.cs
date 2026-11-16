@@ -15,6 +15,9 @@ public static partial class NativeMethods
     public const uint MONITOR_DEFAULTTONEAREST = 2;
     public const uint ATTACH_PARENT_PROCESS = 0xFFFFFFFF;
 
+    /// <summary>GetDpiForMonitor 的 MDT_EFFECTIVE_DPI：显示器实际生效的缩放比例。</summary>
+    private const int MDT_EFFECTIVE_DPI = 0;
+
     /// <summary>GetAncestor 的 GA_ROOT：取顶层祖先，用来判断命中窗口是不是任务栏的子窗口。</summary>
     public const uint GA_ROOT = 2;
 
@@ -35,6 +38,8 @@ public static partial class NativeMethods
     [DllImport("user32.dll")] public static extern bool SetWindowPlacement(IntPtr h, ref WINDOWPLACEMENT pl);
     [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr h, uint flags);
     [DllImport("user32.dll")] public static extern IntPtr MonitorFromPoint(POINT p, uint flags);
+    [DllImport("user32.dll")] public static extern IntPtr MonitorFromRect(ref RECT rect, uint flags);
+    [DllImport("shcore.dll")] private static extern int GetDpiForMonitor(IntPtr monitor, int dpiType, out uint dpiX, out uint dpiY);
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool GetMonitorInfoW(IntPtr mon, ref MONITORINFOEX mi);
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
@@ -165,6 +170,72 @@ public static partial class NativeMethods
         return dpi == 0 ? 96u : dpi;
     }
 
+    /// <summary>按设备名找显示器信息（工作区 / 全屏矩形）。显示器已拔掉时返回 false。</summary>
+    public static bool TryGetMonitorOfDevice(string device, out MONITORINFOEX info)
+    {
+        var found = default(MONITORINFOEX);
+        bool ok = false;
+
+        if (!string.IsNullOrEmpty(device))
+        {
+            EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr mon, IntPtr hdc, ref RECT r, IntPtr data) =>
+            {
+                var mi = new MONITORINFOEX { cbSize = Marshal.SizeOf<MONITORINFOEX>() };
+                if (GetMonitorInfoW(mon, ref mi) && string.Equals(mi.szDevice, device, StringComparison.Ordinal))
+                {
+                    found = mi;
+                    ok = true;
+                    return false;
+                }
+                return true;
+            }, IntPtr.Zero);
+        }
+
+        info = found;
+        return ok;
+    }
+
+    /// <summary>矩形最近的显示器（MONITOR_DEFAULTTONEAREST）：目标屏被拔掉时也不会返回空。</summary>
+    public static bool TryGetMonitorOfRect(RECT rect, out MONITORINFOEX info)
+    {
+        info = new MONITORINFOEX { cbSize = Marshal.SizeOf<MONITORINFOEX>() };
+        IntPtr monitor = rect.IsEmpty ? IntPtr.Zero : MonitorFromRect(ref rect, MONITOR_DEFAULTTONEAREST);
+        return monitor != IntPtr.Zero && GetMonitorInfoW(monitor, ref info);
+    }
+
+    /// <summary>设备名对应的有效 DPI（96 = 100%）。找不到时按 96 处理。</summary>
+    public static uint DpiOfDevice(string device)
+    {
+        uint dpi = 96;
+        if (string.IsNullOrEmpty(device)) return dpi;
+
+        EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr mon, IntPtr hdc, ref RECT r, IntPtr data) =>
+        {
+            var mi = new MONITORINFOEX { cbSize = Marshal.SizeOf<MONITORINFOEX>() };
+            if (!GetMonitorInfoW(mon, ref mi) || !string.Equals(mi.szDevice, device, StringComparison.Ordinal))
+                return true;
+
+            if (GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, out uint x, out _) == 0 && x > 0) dpi = x;
+            return false;
+        }, IntPtr.Zero);
+
+        return dpi == 0 ? 96u : dpi;
+    }
+
+    /// <summary>点落在哪块显示器上；用于反馈浮层 / 面板按操作屏定位。</summary>
+    public static bool TryGetMonitorOfPoint(POINT point, out MONITORINFOEX info)
+    {
+        info = new MONITORINFOEX { cbSize = Marshal.SizeOf<MONITORINFOEX>() };
+        IntPtr monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+        return monitor != IntPtr.Zero && GetMonitorInfoW(monitor, ref info);
+    }
+
+    public static string MonitorDeviceOfPoint(POINT point)
+        => TryGetMonitorOfPoint(point, out var info) ? info.szDevice : null;
+
+    public static string MonitorDeviceOfRect(RECT rect)
+        => TryGetMonitorOfRect(rect, out var info) ? info.szDevice : null;
+
     public static bool TryGetMonitorOfWindow(IntPtr hwnd, out MONITORINFOEX info)
     {
         info = new MONITORINFOEX { cbSize = Marshal.SizeOf<MONITORINFOEX>() };
@@ -199,34 +270,20 @@ public static partial class NativeMethods
 
     /// <summary>
     /// 按设备名找显示器的工作区原点（隐藏窗口的矩形是哨兵值，不能按窗口位置反查）。
-    /// 显示器被拔掉 / 设备名变化时退回窗口当前所在显示器，并按 (0,0) 换算会整体偏移。
+    /// 显示器被拔掉 / 设备名变化时退回「目标矩形最近的显示器」，保证换算与
+    /// DisplayRules.EnsureVisible 用的是同一块屏。
     /// </summary>
-    public static POINT WorkOriginOfDevice(string device, IntPtr fallbackWindow)
+    public static POINT WorkOriginOfDevice(string device, RECT fallbackRect)
     {
-        POINT origin = default;
-        bool found = false;
+        if (TryGetMonitorOfDevice(device, out var info))
+            return new POINT { X = info.rcWork.Left, Y = info.rcWork.Top };
 
-        if (!string.IsNullOrEmpty(device))
-        {
-            EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr mon, IntPtr hdc, ref RECT r, IntPtr data) =>
-            {
-                var mi = new MONITORINFOEX { cbSize = Marshal.SizeOf<MONITORINFOEX>() };
-                if (GetMonitorInfoW(mon, ref mi) && string.Equals(mi.szDevice, device, StringComparison.Ordinal))
-                {
-                    origin = new POINT { X = mi.rcWork.Left, Y = mi.rcWork.Top };
-                    found = true;
-                    return false;
-                }
-                return true;
-            }, IntPtr.Zero);
-        }
+        if (TryGetMonitorOfRect(fallbackRect, out var nearest))
+            return new POINT { X = nearest.rcWork.Left, Y = nearest.rcWork.Top };
 
-        if (found) return origin;
-
-        origin = WorkOriginOfWindow(fallbackWindow);
         Diagnostics.Write("window placement", new InvalidOperationException(
-            $"找不到保存的显示器 {device ?? "(未记录)"}，已按窗口当前显示器还原"));
-        return origin;
+            $"找不到保存的显示器 {device ?? "(未记录)"}，按 (0,0) 换算"));
+        return default;
     }
 
     public static RECT ToScreenCoordinates(RECT rect, POINT origin)

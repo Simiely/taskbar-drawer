@@ -23,6 +23,8 @@ public sealed class MainPanelWindow : Window
     private const double EstimatedHeight = 780;
 
     private readonly StackPanel _sceneList = new();
+    private ScrollViewer _rootScroll;
+    private ScrollViewer _sceneScroll;
     private readonly TextBlock _summary;
     private readonly TextBlock _emptyHint;
     private readonly ToggleRow _singleRow;
@@ -177,6 +179,12 @@ public sealed class MainPanelWindow : Window
             FlushSurface();
             Show();
             UpdateLayout();
+            // 高度上限要按「面板将要出现的那块屏」重算：主屏 4K、副屏 1080p 时
+            // 按主屏工作区算出来的高度会超出副屏，底部按钮点不到。
+            // 恢复位置时窗口已经在目标屏上；首次弹出时窗口还在默认位置，用鼠标所在屏。
+            if (!ApplyMonitorSizing(preferCursor: !restored))
+                ApplyMonitorSizing(preferCursor: true);
+            UpdateLayout();
             if (restored) ClampToWorkArea();
             else PositionCorner();
         }
@@ -200,14 +208,18 @@ public sealed class MainPanelWindow : Window
     private void ClampToWorkArea()
     {
         double height = ActualHeight > 0 ? ActualHeight : EstimatedHeight;
-        double scale = DpiScale();
 
-        // WorkingArea 是物理像素，WPF 的 Left/Top/Width 是 DIP：先统一单位再比较，
-        // 否则 125% / 150% 缩放下会把「物理右边界」当 DIP 用，面板整体跑到屏幕外。
-        var center = new System.Drawing.Point(
-            (int)((Left + Width / 2) * scale), (int)((Top + height / 2) * scale));
-        Rect work = ToDip(Forms.Screen.FromPoint(center).WorkingArea, scale);
+        // 用面板真实的物理矩形找所在显示器：DIP 坐标跨不同 DPI 的屏幕没有统一比例，
+        // 先用面板自己的缩放把 DIP 换成物理，再取那块屏的 DPI 换回来，才能得到正确答案。
+        IntPtr hwnd = new WindowInteropHelper(this).Handle;
+        NativeMethods.MONITORINFOEX monitor;
+        if (hwnd != IntPtr.Zero && NativeMethods.GetWindowRect(hwnd, out var rect))
+        {
+            if (!NativeMethods.TryGetMonitorOfRect(rect, out monitor)) return;
+        }
+        else if (!NativeMethods.TryGetMonitorOfPoint(CursorPoint(), out monitor)) return;
 
+        Rect work = ToDip(monitor.rcWork, NativeMethods.DpiOfDevice(monitor.szDevice) / 96.0);
         Left = Math.Min(Math.Max(Left, work.Left + 8), Math.Max(work.Left + 8, work.Right - Width - 12));
         Top = Math.Min(Math.Max(Top, work.Top + 8), Math.Max(work.Top + 8, work.Bottom - height - 12));
     }
@@ -216,24 +228,50 @@ public sealed class MainPanelWindow : Window
     {
         // 跟着鼠标所在的显示器走：多屏下点哪块屏的托盘 / 胶囊，面板就出现在哪块屏，
         // 不再永远贴主屏右下角（副屏用户会以为面板「跑到别处去了」）。
-        double scale = DpiScale();
-        System.Drawing.Point cursor = Forms.Cursor.Position;
-        Rect work = ToDip(Forms.Screen.FromPoint(cursor).WorkingArea, scale);
+        if (!NativeMethods.TryGetMonitorOfPoint(CursorPoint(), out var monitor)) return;
 
+        // 换算必须用「目标屏」的 DPI：首次弹出时面板还在主屏，
+        // 拿主屏缩放去换算副屏工作区会让面板整体偏移，甚至落到屏幕外。
+        Rect work = ToDip(monitor.rcWork, NativeMethods.DpiOfDevice(monitor.szDevice) / 96.0);
         double height = ActualHeight > 0 ? ActualHeight : EstimatedHeight;
         Left = Math.Max(work.Left + 8, work.Right - Width - 12);
         Top = Math.Max(work.Top + 8, work.Bottom - height - 12);
     }
 
-    /// <summary>面板当前所在显示器的缩放系数（96 DPI = 1.0）。</summary>
-    private double DpiScale()
+    /// <summary>
+    /// 按目标显示器的工作区重算两处高度上限（主滚动区 / 场景列表）。
+    /// 这两处原来用 SystemParameters.WorkArea（永远是主屏），小副屏上会把窗口顶出屏幕。
+    /// </summary>
+    /// <param name="preferCursor">true = 用鼠标所在屏（首次弹出 / 面板还没定位）；false = 用窗口当前所在屏。</param>
+    private bool ApplyMonitorSizing(bool preferCursor)
     {
-        IntPtr hwnd = new WindowInteropHelper(this).Handle;
-        return hwnd == IntPtr.Zero ? 1.0 : NativeMethods.DpiOf(hwnd) / 96.0;
+        NativeMethods.MONITORINFOEX monitor;
+        if (preferCursor)
+        {
+            if (!NativeMethods.TryGetMonitorOfPoint(CursorPoint(), out monitor)) return false;
+        }
+        else
+        {
+            IntPtr hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd == IntPtr.Zero || !NativeMethods.GetWindowRect(hwnd, out var rect) ||
+                !NativeMethods.TryGetMonitorOfRect(rect, out monitor))
+                return false;
+        }
+
+        double workHeight = monitor.rcWork.Height / (NativeMethods.DpiOfDevice(monitor.szDevice) / 96.0);
+        if (_rootScroll != null) _rootScroll.MaxHeight = Math.Max(320, workHeight - 40);
+        if (_sceneScroll != null) _sceneScroll.MaxHeight = Math.Max(180, workHeight * 0.45);
+        return true;
+    }
+
+    private static NativeMethods.POINT CursorPoint()
+    {
+        System.Drawing.Point cursor = Forms.Cursor.Position;
+        return new NativeMethods.POINT { X = cursor.X, Y = cursor.Y };
     }
 
     /// <summary>物理像素矩形 → DIP 矩形。</summary>
-    private static Rect ToDip(System.Drawing.Rectangle area, double scale)
+    private static Rect ToDip(NativeMethods.RECT area, double scale)
         => new(area.Left / scale, area.Top / scale, area.Width / scale, area.Height / scale);
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -363,13 +401,15 @@ public sealed class MainPanelWindow : Window
         stack.Children.Add(BuildHotkeys(stashEdit));
 
         // 组多起来后整块面板会超过屏幕高度：整体套一层滚动，保证最下面的开关也够得着。
-        root.Child = new ScrollViewer
+        // 初始值按主屏算，ShowPanel 时再按实际所在显示器重算（ApplyMonitorSizing）。
+        _rootScroll = new ScrollViewer
         {
             Content = stack,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             MaxHeight = Math.Max(320, SystemParameters.WorkArea.Height - 40)
         };
+        root.Child = _rootScroll;
         return root;
     }
 
@@ -423,14 +463,14 @@ public sealed class MainPanelWindow : Window
         _sceneList.Margin = new Thickness(0, 8, 0, 0);
 
         // 场景多了会把面板顶出屏幕：给列表一个高度上限并允许滚动，否则底部几行永远点不到。
-        var scroll = new ScrollViewer
+        _sceneScroll = new ScrollViewer
         {
             Content = _sceneList,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             MaxHeight = Math.Max(180, SystemParameters.WorkArea.Height * 0.45)
         };
-        panel.Children.Add(scroll);
+        panel.Children.Add(_sceneScroll);
         panel.Children.Add(_emptyHint);
 
         // 三个动作会自动换行，窄屏 / 大字号下也不会挤出面板。

@@ -59,6 +59,9 @@ public sealed class SingleWindowMode : IDisposable
     /// <summary>一次应用里被最小化的窗口数（订阅方可用于状态提示）。</summary>
     public event Action<int> Applied;
 
+    /// <summary>打开开关时这块屏幕上没有可接管的窗口（组合根用来提示，而不是静默无反应）。</summary>
+    public event Action NoCandidateOnScreen;
+
     public void Start()
     {
         if (_disposed || _hook != IntPtr.Zero) return;
@@ -85,14 +88,28 @@ public sealed class SingleWindowMode : IDisposable
 
     /// <summary>
     /// 立即应用一次。从托盘 / 面板点开关时，前台是本进程或 shell，不能直接当前台窗口用；
-    /// 这时退而取 Z 序最靠前的候选窗口，否则开关看起来「点了没反应」。
+    /// 这时退而取「鼠标所在屏幕上」Z 序最靠前的候选窗口。
+    /// 不能取全屏 Z 序第一枚：那可能是另一块屏的窗口，随后会最小化那块屏上的所有窗口。
     /// </summary>
     private void ApplyForegroundOrCandidate()
     {
         var windows = WindowEnumerator.Enumerate(includeMinimized: false);
         IntPtr foreground = NativeMethods.GetForegroundWindow();
-        var target = windows.FirstOrDefault(w => w.Handle == foreground) ?? windows.FirstOrDefault();
-        if (target != null) Apply(target.Handle);
+        string monitor = NativeMethods.MonitorDeviceOfCursor();
+
+        var target = windows.FirstOrDefault(w => w.Handle == foreground);
+        if (target == null)
+        {
+            target = windows.FirstOrDefault(w =>
+                DisplayRules.BelongsTo(monitor, NativeMethods.MonitorDeviceOf(w.Handle)));
+        }
+
+        if (target == null)
+        {
+            NoCandidateOnScreen?.Invoke();
+            return;
+        }
+        Apply(target.Handle);
     }
 
     /// <summary>

@@ -18,6 +18,13 @@ public sealed class SavedWindow
     public int Width { get; set; }
     public int Height { get; set; }
 
+    /// <summary>
+    /// 保存时窗口所在显示器（设备名，如 \\.\DISPLAY1）。
+    /// 还原时只匹配同一块屏的窗口：否则屏 1 的场景会把屏 2 上同程序的窗口挪过来。
+    /// 旧快照没有该字段（null）时按保存矩形推断。
+    /// </summary>
+    public string MonitorDevice { get; set; }
+
     public bool Maximized { get; set; }
 }
 
@@ -75,8 +82,9 @@ internal static class SavedGroupStore
 {
     public static string FilePath => Path.Combine(AppSettings.Folder, "saved-groups.json");
 
-    public static List<SavedGroup> Load()
+    public static List<SavedGroup> Load(out string warning)
     {
+        warning = null;
         try
         {
             if (!File.Exists(FilePath)) return new List<SavedGroup>();
@@ -85,12 +93,17 @@ internal static class SavedGroupStore
         }
         catch
         {
-            // 文件损坏 / 无权限：按「还没有场景」处理，不影响其它功能。
+            // 文件损坏 / 无权限：先备份一份再按「还没有场景」处理，
+            // 避免下一次保存直接把用户原来的场景文件覆盖掉。
+            string backup = FilePath + ".corrupt";
+            try { File.Copy(FilePath, backup, true); } catch { }
+            warning = $"场景文件读取失败，已备份为 {Path.GetFileName(backup)}；本次按空场景列表启动";
             return new List<SavedGroup>();
         }
     }
 
-    public static void Save(List<SavedGroup> groups)
+    /// <summary>原子落盘；返回 false 表示这次没写进去（磁盘满 / 被占用 / 无权限）。</summary>
+    public static bool Save(List<SavedGroup> groups)
     {
         try
         {
@@ -98,10 +111,12 @@ internal static class SavedGroupStore
             string temp = FilePath + ".tmp";
             File.WriteAllText(temp, JsonSerializer.Serialize(groups, new JsonSerializerOptions { WriteIndented = true }));
             File.Move(temp, FilePath, true);
+            return true;
         }
         catch
         {
-            // 写不进去只影响下次启动能否恢复场景，本次运行照常。
+            // 写不进去只影响下次启动能否恢复场景，本次运行照常；由上层提示用户。
+            return false;
         }
     }
 }

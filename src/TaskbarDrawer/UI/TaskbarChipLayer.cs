@@ -270,7 +270,10 @@ public sealed class TaskbarChipLayer : IDisposable
         if (taskbar == IntPtr.Zero) return;
         if (!NativeMethods.GetWindowRect(taskbar, out var bar) || bar.IsEmpty) return;
 
-        bool hideAll = ForegroundIsFullscreen();
+        // 只有全屏窗口和任务栏在同一块屏时才让位：副屏全屏游戏不该把主屏胶囊也藏起来。
+        string fullscreenDevice = FullscreenForegroundDevice();
+        bool hideAll = fullscreenDevice != null &&
+                       fullscreenDevice == NativeMethods.MonitorDeviceOf(taskbar);
 
         // 贴在托盘区旁边；拿不到托盘区时退回任务栏末端。
         var anchor = bar;
@@ -411,19 +414,23 @@ public sealed class TaskbarChipLayer : IDisposable
         return Math.Max(MinChipWidthPx, (int)Math.Round(scaled));
     }
 
-    /// <summary>前台窗口铺满整块屏幕（全屏游戏 / 视频）时不打扰它。</summary>
-    private static bool ForegroundIsFullscreen()
+    /// <summary>
+    /// 前台窗口铺满整块屏幕（全屏游戏 / 视频）时返回它所在的显示器，否则 null。
+    /// 返回设备名而不是 bool：调用方要判断全屏的是不是胶囊所在的那块屏。
+    /// </summary>
+    private static string FullscreenForegroundDevice()
     {
         IntPtr foreground = NativeMethods.GetForegroundWindow();
-        if (foreground == IntPtr.Zero) return false;
-        if (WindowEnumerator.IsOwnProcessWindow(foreground)) return false;
-        if (WindowEnumerator.IsShellWindow(foreground)) return false;
-        if (!NativeMethods.GetWindowRect(foreground, out var rect) || rect.IsEmpty) return false;
-        if (!NativeMethods.TryGetMonitorOfWindow(foreground, out var monitor)) return false;
+        if (foreground == IntPtr.Zero) return null;
+        if (WindowEnumerator.IsOwnProcessWindow(foreground)) return null;
+        if (WindowEnumerator.IsShellWindow(foreground)) return null;
+        if (!NativeMethods.GetWindowRect(foreground, out var rect) || rect.IsEmpty) return null;
+        if (!NativeMethods.TryGetMonitorOfWindow(foreground, out var monitor)) return null;
 
         var screen = monitor.rcMonitor;
-        return rect.Left <= screen.Left + 2 && rect.Top <= screen.Top + 2 &&
-               rect.Right >= screen.Right - 2 && rect.Bottom >= screen.Bottom - 2;
+        bool fullscreen = rect.Left <= screen.Left + 2 && rect.Top <= screen.Top + 2 &&
+                          rect.Right >= screen.Right - 2 && rect.Bottom >= screen.Bottom - 2;
+        return fullscreen ? monitor.szDevice : null;
     }
 
     public void Dispose()
