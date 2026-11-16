@@ -20,6 +20,7 @@ related: []
 - [README](../README.md) — 用户视角：功能、系统要求、快速开始、命令行
 - [AGENTS](../AGENTS.md) — 项目规则：技术栈、关键坑、约定、入口规则、常用命令
 - [DEVELOPMENT](../DEVELOPMENT.md) — 开发视角：分层架构、关键数据流、问题记录
+- [交接](handoff.md) — 接手入口：当前状态、优化待办、未落地方案、发布与验收
 - [CHANGELOG](../CHANGELOG.md) — 版本历史
 
 新增跨模块文档时放在 `docs/` 并带 frontmatter，格式见 `_template.md`。

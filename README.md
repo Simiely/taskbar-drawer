@@ -2,7 +2,7 @@
 
 把一组正在用的窗口「收」进任务栏上的一枚小胶囊，点一下原样展开。每次收纳都会自动存成一个**场景**，关掉之后还能按保存的位置一键拉起。
 
-> 程序里只有两个概念：⭐ **场景** = 一组窗口 + 保存的位置；**单窗口模式** = 每个场景当成一个窗口来切换。
+> 程序里只有两个概念：● **场景** = 一组窗口 + 保存的位置；**单窗口模式** = 每个场景当成一个窗口来切换。
 
 > Windows 11 不允许第三方程序往任务栏里塞控件，所以胶囊是一枚紧贴任务栏的无边框置顶小窗：视觉上贴着任务栏，行为上可点击。
 
@@ -43,7 +43,7 @@ dotnet publish src/TaskbarDrawer/TaskbarDrawer.csproj -c Release -r win-x64 `
   --self-contained false -p:PublishSingleFile=true -o publish
 ```
 
-产物是单个 `publish\TaskbarDrawer.exe`（约 320 KB，需要 .NET 8 运行时）。
+产物是单个 `publish\TaskbarDrawer.exe`（约 430 KB，需要 .NET 8 运行时）。
 
 ## 命令行
 

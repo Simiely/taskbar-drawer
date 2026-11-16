@@ -29,7 +29,7 @@
 ## 约定
 
 - UI 文案、注释、提交说明都用中文
-- 面向用户的名词只有两个：**场景**（一组窗口 + 保存的位置，运行态与快照共用一枚 💾 胶囊）、**单窗口模式**（每个场景算一个窗口）。不要再出现「编组 / 分组」
+- 面向用户的名词只有两个：**场景**（一组窗口 + 保存的位置，运行态与快照共用一枚带彩色圆点的胶囊）、**单窗口模式**（每个场景算一个窗口）。不要再出现「编组 / 分组」
 - 版本号在 `TaskbarDrawer.csproj` 手动 bump，`InformationalVersion` 自动拼构建时间；托盘菜单与启动 toast 都要显示它
 - 所有用户入口（托盘 / 面板 / 胶囊 / 热键）都过 `AppShell.Safe()` 做局部异常隔离；只有退出路径不包
 - 新增文件按 `Core`（不引用 WPF 控件）/ `UI`（WPF）/ `Interop`（P/Invoke）分层，命名空间与目录一致
@@ -69,10 +69,11 @@ python tools/repo-kit/generate.py --root . --check
 
 ## 当前规模
 
-- 页面：1（critical=0）
-- 按 type：reference=1
+- 页面：2（critical=0）
+- 按 type：reference=2
 - 词表版本：2.4.0
 
 ## 详细规则
 
-- 暂无拆分；超过 150 词再按 knowledge-base 单项目规范拆到 `docs/`，用 @引用 加载
+- 进度、待办与发布路径在 [docs/handoff.md](docs/handoff.md)，开工前先读；规则与坑仍以本文件为准
+- 再扩写超过 150 词时按 knowledge-base 单项目规范拆到 `docs/`，用 @引用 加载

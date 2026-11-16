@@ -22,10 +22,12 @@ related: []
 
 | 页面 | kind | status | owner | tier | source |
 |---|---|---|---|---|---|
+| [交接：进度、待办与发布路径](../handoff.md) | note | active | @simiely | normal | `DEVELOPMENT.md` |
 | [文档索引](../index.md) | index | active | @simiely | normal | `README.md` |
 
 ## 全部页面
 
 | id | 标题 | type | kind | status |
 |---|---|---|---|---|
+| `docs.handoff` | [交接：进度、待办与发布路径](../handoff.md) | reference | note | active |
 | `docs.index` | [文档索引](../index.md) | reference | index | active |
