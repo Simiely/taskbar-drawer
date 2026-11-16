@@ -641,7 +641,7 @@ public sealed class AppShell : IDisposable
             string message = moved + launched > 0
                 ? $"正在打开「{group.Name}」· {moved + launched} 个窗口"
                 : $"「{group.Name}」的程序都没找到";
-            if (busy > 0) message += $"（{busy} 个窗口已在其它场景或其它屏幕上，未重复打开）";
+            if (busy > 0) message += $"（{busy} 个窗口已在其它场景，未重复打开）";
             if (failed > 0) message += $"（{failed} 个窗口未能接入场景）";
             Feedback(message, _workspace.MonitorOfSaved(group));
             UpdateSurface();

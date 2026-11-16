@@ -51,7 +51,7 @@ public sealed class WorkspaceService
 
                 var saved = NativeMethods.RECT.FromLTRB(
                     window.Left, window.Top, window.Left + window.Width, window.Top + window.Height);
-                if (!DisplayRules.TryRepairLegacyRect(saved, monitor.rcMonitor, monitor.rcWork, out var fixedRect))
+                if (!DisplayRules.TryRepairLegacyRect(saved, monitor.rcMonitor, out var fixedRect))
                     continue;
 
                 window.Left = fixedRect.Left;

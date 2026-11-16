@@ -180,7 +180,7 @@ public class DisplayRulesTests
         var bounds = Rect(1920, 0, 1920, 1080);
         var legacy = Rect(4020, 100, 1000, 700);
 
-        Assert.True(DisplayRules.TryRepairLegacyRect(legacy, bounds, bounds, out var repaired));
+        Assert.True(DisplayRules.TryRepairLegacyRect(legacy, bounds, out var repaired));
         Assert.Equal(Rect(2100, 100, 1000, 700), repaired);
     }
 
@@ -188,7 +188,15 @@ public class DisplayRulesTests
     public void TryRepairLegacyRect_Leaves_Valid_Secondary_Rect_Alone()
     {
         var bounds = Rect(1920, 0, 1920, 1080);
-        Assert.False(DisplayRules.TryRepairLegacyRect(Rect(2100, 100, 1000, 700), bounds, bounds, out _));
+        Assert.False(DisplayRules.TryRepairLegacyRect(Rect(2100, 100, 1000, 700), bounds, out _));
+    }
+
+    [Fact]
+    public void TryRepairLegacyRect_Leaves_Straddling_Window_Alone()
+    {
+        // 窗口右半边在桌面外、左半边在副屏：这是用户故意摆的位置，不能当成旧数据平移。
+        var bounds = Rect(1920, 0, 1920, 1080);
+        Assert.False(DisplayRules.TryRepairLegacyRect(Rect(3300, 100, 2000, 700), bounds, out _));
     }
 
     [Fact]
@@ -196,6 +204,6 @@ public class DisplayRulesTests
     {
         // 主屏原点为 (0,0)，旧数据本来就是对的：任何合法矩形都不能被搬走。
         var bounds = Rect(0, 0, 1920, 1080);
-        Assert.False(DisplayRules.TryRepairLegacyRect(Rect(100, 100, 900, 700), bounds, bounds, out _));
+        Assert.False(DisplayRules.TryRepairLegacyRect(Rect(100, 100, 900, 700), bounds, out _));
     }
 }
