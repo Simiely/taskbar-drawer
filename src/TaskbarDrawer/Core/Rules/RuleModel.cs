@@ -2,11 +2,10 @@
 
 namespace TaskbarDrawer.Core.Rules;
 
-/// <summary>规则流由哪个用户入口触发。入口固定三个，界面上不可增删。</summary>
+/// <summary>规则流由哪个用户入口触发。入口固定两个，界面上不可增删。</summary>
 public enum RuleTriggerKind
 {
     Hotkey,
-    GroupChip,
     SceneChip
 }
 
@@ -42,8 +41,8 @@ public sealed class RuleSet
     public RuleFlow? Flow(RuleTriggerKind trigger) => Flows.FirstOrDefault(f => f.Trigger == trigger);
 
     /// <summary>
-    /// 默认规则 = 产品手感。热键沿用改造前的三段式；编组胶囊为「点一下展开、再点收回」。
-    /// 热键：有未分组窗口 → 收一组；否则屏幕上还有展开的组 → 全收起；否则展开最近一组。
+    /// 默认规则 = 产品手感。热键沿用三段式；场景胶囊为「运行中切换、已关闭还原」。
+    /// 热键：有未归入场景的窗口 → 新建场景；否则还有展开的场景 → 全收起；否则展开最近的场景。
     /// </summary>
     public static RuleSet CreateDefault()
     {
@@ -61,13 +60,13 @@ public sealed class RuleSet
                             Kind = RuleCatalog.ConditionHasUntracked,
                             Then = new List<RuleStep>
                             {
-                                new() { Kind = RuleCatalog.ActionStashNew }
+                                new() { Kind = RuleCatalog.ActionNewScene }
                             },
                             Else = new List<RuleStep>
                             {
                                 new()
                                 {
-                                    Kind = RuleCatalog.ConditionHasExpandedGroup,
+                                    Kind = RuleCatalog.ConditionHasExpandedScene,
                                     Then = new List<RuleStep>
                                     {
                                         new() { Kind = RuleCatalog.ActionCollapseExpanded }
@@ -83,14 +82,6 @@ public sealed class RuleSet
                 },
                 new()
                 {
-                    Trigger = RuleTriggerKind.GroupChip,
-                    Steps = new List<RuleStep>
-                    {
-                        new() { Kind = RuleCatalog.ActionToggleGroup }
-                    }
-                },
-                new()
-                {
                     Trigger = RuleTriggerKind.SceneChip,
                     Steps = new List<RuleStep>
                     {
@@ -99,7 +90,7 @@ public sealed class RuleSet
                             Kind = RuleCatalog.ConditionSceneRunning,
                             Then = new List<RuleStep>
                             {
-                                new() { Kind = RuleCatalog.ActionToggleGroup }
+                                new() { Kind = RuleCatalog.ActionToggleScene }
                             },
                             Else = new List<RuleStep>
                             {

@@ -20,7 +20,7 @@ public sealed class TrayService : IDisposable
     private readonly Forms.ToolStripMenuItem _openPanel;
     private readonly Forms.ToolStripMenuItem _stashItem;
     private readonly Forms.ToolStripMenuItem _expandLatest;
-    private readonly Forms.ToolStripMenuItem _expandGroupMenu;
+    private readonly Forms.ToolStripMenuItem _sceneMenu;
     private readonly Forms.ToolStripMenuItem _expandAll;
     private readonly Forms.ToolStripMenuItem _singleWindow;
     private readonly Forms.ToolStripMenuItem _autoStart;
@@ -33,7 +33,7 @@ public sealed class TrayService : IDisposable
 
     public TrayService()
     {
-        // 深色渲染器必须同时挂到 ToolStripManager 上，否则「按分组切换」这类子菜单仍是白底。
+        // 深色渲染器必须同时挂到 ToolStripManager 上，否则「按场景切换」这类子菜单仍是白底。
         var renderer = new DarkMenuRenderer();
         Forms.ToolStripManager.Renderer = renderer;
         _menu = new Forms.ContextMenuStrip
@@ -59,20 +59,20 @@ public sealed class TrayService : IDisposable
 
         _menu.Items.Add(new Forms.ToolStripSeparator());
 
-        // 实际动作是把「此刻屏幕上所有未分组的窗口」收成一组，不是只收一个窗口。
-        _stashItem = new Forms.ToolStripMenuItem("收起屏幕上的窗口（新一组）")
+        // 实际动作是把「此刻当前显示器上所有未归入场景的窗口」收成一个新场景。
+        _stashItem = new Forms.ToolStripMenuItem("新建场景（收起当前显示器上的窗口）")
         {
-            ToolTipText = "把此刻屏幕上的窗口收成新的一组；可以反复收纳，之前的组不会丢"
+            ToolTipText = "把这块屏幕上的窗口收成一个新场景并保存；可以反复新建，之前的场景不会丢"
         };
         _stashItem.Click += (_, _) => StashRequested?.Invoke();
         _menu.Items.Add(_stashItem);
 
-        _expandLatest = new Forms.ToolStripMenuItem("展开最近一组");
+        _expandLatest = new Forms.ToolStripMenuItem("展开最近的场景");
         _expandLatest.Click += (_, _) => ExpandLatestRequested?.Invoke();
         _menu.Items.Add(_expandLatest);
 
-        _expandGroupMenu = new Forms.ToolStripMenuItem("按分组切换");
-        _menu.Items.Add(_expandGroupMenu);
+        _sceneMenu = new Forms.ToolStripMenuItem("按场景切换");
+        _menu.Items.Add(_sceneMenu);
 
         _expandAll = new Forms.ToolStripMenuItem("全部展开");
         _expandAll.Click += (_, _) => ExpandAllRequested?.Invoke();
@@ -156,7 +156,7 @@ public sealed class TrayService : IDisposable
     public event Action ToggleSingleWindowRequested;
     public event Action StashRequested;
     public event Action ExpandLatestRequested;
-    public event Action<int> GroupRequested;
+    public event Action<int> SceneRequested;
     public event Action ExpandAllRequested;
     public event Action<bool> SingleWindowRequested;
     public event Action<bool> AutoStartRequested;
@@ -186,31 +186,35 @@ public sealed class TrayService : IDisposable
         _stashItem.ShortcutKeyDisplayString = stashGesture;
     }
 
-    /// <summary>每次收纳 / 展开后刷新菜单：组列表与可用状态。</summary>
-    public void SetGroups(IReadOnlyList<StashGroupSummary> groups, int total)
+    /// <summary>每次收纳 / 展开后刷新菜单：场景列表与可用状态。</summary>
+    public void SetScenes(IReadOnlyList<StashGroupSummary> groups, int total)
     {
         if (_disposed) return;
         bool has = groups.Count > 0;
 
         _expandLatest.Enabled = has;
         _expandAll.Enabled = has;
-        _expandGroupMenu.Enabled = has;
+        _sceneMenu.Enabled = has;
 
         // 逐项移除并释放：定时 Prune 会反复刷新。
         // 菜单正开着时不能 Dispose（绘制路径还持有这些项），只摘掉引用交给 GC。
         bool menuOpen = _menu.Visible;
-        foreach (Forms.ToolStripItem item in _expandGroupMenu.DropDownItems.Cast<Forms.ToolStripItem>().ToArray())
+        foreach (Forms.ToolStripItem item in _sceneMenu.DropDownItems.Cast<Forms.ToolStripItem>().ToArray())
         {
-            _expandGroupMenu.DropDownItems.Remove(item);
+            _sceneMenu.DropDownItems.Remove(item);
             if (!menuOpen) item.Dispose();
         }
 
         foreach (var group in groups)
         {
-            var item = new Forms.ToolStripMenuItem($"第 {group.Id} 组 · {group.Count} 个窗口 · {group.State}");
+            // 和胶囊、主面板同一套图标：💾 场景。
+            string head = string.IsNullOrEmpty(group.Name)
+                ? $"{Theme.SceneIcon} 场景 {group.Id}"
+                : $"{Theme.SceneIcon} {group.Name}";
+            var item = new Forms.ToolStripMenuItem($"{head} · {group.Count} 个窗口 · {group.State}");
             int id = group.Id;
-            item.Click += (_, _) => GroupRequested?.Invoke(id);
-            _expandGroupMenu.DropDownItems.Add(item);
+            item.Click += (_, _) => SceneRequested?.Invoke(id);
+            _sceneMenu.DropDownItems.Add(item);
         }
     }
 

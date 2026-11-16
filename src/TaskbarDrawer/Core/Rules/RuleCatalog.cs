@@ -16,7 +16,7 @@ public sealed class RuleCardDefinition
     public string Title { get; init; } = "";
     public string Description { get; init; } = "";
 
-    /// <summary>空 = 三个入口都能用；非空 = 只在这些入口下出现（避免出现永远不成立的卡）。</summary>
+    /// <summary>空 = 所有入口都能用；非空 = 只在这些入口下出现（避免出现永远不成立的卡）。</summary>
     public RuleTriggerKind[] OnlyTriggers { get; init; } = Array.Empty<RuleTriggerKind>();
 
     /// <summary>可编辑参数的键；null 表示这张卡没有参数。</summary>
@@ -37,31 +37,22 @@ public static class RuleCatalog
 {
     // 条件
     public const string ConditionHasUntracked = "cond.hasUntracked";
-    public const string ConditionHasExpandedGroup = "cond.hasExpandedGroup";
-    public const string ConditionChipOnScreen = "cond.chipOnScreen";
+    public const string ConditionHasExpandedScene = "cond.hasExpandedScene";
     public const string ConditionSceneRunning = "cond.sceneRunning";
 
     // 动作
-    public const string ActionStashNew = "act.stashNew";
+    public const string ActionNewScene = "act.newScene";
     public const string ActionExpandLatest = "act.expandLatest";
     public const string ActionCollapseExpanded = "act.collapseExpanded";
     public const string ActionExpandAll = "act.expandAll";
-    public const string ActionExpandGroup = "act.expandGroup";
-    public const string ActionToggleGroup = "act.toggleGroup";
+    public const string ActionToggleScene = "act.toggleScene";
     public const string ActionRestoreScene = "act.restoreScene";
     public const string ActionOpenPanel = "act.openPanel";
     public const string ActionToast = "act.toast";
 
-    private static readonly RuleTriggerKind[] ChipTriggers =
-    {
-        RuleTriggerKind.GroupChip,
-        RuleTriggerKind.SceneChip
-    };
-
     public static IReadOnlyList<RuleTriggerKind> Triggers { get; } = new[]
     {
         RuleTriggerKind.Hotkey,
-        RuleTriggerKind.GroupChip,
         RuleTriggerKind.SceneChip
     };
 
@@ -71,26 +62,18 @@ public static class RuleCatalog
         {
             Kind = ConditionHasUntracked,
             Category = RuleCardCategory.Condition,
-            Title = "屏幕上有未分组窗口？",
-            Description = "可见、不属于任何编组的窗口数量大于 0。",
+            Title = "这块屏幕上有未归入场景的窗口？",
+            Description = "可见、不属于任何场景的窗口数量大于 0。",
             // 这个事实只在热键入口算过；放到胶囊入口会永远读到 false。
             OnlyTriggers = new[] { RuleTriggerKind.Hotkey }
         },
         new RuleCardDefinition
         {
-            Kind = ConditionHasExpandedGroup,
+            Kind = ConditionHasExpandedScene,
             Category = RuleCardCategory.Condition,
-            Title = "有已展开的编组？",
-            Description = "至少有一组窗口正摆在桌面上。",
+            Title = "有已展开的场景？",
+            Description = "至少有一个场景正摆在桌面上。",
             OnlyTriggers = new[] { RuleTriggerKind.Hotkey }
-        },
-        new RuleCardDefinition
-        {
-            Kind = ConditionChipOnScreen,
-            Category = RuleCardCategory.Condition,
-            Title = "编组已在屏幕上？",
-            Description = "被点击的这组窗口当前正展开着。",
-            OnlyTriggers = new[] { RuleTriggerKind.GroupChip }
         },
         new RuleCardDefinition
         {
@@ -103,47 +86,39 @@ public static class RuleCatalog
 
         new RuleCardDefinition
         {
-            Kind = ActionStashNew,
+            Kind = ActionNewScene,
             Category = RuleCardCategory.Action,
-            Title = "收纳为新编组",
-            Description = "把屏幕上的窗口收成新的一组。"
+            Title = "新建场景",
+            Description = "把这块屏幕上的窗口收成一个新场景并保存。"
         },
         new RuleCardDefinition
         {
             Kind = ActionExpandLatest,
             Category = RuleCardCategory.Action,
-            Title = "展开最近一组",
-            Description = "恢复最近一次收纳的那组窗口。"
+            Title = "展开最近的场景",
+            Description = "恢复这块屏幕上最近一次收纳的那个场景。"
         },
         new RuleCardDefinition
         {
             Kind = ActionCollapseExpanded,
             Category = RuleCardCategory.Action,
-            Title = "收起所有已展开编组",
-            Description = "把当前摆在桌面上的各组一起收回胶囊。"
+            Title = "收起所有已展开的场景",
+            Description = "把这块屏幕上摆着的场景一起收回胶囊。"
         },
         new RuleCardDefinition
         {
             Kind = ActionExpandAll,
             Category = RuleCardCategory.Action,
-            Title = "展开全部编组",
-            Description = "所有收起的组一起放出来。"
+            Title = "展开全部场景",
+            Description = "这块屏幕上所有收起的场景一起放出来。"
         },
         new RuleCardDefinition
         {
-            Kind = ActionExpandGroup,
+            Kind = ActionToggleScene,
             Category = RuleCardCategory.Action,
-            Title = "展开这个编组",
-            Description = "只展开被点击的那一组。",
-            OnlyTriggers = ChipTriggers
-        },
-        new RuleCardDefinition
-        {
-            Kind = ActionToggleGroup,
-            Category = RuleCardCategory.Action,
-            Title = "展开 / 收起这个编组",
-            Description = "按当前状态切换被点击的那一组。",
-            OnlyTriggers = ChipTriggers
+            Title = "展开 / 收起这个场景",
+            Description = "按当前状态切换被点击的场景。",
+            OnlyTriggers = new[] { RuleTriggerKind.SceneChip }
         },
         new RuleCardDefinition
         {
@@ -183,14 +158,12 @@ public static class RuleCatalog
     public static string TriggerTitle(RuleTriggerKind trigger) => trigger switch
     {
         RuleTriggerKind.Hotkey => "全局热键",
-        RuleTriggerKind.GroupChip => "编组胶囊点击",
         _ => "场景胶囊点击"
     };
 
     public static string TriggerHint(RuleTriggerKind trigger) => trigger switch
     {
         RuleTriggerKind.Hotkey => "按快捷键时",
-        RuleTriggerKind.GroupChip => "左键点未保存的编组胶囊时",
         _ => "左键点场景胶囊时"
     };
 }

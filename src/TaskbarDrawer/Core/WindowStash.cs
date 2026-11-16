@@ -15,9 +15,7 @@ public sealed class StashedWindow
     public string ProcessName { get; init; }
     public string ProcessPath { get; init; }
     public DateTime? ProcessStartTime { get; init; }
-    public string AppKey { get; init; }
     public string MonitorDevice { get; set; }
-    public uint Dpi { get; set; }
     public bool Maximized { get; set; }
     public NativeMethods.WINDOWPLACEMENT Placement { get; set; }
 
@@ -86,7 +84,6 @@ public sealed class WindowStash
             ProcessName = meta.Name,
             ProcessPath = meta.Path,
             ProcessStartTime = meta.StartTime,
-            AppKey = WindowIdentity.FromProcess(meta.Path, meta.Name),
             Hidden = false,
             StashedAt = DateTime.UtcNow
         };
@@ -153,7 +150,7 @@ public sealed class WindowStash
                 : NativeMethods.SW_SHOWNORMAL;
             // 保存的是屏幕坐标，SetWindowPlacement 要的是工作区坐标：按「此刻」该显示器的工作区原点换算。
             placement.rcNormalPosition = NativeMethods.ToWorkspaceCoordinates(
-                placement.rcNormalPosition, NativeMethods.WorkOriginOfDevice(item.MonitorDevice));
+                placement.rcNormalPosition, NativeMethods.WorkOriginOfDevice(item.MonitorDevice, item.Handle));
             NativeMethods.SetWindowPlacement(item.Handle, ref placement);
         }
 
@@ -220,26 +217,30 @@ public sealed class WindowStash
     /// <summary>
     /// 清理已经销毁的记录。被外部还原（任务栏 / 应用自己 ShowWindow）的窗口不删除记录，
     /// 只把状态改成「已展开」，组仍然保留，随时可以再收起。
+    /// 返回状态变化的条数（删除 + 被外部还原），调用方据此决定要不要刷新界面。
     /// </summary>
     public int Prune()
     {
         // ShowWindow(SW_HIDE) 是「投递到目标线程」的异步调用：刚收进的那一瞬间窗口往往还是
         // 可见的。给一个短暂的宽限期，避免把刚收起的窗口误判成「已展开」。
         long now = DateTime.UtcNow.Ticks;
-        int removed = 0;
+        int changed = 0;
         foreach (long key in _items.Keys.ToArray())
         {
             var item = _items[key];
             if (!NativeMethods.IsWindow(item.Handle))
             {
                 _items.Remove(key);
-                removed++;
+                changed++;
                 continue;
             }
             if (item.Hidden)
             {
                 if (NativeMethods.IsWindowVisible(item.Handle) && now - item.StashedAt.Ticks > PruneGraceTicks)
+                {
                     item.Hidden = false;
+                    changed++;
+                }
                 continue;
             }
 
@@ -252,7 +253,7 @@ public sealed class WindowStash
                 item.RestoreRequestedAt = default;
             }
         }
-        return removed;
+        return changed;
     }
 
     /// <summary>收进之后多久才承认「窗口又回到屏幕上了」（留给异步 ShowWindow 落地）。</summary>
@@ -275,7 +276,6 @@ public sealed class WindowStash
         item.Maximized = NativeMethods.IsZoomed(item.Handle) ||
                          (hasPlacement && placement.showCmd == NativeMethods.SW_SHOWMAXIMIZED);
         item.MonitorDevice = NativeMethods.MonitorDeviceOf(item.Handle);
-        item.Dpi = NativeMethods.DpiOf(item.Handle);
     }
 
     private static bool ReleaseFallback(IntPtr hwnd)
@@ -293,8 +293,13 @@ public sealed class WindowStash
         public DateTime? StartTime;
     }
 
-    private static ProcessMeta ReadProcess(uint pid)
+    // 同一批收纳里同一 pid 往往有多个窗口（浏览器、IDE）：进程元数据一次运行内不会变，按 pid 缓存。
+    private readonly Dictionary<uint, ProcessMeta> _processCache = new();
+
+    private ProcessMeta ReadProcess(uint pid)
     {
+        if (_processCache.TryGetValue(pid, out var cached)) return cached;
+
         var meta = new ProcessMeta();
         try
         {
@@ -305,6 +310,8 @@ public sealed class WindowStash
             try { meta.StartTime = process.StartTime.ToUniversalTime(); } catch { }
         }
         catch { /* 进程已退出（句柄可能已失效），返回空元数据 */ }
+
+        _processCache[pid] = meta;
         return meta;
     }
 }

@@ -31,6 +31,31 @@ public sealed class SavedGroup
     public string Name { get; set; }
     public DateTime CreatedAt { get; set; }
     public List<SavedWindow> Windows { get; set; } = new();
+
+    /// <summary>
+    /// 用户从场景里移除过的窗口（去重键，见 <see cref="SceneEdit.Key"/>）。
+    /// 场景正在运行时会话快照由运行时组整份覆盖，靠这个集合把移除过的项挡住；
+    /// 重新追加同名窗口时会从集合里删掉。旧版 JSON 没有该字段，反序列化为空列表。
+    /// </summary>
+    public List<string> Suppressed { get; set; } = new();
+}
+
+/// <summary>场景编辑窗口里的一行窗口。</summary>
+public sealed class SavedWindowItem
+{
+    public int Index { get; init; }
+    public string Title { get; init; }
+    public string ProcessName { get; init; }
+    public string ExePath { get; init; }
+    public bool Maximized { get; init; }
+}
+
+/// <summary>场景详情：编辑器只读展示 + 由 <see cref="WorkspaceService"/> 组装。</summary>
+public sealed class SavedGroupDetail
+{
+    public string Id { get; init; }
+    public string Name { get; init; }
+    public IReadOnlyList<SavedWindowItem> Windows { get; init; } = Array.Empty<SavedWindowItem>();
 }
 
 /// <summary>面板与胶囊用的只读摘要（只列「当前没有窗口」的场景）。</summary>

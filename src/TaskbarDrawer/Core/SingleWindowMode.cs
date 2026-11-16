@@ -44,15 +44,15 @@ public sealed class SingleWindowMode : IDisposable
     public bool Enabled => _enabled;
 
     /// <summary>
-    /// 由组合根注入：返回窗口所属的组号，0 表示不属于任何组。
-    /// 注入后「一组展开的窗口」在单窗口模式下被当成一个整体：切到组内任一窗口，其余同伴恢复；
-    /// 切到组外时，整组收回胶囊（而不是拆成最小化窗口）。
+    /// 由组合根注入：返回窗口所属的场景运行组号，0 表示不属于任何场景。
+    /// 注入后「同一场景展开的窗口」在单窗口模式下被当成一个整体：切到场景内任一窗口，其余同伴恢复；
+    /// 切到场景外时，整个场景收回胶囊（而不是拆成最小化窗口）。
     /// </summary>
     public Func<IntPtr, int> GroupOf { get; set; }
 
     /// <summary>
-    /// 由组合根注入：把某一组整组收回收纳区（隐藏窗口、保留组），返回收起的窗口数。
-    /// 注入后「切到别的窗口」时，别的组会整体回到胶囊里，而不是散成一排最小化按钮。
+    /// 由组合根注入：把某一场景整组收回收纳区（隐藏窗口、保留组），返回收起的窗口数。
+    /// 注入后「切到别的窗口」时，别的场景会整体回到胶囊里，而不是散成一排最小化按钮。
     /// </summary>
     public Func<int, int> CollapseGroup { get; set; }
 
@@ -80,11 +80,23 @@ public sealed class SingleWindowMode : IDisposable
         }
         // 打开开关的瞬间先执行一次：此刻屏幕上可能已经有很多窗口。
         // 启动时恢复设置传 false——否则登录那一刻会把用户所有窗口清空。
-        if (applyImmediately) Apply(NativeMethods.GetForegroundWindow());
+        if (applyImmediately) ApplyForegroundOrCandidate();
     }
 
     /// <summary>
-    /// 临时暂停一小段时间：程序自己批量还原一组窗口时会连续切换前台，
+    /// 立即应用一次。从托盘 / 面板点开关时，前台是本进程或 shell，不能直接当前台窗口用；
+    /// 这时退而取 Z 序最靠前的候选窗口，否则开关看起来「点了没反应」。
+    /// </summary>
+    private void ApplyForegroundOrCandidate()
+    {
+        var windows = WindowEnumerator.Enumerate(includeMinimized: false);
+        IntPtr foreground = NativeMethods.GetForegroundWindow();
+        var target = windows.FirstOrDefault(w => w.Handle == foreground) ?? windows.FirstOrDefault();
+        if (target != null) Apply(target.Handle);
+    }
+
+    /// <summary>
+    /// 临时暂停一小段时间：程序自己批量还原一个场景的窗口时会连续切换前台，
     /// 不该在还原过程中把刚恢复的同伴又最小化掉。
     /// </summary>
     public void SuspendTemporarily(int milliseconds = 800)
@@ -149,10 +161,10 @@ public sealed class SingleWindowMode : IDisposable
                 if (NativeMethods.MonitorFromWindow(candidate.Handle, NativeMethods.MONITOR_DEFAULTTONEAREST) != monitor) continue;
                 int memberGroup = groupOf != null ? groupOf(candidate.Handle) : 0;
 
-                // 同组的同伴不最小化：整组就是「一个单窗口」。
+                // 同一场景的同伴不最小化：一个场景就是「一个单窗口」。
                 if (group > 0 && memberGroup == group) continue;
 
-                // 别的组整组收回胶囊（一组只收一次）：单窗口模式里组是一个整体，
+                // 别的场景整组收回胶囊（一个场景只收一次）：单窗口模式里场景是一个整体，
                 // 应该「收起来」而不是拆成一排最小化按钮留在任务栏。
                 if (memberGroup > 0 && CollapseGroup != null)
                 {

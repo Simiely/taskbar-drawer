@@ -8,7 +8,7 @@ namespace TaskbarDrawer.Tests;
 public class ChipProjectionTests
 {
     private static StashGroupSummary Group(
-        int id, int count = 2, string name = null, string savedId = null, bool expanded = false,
+        int id, int count = 2, string? name = null, string? savedId = null, bool expanded = false,
         params string[] titles) => new()
     {
         Id = id,
@@ -41,24 +41,27 @@ public class ChipProjectionTests
     }
 
     [Fact]
-    public void Chips_普通编组用组号和窗口数()
+    public void Chips_运行中的无名场景用默认场景名()
     {
         var chips = ChipProjection.Chips(new[] { Group(3, count: 2) }, Array.Empty<SavedGroupSummary>());
 
         var chip = Assert.Single(chips);
-        Assert.Equal("3·2", chip.Text);
+        Assert.Equal("💾场景", chip.Text);
         Assert.Equal(3, chip.GroupId);
         Assert.False(chip.Dormant);
-        Assert.Contains("编组 3", chip.Tooltip);
+        Assert.Contains("场景 3", chip.Tooltip);
+        Assert.DoesNotContain("🧩", chip.Text);
     }
 
     [Fact]
-    public void Chips_已保存的编组带星号()
+    public void Chips_运行中的场景带场景图标()
     {
         var chips = ChipProjection.Chips(
             new[] { Group(1, name: "工作", savedId: "s1") }, Array.Empty<SavedGroupSummary>());
 
-        Assert.Equal("★工作", Assert.Single(chips).Text);
+        var chip = Assert.Single(chips);
+        Assert.Equal("💾工作", chip.Text);
+        Assert.Contains("💾 工作", chip.Tooltip);
     }
 
     [Fact]
@@ -67,10 +70,11 @@ public class ChipProjectionTests
         var chips = ChipProjection.Chips(Array.Empty<StashGroupSummary>(), new[] { Saved("s1", "写作") });
 
         var chip = Assert.Single(chips);
-        Assert.Equal("★写作", chip.Text);
+        Assert.Equal("💾写作", chip.Text);
         Assert.True(chip.Dormant);
         Assert.Equal(0, chip.GroupId);
         Assert.Contains("已关闭", chip.Tooltip);
+        Assert.Contains("💾 写作", chip.Tooltip);
     }
 
     [Fact]

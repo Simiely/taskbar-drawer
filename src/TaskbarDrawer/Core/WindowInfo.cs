@@ -24,14 +24,3 @@ public static class WindowFilter
 {
     public static bool IsCandidate(in WindowFacts facts) => facts.IsCandidate;
 }
-
-public static class WindowIdentity
-{
-    /// <summary>程序身份：优先用规范化 exe 全路径；取不到路径时退回进程名。</summary>
-    public static string FromProcess(string processPath, string processName)
-    {
-        if (!string.IsNullOrWhiteSpace(processPath))
-            return "exe:" + processPath.Replace('\\', '/').ToLowerInvariant();
-        return "name:" + (processName ?? "").ToLowerInvariant();
-    }
-}

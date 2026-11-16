@@ -16,16 +16,14 @@ public sealed class RuleEngineTests
     {
         var runner = new RuleRunner(() => _rules);
         runner.On(RuleCatalog.ConditionHasUntracked, facts => facts.HasUntrackedWindows);
-        runner.On(RuleCatalog.ConditionHasExpandedGroup, facts => facts.HasExpandedGroup);
-        runner.On(RuleCatalog.ConditionChipOnScreen, facts => facts.ChipOnScreen);
+        runner.On(RuleCatalog.ConditionHasExpandedScene, facts => facts.HasExpandedScene);
         runner.On(RuleCatalog.ConditionSceneRunning, facts => facts.SceneRunning);
 
-        runner.Do(RuleCatalog.ActionStashNew, (_, _) => _log.Add("stashNew"));
+        runner.Do(RuleCatalog.ActionNewScene, (_, _) => _log.Add("newScene"));
         runner.Do(RuleCatalog.ActionExpandLatest, (_, _) => _log.Add("expandLatest"));
         runner.Do(RuleCatalog.ActionExpandAll, (_, _) => _log.Add("expandAll"));
         runner.Do(RuleCatalog.ActionCollapseExpanded, (_, _) => _log.Add("collapseExpanded"));
-        runner.Do(RuleCatalog.ActionExpandGroup, (facts, _) => _log.Add($"expandGroup:{facts.GroupId}"));
-        runner.Do(RuleCatalog.ActionToggleGroup, (facts, _) => _log.Add($"toggleGroup:{facts.GroupId}"));
+        runner.Do(RuleCatalog.ActionToggleScene, (facts, _) => _log.Add($"toggleScene:{facts.GroupId}"));
         runner.Do(RuleCatalog.ActionRestoreScene, (facts, _) => _log.Add($"restoreScene:{facts.SavedId}"));
         runner.Do(RuleCatalog.ActionOpenPanel, (_, _) => _log.Add("openPanel"));
         runner.Do(RuleCatalog.ActionToast, (_, step) =>
@@ -36,41 +34,32 @@ public sealed class RuleEngineTests
     // ---------- 默认手感 ----------
 
     [Fact]
-    public void 热键_屏幕上有未分组窗口_收纳成新组()
+    public void 热键_屏幕上有未归入场景的窗口_新建场景()
     {
-        Runner().Run(RuleTriggerKind.Hotkey, new RuleFacts { HasUntrackedWindows = true, HasExpandedGroup = true });
-        Assert.Equal(new[] { "stashNew" }, _log);
+        Runner().Run(RuleTriggerKind.Hotkey, new RuleFacts { HasUntrackedWindows = true, HasExpandedScene = true });
+        Assert.Equal(new[] { "newScene" }, _log);
     }
 
     [Fact]
-    public void 热键_没有未分组窗口但有展开的组_全部收起()
+    public void 热键_没有未归入场景的窗口但有展开的场景_全部收起()
     {
-        Runner().Run(RuleTriggerKind.Hotkey, new RuleFacts { HasUntrackedWindows = false, HasExpandedGroup = true });
+        Runner().Run(RuleTriggerKind.Hotkey, new RuleFacts { HasUntrackedWindows = false, HasExpandedScene = true });
         Assert.Equal(new[] { "collapseExpanded" }, _log);
     }
 
     [Fact]
-    public void 热键_屏幕上什么都没有_展开最近一组()
+    public void 热键_屏幕上什么都没有_展开最近的场景()
     {
         Runner().Run(RuleTriggerKind.Hotkey, new RuleFacts());
         Assert.Equal(new[] { "expandLatest" }, _log);
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void 编组胶囊_无论是否展开_都是切换(bool onScreen)
-    {
-        Runner().Run(RuleTriggerKind.GroupChip, new RuleFacts { ChipOnScreen = onScreen, GroupId = 7 });
-        Assert.Equal(new[] { "toggleGroup:7" }, _log);
-    }
-
     [Fact]
-    public void 场景胶囊_窗口在运行_切换编组()
+    public void 场景胶囊_窗口在运行_切换场景()
     {
         Runner().Run(RuleTriggerKind.SceneChip,
             new RuleFacts { SceneRunning = true, GroupId = 2, SavedId = "scene-a" });
-        Assert.Equal(new[] { "toggleGroup:2" }, _log);
+        Assert.Equal(new[] { "toggleScene:2" }, _log);
     }
 
     [Fact]
@@ -172,7 +161,7 @@ public sealed class RuleEngineTests
                     Trigger = RuleTriggerKind.Hotkey,
                     Steps =
                     {
-                        new RuleStep { Kind = RuleCatalog.ActionStashNew },
+                        new RuleStep { Kind = RuleCatalog.ActionNewScene },
                         new RuleStep { Kind = RuleCatalog.ActionExpandAll }
                     }
                 }
@@ -180,7 +169,7 @@ public sealed class RuleEngineTests
         };
 
         var runner = new RuleRunner(() => _rules);
-        runner.Do(RuleCatalog.ActionStashNew, (_, _) => throw new InvalidOperationException("boom"));
+        runner.Do(RuleCatalog.ActionNewScene, (_, _) => throw new InvalidOperationException("boom"));
         runner.Do(RuleCatalog.ActionExpandAll, (_, _) => _log.Add("expandAll"));
 
         runner.Run(RuleTriggerKind.Hotkey, new RuleFacts());
@@ -191,27 +180,29 @@ public sealed class RuleEngineTests
 
     [Theory]
     [InlineData(RuleCatalog.ConditionHasUntracked)]
-    [InlineData(RuleCatalog.ConditionHasExpandedGroup)]
-    public void 热键专属条件不能出现在胶囊入口(string kind)
+    [InlineData(RuleCatalog.ConditionHasExpandedScene)]
+    public void 热键专属条件不能出现在场景胶囊入口(string kind)
     {
         var definition = RuleCatalog.Find(kind);
         Assert.NotNull(definition);
         Assert.True(definition!.AppliesTo(RuleTriggerKind.Hotkey));
-        Assert.False(definition.AppliesTo(RuleTriggerKind.GroupChip));
         Assert.False(definition.AppliesTo(RuleTriggerKind.SceneChip));
     }
 
     [Fact]
     public void 入口专属卡片只在对应入口出现()
     {
-        Assert.Equal(new[] { RuleTriggerKind.GroupChip },
-            RuleCatalog.Find(RuleCatalog.ConditionChipOnScreen)!.OnlyTriggers);
         Assert.Equal(new[] { RuleTriggerKind.SceneChip },
             RuleCatalog.Find(RuleCatalog.ConditionSceneRunning)!.OnlyTriggers);
         Assert.Equal(new[] { RuleTriggerKind.SceneChip },
             RuleCatalog.Find(RuleCatalog.ActionRestoreScene)!.OnlyTriggers);
-        Assert.False(RuleCatalog.Find(RuleCatalog.ActionExpandGroup)!.AppliesTo(RuleTriggerKind.Hotkey));
-        Assert.False(RuleCatalog.Find(RuleCatalog.ActionToggleGroup)!.AppliesTo(RuleTriggerKind.Hotkey));
+        Assert.False(RuleCatalog.Find(RuleCatalog.ActionToggleScene)!.AppliesTo(RuleTriggerKind.Hotkey));
+    }
+
+    [Fact]
+    public void 入口只有热键和场景胶囊()
+    {
+        Assert.Equal(new[] { RuleTriggerKind.Hotkey, RuleTriggerKind.SceneChip }, RuleCatalog.Triggers);
     }
 
     [Fact]

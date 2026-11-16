@@ -48,7 +48,7 @@ public sealed class TaskbarChipWindow : Window
         {
             Text = "",
             Foreground = Theme.TextPrimary,
-            FontFamily = new FontFamily("Segoe UI Variable Text, Microsoft YaHei UI, Segoe UI"),
+            FontFamily = Ui.Font,
             FontSize = 11.5,
             FontWeight = FontWeights.SemiBold,
             VerticalAlignment = VerticalAlignment.Center
@@ -95,7 +95,7 @@ public sealed class TaskbarChipWindow : Window
             Background = Theme.Frozen(0xF7, 0x1C, 0x1C, 0x1E),
             Foreground = Theme.Frozen(0xF5, 0xFF, 0xFF, 0xFF),
             BorderBrush = Theme.Frozen(0x33, 0xFF, 0xFF, 0xFF),
-            FontFamily = new FontFamily("Segoe UI Variable Text, Microsoft YaHei UI, Segoe UI"),
+            FontFamily = Ui.Font,
             FontSize = 12,
             Padding = new Thickness(11, 8, 11, 8),
             Placement = PlacementMode.Top,

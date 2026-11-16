@@ -6,15 +6,20 @@ namespace TaskbarDrawer.Core.Rules;
 public sealed class RuleFacts
 {
     public bool HasUntrackedWindows { get; init; }
-    public bool HasExpandedGroup { get; init; }
-    public bool ChipOnScreen { get; init; }
+    public bool HasExpandedScene { get; init; }
     public bool SceneRunning { get; init; }
 
-    /// <summary>触发源：被点击的编组号（0 = 没有）。</summary>
+    /// <summary>触发源：被点击场景对应的运行时组号（0 = 已关闭或没有）。</summary>
     public int GroupId { get; init; }
 
-    /// <summary>触发源：被点击的场景 Id（null = 不是场景）。</summary>
+    /// <summary>触发源：被点击的场景 Id（null = 没有场景）。</summary>
     public string? SavedId { get; init; }
+
+    /// <summary>
+    /// 触发时用户正在操作的显示器设备名（多显示器按屏隔离用）。
+    /// 在执行前一次性算好，动作里不再重新取——收纳之后前台窗口已经变了。
+    /// </summary>
+    public string? MonitorDevice { get; init; }
 }
 
 /// <summary>

@@ -5,8 +5,8 @@ using TaskbarDrawer.Interop;
 namespace TaskbarDrawer.Core;
 
 /// <summary>
-/// 场景：把一组窗口的「软件 + 位置」存成快照，之后一键关闭 / 一键还原。
-/// 快照与运行时编组共用同一枚胶囊：存储编组只是给组起名并留底，平时仍按编组收起 / 展开；
+/// 场景：把一组窗口的「软件 + 位置」存成快照，运行中可收起 / 展开，关闭后可一键还原。
+/// 运行时组只是场景的运行态；每次收纳都会立刻保存成场景，所以两者始终一一对应。
 /// 只有「关闭窗口」（或用户自己点 ×）才真的关窗口，关完后胶囊还在，再点一次全部拉起来。
 /// </summary>
 public sealed class WorkspaceService
@@ -36,6 +36,89 @@ public sealed class WorkspaceService
 
     public SavedGroup Find(string id) => _groups.FirstOrDefault(g => g.Id == id);
 
+    /// <summary>场景详情：编辑器列窗口用。找不到返回 null。</summary>
+    public SavedGroupDetail Detail(string savedId)
+    {
+        var group = Find(savedId);
+        if (group == null) return null;
+        return new SavedGroupDetail
+        {
+            Id = group.Id,
+            Name = group.Name,
+            Windows = group.Windows
+                .Select((window, index) => SceneEdit.Describe(index, window))
+                .ToArray()
+        };
+    }
+
+    /// <summary>
+    /// 从场景快照里移除一个窗口。只改快照：正在运行的窗口不关也不动，下次打开场景生效。
+    /// </summary>
+    public SceneEditResult RemoveWindow(string savedId, int index)
+    {
+        var group = Find(savedId);
+        if (group == null) return new SceneEditResult { Error = "场景已经不存在" };
+
+        if (!SceneEdit.RemoveAt(group.Windows, index, out var removed))
+        {
+            return new SceneEditResult
+            {
+                Error = group.Windows.Count <= 1
+                    ? "场景至少保留一个窗口；整个场景不要了请用「删除场景」"
+                    : "这一项已经不存在，列表可能已刷新"
+            };
+        }
+
+        string key = SceneEdit.Key(removed);
+        if (key.Length > 0 && !group.Suppressed.Contains(key)) group.Suppressed.Add(key);
+        SavedGroupStore.Save(_groups);
+
+        return new SceneEditResult
+        {
+            Ok = true,
+            Title = string.IsNullOrWhiteSpace(removed.Title)
+                ? string.IsNullOrWhiteSpace(removed.ProcessName) ? "窗口" : removed.ProcessName
+                : removed.Title,
+            Count = group.Windows.Count
+        };
+    }
+
+    /// <summary>把窗口追加进场景快照：已存在的跳过；只改快照，下次打开场景生效。</summary>
+    public SceneAppendResult AppendWindows(string savedId, IReadOnlyList<SavedWindow> incoming)
+    {
+        var group = Find(savedId);
+        if (group == null) return new SceneAppendResult { Error = "场景已经不存在" };
+
+        var (added, skipped) = SceneEdit.Merge(group.Windows, group.Suppressed, incoming);
+        if (added == 0)
+        {
+            return new SceneAppendResult
+            {
+                Skipped = skipped,
+                Error = skipped > 0
+                    ? $"这 {skipped} 个窗口已经在场景里了"
+                    : "没有可追加的窗口"
+            };
+        }
+
+        SavedGroupStore.Save(_groups);
+        return new SceneAppendResult { Ok = true, Added = added, Skipped = skipped };
+    }
+
+    /// <summary>把一个正在运行的其他场景追加进场景：只支持正在运行、且不是场景自己这一组。</summary>
+    public SceneAppendResult AppendRunningScene(string savedId, StashAllService stash, int groupId)
+    {
+        var group = Find(savedId);
+        if (group == null) return new SceneAppendResult { Error = "场景已经不存在" };
+        if (stash == null || groupId <= 0) return new SceneAppendResult { Error = "这个场景已经不存在了" };
+        if (stash.SavedIdOf(groupId) == savedId)
+            return new SceneAppendResult { Error = "不能把场景自己这一组追加给自己" };
+
+        var windows = CaptureWindows(stash, groupId);
+        if (windows.Count == 0) return new SceneAppendResult { Error = "这个场景已经没有窗口" };
+        return AppendWindows(savedId, windows);
+    }
+
     /// <summary>
     /// 把运行时的一组窗口存成场景。位置按此刻的窗口刷新，
     /// 展开着的组也能拿到当前矩形，而不是上一次收起时的旧位置。
@@ -48,7 +131,7 @@ public sealed class WorkspaceService
         var group = new SavedGroup
         {
             Id = Guid.NewGuid().ToString("N")[..6],
-            Name = string.IsNullOrWhiteSpace(name) ? $"场景 {_groups.Count + 1}" : name.Trim(),
+            Name = string.IsNullOrWhiteSpace(name) ? NextSceneName() : name.Trim(),
             CreatedAt = DateTime.Now,
             Windows = windows
         };
@@ -57,12 +140,29 @@ public sealed class WorkspaceService
         return group;
     }
 
+    /// <summary>自动命名：取最小的未被占用的「场景 N」，删除场景后编号可以复用。</summary>
+    private string NextSceneName()
+    {
+        for (int index = 1; ; index++)
+        {
+            string candidate = $"场景 {index}";
+            if (_groups.All(g => g.Name != candidate)) return candidate;
+        }
+    }
+
     /// <summary>关闭前按当前实际位置再存一次，下次还原才是用户最后摆放的样子。</summary>
     public void UpdateSnapshot(SavedGroup group, StashAllService stash, int groupId)
     {
-        var windows = CaptureWindows(stash, groupId);
-        if (windows.Count == 0) return;
-        group.Windows = windows;
+        if (group == null) return;
+        var captured = CaptureWindows(stash, groupId);
+        if (captured.Count == 0) return;
+
+        // 用户在场景编辑里移除过的窗口不能因为「关闭场景时整份覆盖」又写回来；
+        // 全被移除时不覆盖，保留上一份快照而不是把场景清空。
+        var visible = SceneEdit.Visible(captured, group.Suppressed);
+        if (visible.Count == 0) return;
+
+        group.Windows = visible;
         SavedGroupStore.Save(_groups);
     }
 
@@ -92,40 +192,61 @@ public sealed class WorkspaceService
     /// <summary>
     /// 还原这一组：已经在跑的窗口直接挪回保存位置，没跑的程序启动后等它出窗口再摆位。
     /// 每摆好一个窗口回调一次（启动的窗口在后台线程回调），由上层接入运行时组，
-    /// 之后这一组就按普通组收起 / 展开，不需要反复关掉再开。
+    /// 之后这一组就按普通场景收起 / 展开，不需要反复关掉再开。
+    /// excluded 是已经被其它场景管理的窗口句柄：它们不属于这次还原，绝不能挪走。
     /// </summary>
-    public (int moved, int launched) Restore(SavedGroup group, Action<IntPtr> onWindowReady)
+    public (int moved, int launched, int busy, int failed) Restore(
+        SavedGroup group,
+        IReadOnlySet<long> excluded,
+        Func<IntPtr, bool> adopt,
+        Action<IntPtr> adoptLater)
     {
-        var known = new HashSet<long>(TopLevelWindows().Select(w => w.Handle.ToInt64()));
-        var used = new HashSet<long>();
+        // 只枚举一次：matches 与 known 用同一份快照，避免两次枚举之间窗口状态变化导致重复匹配。
         var windows = TopLevelWindows();
+        var known = new HashSet<long>(windows.Select(w => w.Handle.ToInt64()));
+        var used = new HashSet<long>();
         var pending = new List<SavedWindow>();
         int moved = 0;
+        int busy = 0;
+        int failed = 0;
 
         foreach (var saved in group.Windows)
         {
             string exe = Normalize(saved.ExePath);
             if (exe == null) continue;
 
-            var match = windows.FirstOrDefault(w =>
+            bool Matches(TopWindow w) =>
                 w.Visible && w.Title.Length > 0 && !w.ToolWindow &&
-                !used.Contains(w.Handle.ToInt64()) && Normalize(w.Path) == exe);
+                !used.Contains(w.Handle.ToInt64()) && Normalize(w.Path) == exe;
+
+            var match = windows.FirstOrDefault(w =>
+                Matches(w) && (excluded == null || !excluded.Contains(w.Handle.ToInt64())));
             if (match != null)
             {
                 ApplyPlacement(match.Handle, saved);
                 used.Add(match.Handle.ToInt64());
-                onWindowReady?.Invoke(match.Handle);
-                moved++;
+                if (adopt == null || adopt(match.Handle)) moved++;
+                else failed++;
+                continue;
             }
-            else
+
+            // 同类窗口存在但已经在别的场景里：不再启动第二个实例，也不把它挪走。
+            // 这里不能复用 Matches：used 会让「刚配给上一条记录的窗口」失去资格，
+            // 但「已在别组」的判断与重复匹配无关。
+            if (excluded != null && windows.Any(w =>
+                    w.Visible && w.Title.Length > 0 && !w.ToolWindow &&
+                    Normalize(w.Path) == exe && excluded.Contains(w.Handle.ToInt64())))
             {
-                pending.Add(saved);
+                busy++;
+                continue;
             }
+
+            pending.Add(saved);
         }
 
         int launched = pending.Count(Launch);
-        if (launched > 0) PositionLater(pending, known, onWindowReady);
-        return (moved, launched);
+        if (launched > 0) PositionLater(pending, known, adoptLater);
+        return (moved, launched, busy, failed);
     }
 
     public bool Rename(string id, string name)
@@ -286,4 +407,27 @@ public sealed class WorkspaceService
 
     private static string Normalize(string path)
         => string.IsNullOrWhiteSpace(path) ? null : path.Replace('\\', '/').ToLowerInvariant();
+}
+
+/// <summary>从场景移除一个窗口的结果；错误文案可直接展示给用户。</summary>
+public sealed class SceneEditResult
+{
+    public bool Ok { get; init; }
+
+    /// <summary>被移除窗口的显示名（标题为空时退回进程名）。</summary>
+    public string Title { get; init; }
+
+    /// <summary>移除后剩下的窗口数。</summary>
+    public int Count { get; init; }
+
+    public string Error { get; init; }
+}
+
+/// <summary>往场景追加窗口 / 其它场景的运行结果。</summary>
+public sealed class SceneAppendResult
+{
+    public bool Ok { get; init; }
+    public int Added { get; init; }
+    public int Skipped { get; init; }
+    public string Error { get; init; }
 }

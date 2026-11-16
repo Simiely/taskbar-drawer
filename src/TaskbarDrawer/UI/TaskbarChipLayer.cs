@@ -7,7 +7,7 @@ using Forms = System.Windows.Forms;
 namespace TaskbarDrawer.UI;
 
 /// <summary>
-/// 一枚胶囊的内容：运行时的一个编组，或保存下来的场景。
+/// 一枚胶囊的内容：一个运行中的场景，或一个已关闭的场景。
 /// 文案 / 悬浮提示由 AppShell 组装，胶囊层只负责摆放和点击分发。
 /// </summary>
 public sealed class ChipEntry
@@ -15,13 +15,13 @@ public sealed class ChipEntry
     public string Text { get; init; } = "";
     public string Tooltip { get; init; } = "";
 
-    /// <summary>true = 已展开（编组）/ 运行中（场景），胶囊显示为蓝色。</summary>
+    /// <summary>true = 场景已展开，胶囊显示为蓝色。</summary>
     public bool Highlight { get; init; }
 
-    /// <summary>运行时组号；0 表示这是场景。</summary>
+    /// <summary>场景对应的运行时组号；0 表示场景已关闭。</summary>
     public int GroupId { get; init; }
 
-    /// <summary>场景 Id；null 表示这是普通编组。</summary>
+    /// <summary>场景 Id；正常运行时必有。</summary>
     public string SavedId { get; init; }
 
     /// <summary>true = 已关闭的场景（只剩快照）：点击会重新打开并摆回位置。</summary>
@@ -29,17 +29,15 @@ public sealed class ChipEntry
 
     public int Count { get; init; }
     public string Name { get; init; }
-
-    public bool IsSaved => SavedId != null;
 }
 
 /// <summary>
-/// 任务栏胶囊层：每个编组 / 场景一枚胶囊，贴着托盘区依次排开
+/// 任务栏胶囊层：每个场景一枚胶囊，贴着托盘区依次排开
 /// （横排任务栏向左排、竖排任务栏向上排）；超过上限时末尾合并成 <c>+N</c>。
-/// 左键展开（场景为打开），右键管理：取消编组 / 存储编组 / 重命名 / 关闭窗口 / 解散场景。
+/// 左键收起 / 展开（已关闭场景为打开），右键管理：重命名 / 关闭窗口 / 删除场景。
 ///
 /// 胶囊是贴住任务栏的独立 topmost 小窗（Win11 不能真嵌进任务栏），每 2 s 重贴一次防被盖；
-/// 组消失时对应胶囊自动隐藏，空出来的胶囊留作待用窗口，避免反复创建 HWND。
+/// 场景消失时对应胶囊自动隐藏，空出来的胶囊留作待用窗口，避免反复创建 HWND。
 /// </summary>
 public sealed class TaskbarChipLayer : IDisposable
 {
@@ -56,7 +54,7 @@ public sealed class TaskbarChipLayer : IDisposable
         public bool Active = true;
         public string Text = "";
 
-        /// <summary>溢出胶囊代表的各组（第 8 项起），右键菜单里逐项列出以便直达。</summary>
+        /// <summary>溢出胶囊代表的各场景（第 8 项起），右键菜单里逐项列出以便直达。</summary>
         public List<ChipEntry> Overflow = new();
     }
 
@@ -89,25 +87,16 @@ public sealed class TaskbarChipLayer : IDisposable
         _timer.Start();
     }
 
-    /// <summary>左键点胶囊：编组 = 展开，场景 = 打开。</summary>
+    /// <summary>左键点胶囊：运行中的场景切换收起 / 展开，已关闭的场景打开。</summary>
     public event Action<ChipEntry> Clicked;
-
-    /// <summary>编组胶囊右键「取消编组」：窗口留在桌面，不再按组管理。</summary>
-    public event Action<ChipEntry> UngroupRequested;
-
-    /// <summary>编组胶囊右键「存储编组」：给这一组起名并保存快照。</summary>
-    public event Action<ChipEntry> SaveGroupRequested;
-
-    /// <summary>编组胶囊右键「重命名」。</summary>
-    public event Action<ChipEntry> RenameGroupRequested;
 
     /// <summary>场景胶囊右键「重命名」。</summary>
     public event Action<ChipEntry> RenameSceneRequested;
 
-    /// <summary>场景胶囊右键「关闭窗口」：真的关掉组内窗口（等价逐个点 ×）。</summary>
+    /// <summary>场景胶囊右键「关闭窗口」：真的关掉场景内窗口（等价逐个点 ×）。</summary>
     public event Action<ChipEntry> CloseWindowsRequested;
 
-    /// <summary>场景胶囊右键「解散场景」：只删快照，窗口不动。</summary>
+    /// <summary>场景胶囊右键「删除场景」：只删快照，窗口不动。</summary>
     public event Action<ChipEntry> DissolveSceneRequested;
 
     /// <summary>溢出胶囊被点击 / 右键选了「打开主面板」。</summary>
@@ -145,7 +134,7 @@ public sealed class TaskbarChipLayer : IDisposable
             slot.Text = $"+{rest.Count}";
             slot.Overflow = rest;
             slot.Window.SetContent(slot.Text,
-                $"还有 {rest.Count} 组 · {restWindows} 个窗口\n点击打开主面板 · 右键逐组切换",
+                $"还有 {rest.Count} 个场景 · {restWindows} 个窗口\n点击打开主面板 · 右键逐场景切换",
                 rest.Any(e => e.Highlight));
         }
 
@@ -186,8 +175,8 @@ public sealed class TaskbarChipLayer : IDisposable
         {
             if (slot.IsOverflow)
             {
-                // 溢出胶囊背后可能是好几组：逐项列出来，点哪项就切哪项，
-                // 不再逼用户「打开主面板 → 再找组」。
+                // 溢出胶囊背后可能是好几个场景：逐项列出来，点哪项就切哪项，
+                // 不再逼用户「打开主面板 → 再找场景」。
                 foreach (var entry in slot.Overflow)
                 {
                     ChipEntry e = entry;
@@ -198,14 +187,14 @@ public sealed class TaskbarChipLayer : IDisposable
 
                 if (slot.Overflow.Count > 0) menu.Items.Add(new Forms.ToolStripSeparator());
 
-                var open = new Forms.ToolStripMenuItem($"还有 {slot.Overflow.Count} 组 · 打开主面板");
+                var open = new Forms.ToolStripMenuItem($"还有 {slot.Overflow.Count} 个场景 · 打开主面板");
                 open.Click += (_, _) => ShowPanelRequested?.Invoke();
                 menu.Items.Add(open);
             }
             else if (slot.Entry != null)
             {
                 ChipEntry entry = slot.Entry;
-                if (entry.IsSaved)
+                if (!string.IsNullOrEmpty(entry.SavedId))
                 {
                     var rename = new Forms.ToolStripMenuItem("重命名…");
                     rename.Click += (_, _) => RenameSceneRequested?.Invoke(entry);
@@ -219,23 +208,16 @@ public sealed class TaskbarChipLayer : IDisposable
                         menu.Items.Add(close);
                     }
 
-                    var dissolve = new Forms.ToolStripMenuItem("解散场景");
+                    var dissolve = new Forms.ToolStripMenuItem("删除场景");
                     dissolve.Click += (_, _) => DissolveSceneRequested?.Invoke(entry);
                     menu.Items.Add(dissolve);
                 }
                 else
                 {
-                    var ungroup = new Forms.ToolStripMenuItem("取消编组");
-                    ungroup.Click += (_, _) => UngroupRequested?.Invoke(entry);
-                    menu.Items.Add(ungroup);
-
-                    var save = new Forms.ToolStripMenuItem("存储编组…");
-                    save.Click += (_, _) => SaveGroupRequested?.Invoke(entry);
-                    menu.Items.Add(save);
-
-                    var rename = new Forms.ToolStripMenuItem("重命名…");
-                    rename.Click += (_, _) => RenameGroupRequested?.Invoke(entry);
-                    menu.Items.Add(rename);
+                    // 兜底：理论上每个运行时组都有场景；真丢了也给一个可操作的出口。
+                    var open = new Forms.ToolStripMenuItem("打开主面板");
+                    open.Click += (_, _) => ShowPanelRequested?.Invoke();
+                    menu.Items.Add(open);
                 }
             }
 
@@ -257,10 +239,8 @@ public sealed class TaskbarChipLayer : IDisposable
 
     private static string Describe(ChipEntry entry)
     {
-        if (entry.Dormant) return $"★ {entry.Name} · {entry.Count} 个窗口 · 已关闭";
-        if (entry.IsSaved)
-            return $"★ {entry.Name} · {entry.Count} 个窗口 · {(entry.Highlight ? "已展开" : "已收起")}";
-        return $"第 {entry.GroupId} 组 · {entry.Count} 个窗口 · {(entry.Highlight ? "已展开" : "已收起")}";
+        if (entry.Dormant) return $"{Theme.SceneIcon} {entry.Name} · {entry.Count} 个窗口 · 已关闭";
+        return $"{Theme.SceneIcon} {entry.Name} · {entry.Count} 个窗口 · {(entry.Highlight ? "已展开" : "已收起")}";
     }
 
     /// <summary>

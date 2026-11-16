@@ -5,9 +5,9 @@
 
 ## 一、项目概览
 
-- **做什么**：把一组窗口收进任务栏胶囊、原位展开；把软件 + 窗口位置存成场景，关掉后还能按原位置拉起。
-- **不做什么**：不做窗口缩略图、不做虚拟桌面、不替换任务栏、不接管窗口管理（取消编组即完全交还系统）。
-- **状态**：v1.3.0，个人自用 + 开源；单显示器 1920×1080 / Win11 24H2 为主验证环境。
+- **做什么**：把一组窗口收进任务栏胶囊、原位展开；每次收纳都自动存成场景，关掉后还能按原位置拉起。
+- **不做什么**：不做窗口缩略图、不做虚拟桌面、不替换任务栏、不接管窗口管理（删除场景即完全交还系统）。
+- **状态**：v1.6.0，个人自用 + 开源；Win11 24H2，单显示器 1920×1080 与双显示器（按屏隔离）均已验证。
 - **约束**：Win11 不允许 DeskBand / 往任务栏塞子窗口，胶囊只能是自己画的 topmost 小窗。
 
 ## 二、架构说明
@@ -30,8 +30,8 @@
 核心对象：
 
 - `WindowEnumerator` / `WindowInfo`：候选窗口过滤（可见、有标题、非工具窗、非 cloaked、非本程序、非 shell）。
-- `WindowStash`：`Capture(hwnd)` 记录 `WINDOWPLACEMENT` 并转屏幕坐标 → `SW_HIDE`；`Restore` 还原；`Track` / `Refresh` 供「可见窗口接入编组」与「保存前刷新位置」用。
-- `StashAllService`：运行时组状态机（`StashAll` / `ExpandGroup` / `ToggleGroup` / `StashGroup` / `CloseGroup` / `Prune` / `Adopt` / `LinkSaved`）。
+- `WindowStash`：`Capture(hwnd)` 记录 `WINDOWPLACEMENT` 并转屏幕坐标 → `SW_HIDE`；`Restore` 还原；`Track` / `Refresh` 供「可见窗口接入场景」与「保存前刷新位置」用。
+- `StashAllService`：运行时状态机（`StashAll` / `ExpandGroup` / `ToggleGroup` / `StashGroup` / `Release` / `Prune` / `Adopt` / `LinkSaved`）。运行时组 = 场景的运行态。
 - `SavedGroups`：场景模型 + `saved-groups.json` 原子写（临时文件 + `File.Move`）。
 - `WorkspaceService`：场景的保存 / 更新快照 / 关闭 / 还原；还原时已有窗口直接摆位，缺失的 `Process.Start` 后在 12 s 内轮询新窗口并摆位。
 - `SingleWindowMode` / `WindowActivator` / `WindowRecovery` / `HotkeyManager` / `AppSettings` / `AutoStart`：单窗口、抢前台、崩溃恢复、热键、配置、自启。
@@ -41,24 +41,30 @@
 
 界面对象：
 
-- `TaskbarChipLayer`：胶囊层。每 2 s 重贴任务栏、体检 z 序；最多 7 枚，多出的进溢出槽（逐组可点）。
+- `TaskbarChipLayer`：胶囊层。每 2 s 重贴任务栏、体检 z 序；最多 7 枚，多出的进溢出槽（逐场景可点）。
 - `TaskbarChipWindow`：单枚胶囊（深色圆角、数量、tooltip）。
-- `MainPanelWindow`：主面板（编组 / 场景 / 开关 / 热键）。
-- `Theme` / `Ui`：深色画刷与通用控件工厂（`Frozen` / `Text` / `Clickable`），窗口只引用，不再各自定义颜色。
+- `MainPanelWindow`：主面板（场景列表 / 开关 / 热键）。
+- `SceneEditorWindow`：场景编辑小窗（移除窗口 / 追加其他正在运行的场景 / 重命名 / 删除）。只读数据 + 抛事件，写操作全部回 `AppShell` → `WorkspaceService`。
+- `Theme` / `Ui`：深色画刷、场景图标常量与统一字体 / 文本工厂，窗口只引用，不再各自定义颜色和字体。
 - `TrayService`（托盘 + 深色菜单）、`TextPromptWindow`（重命名）、`ToastWindow`、`DarkMenuRenderer`、`AppIcon`。
 
 ### 2.3 关键数据流
 
 ```
-收纳：热键 → StashAll → 收集可见窗口 → WindowStash.Capture + SW_HIDE → 新组 → UpdateSurface → 胶囊
+收纳：热键 → 算当前显示器 → StashAll(out groupId, 显示器) → 收集这块屏的可见窗口 → WindowStash.Capture + SW_HIDE → 新组
+      → WorkspaceService.SaveFrom(组内窗口) → saved-groups.json → LinkSaved(组, 场景 id, 名字) → UpdateSurface → 胶囊
 展开：胶囊 / 面板 / 热键 → ExpandGroup → 逐句柄 Restore → 前台还给收纳前窗口
-存场景：面板「存储编组」→ WorkspaceService.SaveFrom(组内窗口) → saved-groups.json → LinkSaved(组, 场景 id, 名字)
-关场景：「关闭窗口」→ 有 SavedId：UpdateSnapshot + 逐句柄 PostMessage(WM_CLOSE)；无 SavedId：取消编组
-开场景：场景胶囊 → Restore → 已有窗口摆位 / 缺失的启动 + 轮询 → Adopt 接回运行时编组
-入口事件：热键 / 胶囊点击 → 算 RuleFacts（一次枚举）→ RuleRunner 走规则树 → 命中动作 → 调上面这些方法
+按屏：ExpandNewest / ExpandAll / CollapseExpandedScenes 都带显示器条件；场景归属用 StashedWindow.MonitorDevice 判断
+改场景：场景行「编辑」→ SceneEditorWindow → RemoveWindow / AppendRunningScene → saved-groups.json（只改快照，下次打开生效）
+关场景：「关闭窗口」→ UpdateSnapshot + 逐句柄 PostMessage(WM_CLOSE) → 胶囊转为已关闭
+删场景：「删除场景」→ StashAllService.Release（隐藏的窗口还原，可见的不动）→ Delete 快照
+开场景：场景胶囊 → Restore → 已有窗口摆位 / 缺失的启动 + 轮询 → Adopt 接回运行时组
+入口事件：热键 / 场景胶囊点击 → 算 RuleFacts（一次枚举）→ RuleRunner 走规则树 → 命中动作 → 调上面这些方法
 ```
 
-术语只有两个：**编组**（运行时、按句柄）、**场景**（持久化、按 exe 路径 + 位置）。同一个窗口可以同时属于多个编组。
+术语只有两个：**场景**（持久化 + 运行态，图标 💾）与**单窗口模式**。运行时组是场景的运行态，靠 `SavedId` 与快照一一对应；正常路径下每个运行时组都有 `SavedId`。
+
+场景快照里的 `Suppressed` 记录用户移除过的窗口（`SceneEdit.Key`：规范化 exe 路径 + 标题）。关闭场景时 `UpdateSnapshot` 会按它过滤，否则运行时组整份覆盖快照会把移除项又写回来；重新追加同名窗口时自动从集合里删掉。
 
 ## 三、关键问题与方案
 
@@ -72,9 +78,9 @@
 - 预防：任何「贴任务栏 / 贴屏幕边缘」的自绘窗口，都要按「输入命中」而不是「矩形坐标」判断自己是否可点。
 - 效果：自愈耗时从 10.1 / 20.0 / 27.2 s 降到 700 / 1500 / 1600 ms。
 
-### 问题：保存场景后，原编组胶囊消失，切组变成「关闭再打开」
+### 问题：保存场景后，原编组胶囊消失，切组变成「关闭再打开」（历史记录，1.1.1 已修）
 
-**TL;DR**：曾把场景作为第二套模型并行展示，出现了两枚语义不同的胶囊；同一个组的操作路径被拆成「运行时切换」和「场景关闭 / 启动」。
+**TL;DR**：曾把场景作为第二套模型并行展示，出现了两枚语义不同的胶囊；同一个组的操作路径被拆成「运行时切换」和「场景关闭 / 启动」。1.5.0 起进一步收敛：收纳即建场景，运行时组只作为场景的运行态存在。
 
 - 问题：存完场景，原组胶囊不显示；点场景胶囊是 `WM_CLOSE` 后重启进程，而不是普通组的隐藏 / 展开。
 - 根因：运行时组（句柄）与场景快照（json）没有身份关联，`UpdateSurface` 把两者都当独立条目渲染；点击分支只按「是否场景」决定行为。
@@ -106,7 +112,7 @@
 - 解决：变化检测加入 `Shell_TrayWnd` 句柄比较，句柄变了强制重排；溢出槽列出每一组的名字，可直接点 / 右键。
 - 预防：判断「外部环境是否变化」要比较身份（句柄），不能只比较几何。
 
-### 问题：编组胶囊展开后，再点没反应
+### 问题：编组胶囊展开后，再点没反应（历史记录，1.2.1 已修；GroupChip 已在 1.5.0 删除）
 
 **TL;DR**：规则化时把「再点收起」丢了，默认流写成「未展开才展开」，展开状态落到空分支。
 
@@ -120,7 +126,7 @@
 - `%LOCALAPPDATA%\TaskbarDrawer\settings.json`、`saved-groups.json`、`recovery.json`、`logs\`
 - `--probe`：确认候选窗口集合（判断「为什么这个窗口没被收进去」）
 - `dotnet test tests/TaskbarDrawer.Tests`：规则引擎回归测试（默认手感 / 步数与深度护栏 / 目录约束）
-- 面板「编组」区块：点整行收起 / 展开；按钮与胶囊右键菜单一致
+- 面板「场景」区块：点整行收起 / 展开；「关闭窗口」真关，「编辑」只改快照
 - 发布：`dotnet publish ... -p:PublishSingleFile=true`，刻意保持框架依赖以把 exe 压到约 320 KB
 
 ## 五、文档维护

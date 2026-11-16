@@ -52,14 +52,24 @@ public static class Program
     /// <summary>通知已运行的实例打开主面板（不依赖窗口广播，消息专用窗口收不到 HWND_BROADCAST）。</summary>
     private static void SignalExistingInstance()
     {
-        try
+        // 已运行实例可能在启动早期还没创建事件：短暂重试，避免第二次启动静默无反应。
+        for (int attempt = 0; attempt < 5; attempt++)
         {
-            if (!EventWaitHandle.TryOpenExisting(ShowPanelEventName, out var signal)) return;
-            using (signal) signal.Set();
-        }
-        catch
-        {
-            // 唤起失败不影响「已在运行」这一事实。
+            try
+            {
+                if (EventWaitHandle.TryOpenExisting(ShowPanelEventName, out var signal))
+                {
+                    using (signal) signal.Set();
+                    return;
+                }
+            }
+            catch
+            {
+                // 唤起失败不影响「已在运行」这一事实。
+                return;
+            }
+
+            Thread.Sleep(100);
         }
     }
 
@@ -82,8 +92,8 @@ public static class Program
         Console.WriteLine("任务栏收纳 TaskbarDrawer");
         Console.WriteLine("  TaskbarDrawer.exe             启动（常驻托盘；再次启动会唤起主面板）");
         Console.WriteLine("  TaskbarDrawer.exe --probe     只读打印候选窗口，不移动 / 不隐藏任何窗口");
-        Console.WriteLine("  Ctrl+Alt+Shift+D               收起新一组 / 屏幕上没窗口时展开最近一组");
-        Console.WriteLine("  左键单击托盘图标               打开 / 关闭主面板");
+        Console.WriteLine("  Ctrl+Alt+Shift+D               新建场景（收起当前显示器上的窗口）/ 没窗口时展开最近的场景");
+        Console.WriteLine("  左键单击托盘图标               切换单窗口模式（双击打开主面板）");
         return 0;
     }
 

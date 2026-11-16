@@ -7,6 +7,9 @@ namespace TaskbarDrawer.UI;
 /// <summary>深色主题的唯一来源：所有窗口共用同一套画刷，避免各处维护出细微色差。</summary>
 internal static class Theme
 {
+    /// <summary>场景的统一图标：保存下来的「软件 + 位置」打开方案。</summary>
+    internal const string SceneIcon = "💾";
+
     /// <summary>面板底色，带轻微透明（主面板用）。</summary>
     internal static readonly SolidColorBrush PanelBackground = Frozen(0xF7, 0x1C, 0x1C, 0x1E);
 

@@ -14,7 +14,7 @@ namespace TaskbarDrawer.UI;
 
 /// <summary>
 /// 主面板（参照 Apple HIG 的深色语义配色）：打开时置顶，贴右下角弹出。
-/// 内容分三块——分组（逐组展开 / 收起，组常驻）、开关（iOS 风格）、收起热键（查看 + 录制修改）。
+/// 内容分三块——场景（运行中 + 已关闭，逐行收起 / 展开）、开关（iOS 风格）、新建场景热键（查看 + 录制修改）。
 /// 关闭面板只隐藏，不退出程序；按 Esc 也能收起。
 /// </summary>
 public sealed class MainPanelWindow : Window
@@ -22,11 +22,9 @@ public sealed class MainPanelWindow : Window
     private const double PanelWidth = 400;
     private const double EstimatedHeight = 780;
 
-    private readonly StackPanel _groupList = new();
-    private readonly StackPanel _savedList = new();
+    private readonly StackPanel _sceneList = new();
     private readonly TextBlock _summary;
     private readonly TextBlock _emptyHint;
-    private readonly TextBlock _savedEmpty;
     private readonly ToggleRow _singleRow;
     private readonly ToggleRow _autoStartRow;
     private readonly TextBlock _stashHotkeyValue;
@@ -55,17 +53,12 @@ public sealed class MainPanelWindow : Window
 
         _summary = Text("", 11, FontWeights.Normal, Theme.TextSecondary);
 
-        _emptyHint = Text("还没有收纳任何窗口。按热键把屏幕上的窗口收成一组，之后点任务栏胶囊就能展开。",
+        _emptyHint = Text("还没有场景。按热键或在下面点「新建场景」，把屏幕上的窗口收成一个场景。",
             11.5, FontWeights.Normal, Theme.TextMuted);
         _emptyHint.TextWrapping = TextWrapping.Wrap;
         _emptyHint.Margin = new Thickness(2, 8, 0, 0);
 
-        _savedEmpty = Text("没有已关闭的场景。把一组窗口「存储编组」再「关闭窗口」，场景就留在这里，点一下就能按原位置打开。",
-            11.5, FontWeights.Normal, Theme.TextMuted);
-        _savedEmpty.TextWrapping = TextWrapping.Wrap;
-        _savedEmpty.Margin = new Thickness(2, 8, 0, 0);
-
-        _singleRow = new ToggleRow("单窗口模式", "切换到某个窗口时，其余窗口自动最小化",
+        _singleRow = new ToggleRow("单窗口模式", "同一场景的窗口算一个窗口，切走时整个场景收回",
             value => SingleWindowRequested?.Invoke(value));
         _autoStartRow = new ToggleRow("开机自启", "登录后自动常驻托盘",
             value => AutoStartRequested?.Invoke(value));
@@ -91,13 +84,12 @@ public sealed class MainPanelWindow : Window
     }
 
     public event Action StashRequested;
-    public event Action<int> ToggleGroupRequested;
-    public event Action<int> CloseGroupRequested;
-    public event Action<int> SaveGroupRequested;
-    public event Action<int> GroupRenameRequested;
+    public event Action<int> SceneToggleRequested;
+    public event Action<int> SceneCloseRequested;
     public event Action<string> SavedToggleRequested;
-    public event Action<string> SavedRenameRequested;
-    public event Action<string> SavedDeleteRequested;
+
+    /// <summary>打开场景编辑（移除窗口 / 追加其他场景 / 重命名 / 删除）。</summary>
+    public event Action<string> SavedEditRequested;
     public event Action ExpandLatestRequested;
     public event Action ExpandAllRequested;
     public event Action<bool> SingleWindowRequested;
@@ -113,52 +105,41 @@ public sealed class MainPanelWindow : Window
     /// <summary>正在录制新热键：此时不要响应系统热键，避免把按键操作吞掉。</summary>
     public bool Recording => _recording;
 
-    /// <summary>刷新分组列表（每次收纳 / 展开 / 收起 / 外部关闭后由 AppShell 调用）。</summary>
-    public void SetGroups(IReadOnlyList<StashGroupSummary> groups, int total)
+    /// <summary>刷新场景列表（收纳 / 展开 / 收起 / 关闭 / 删除后由 AppShell 调用）。</summary>
+    public void SetScenes(
+        IReadOnlyList<StashGroupSummary> running,
+        IReadOnlyList<SavedGroupSummary> dormant,
+        int total)
     {
-        _pendingGroups = groups;
+        _pendingGroups = running;
+        _pendingSaved = dormant;
         _pendingTotal = total;
-        if (IsVisible) ApplyGroups();
-        else _surfaceDirty = true;
-    }
-
-    /// <summary>刷新场景列表（存储 / 重命名 / 关闭 / 解散后由 AppShell 调用）。</summary>
-    public void SetSavedGroups(IReadOnlyList<SavedGroupSummary> saved)
-    {
-        _pendingSaved = saved;
-        if (IsVisible) ApplySaved();
+        if (IsVisible) ApplyScenes();
         else _surfaceDirty = true;
     }
 
     /// <summary>
     /// 面板隐藏时只记数据、不建行：展开 / 收起是热键高频路径，
-    /// 实测 10 编组全量重建要 2.75 ms（最坏 13 ms），隐藏时做纯属浪费。
+    /// 实测全量重建要几毫秒，隐藏时做纯属浪费。
     /// </summary>
-    private void ApplyGroups()
+    private void ApplyScenes()
     {
-        _groupList.Children.Clear();
+        _sceneList.Children.Clear();
         foreach (var group in _pendingGroups)
-            _groupList.Children.Add(BuildGroupRow(group));
-
-        _emptyHint.Visibility = _pendingGroups.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        _summary.Text = _pendingTotal > 0 ? $"{_pendingTotal} 个窗口 · {_pendingGroups.Count} 个编组" : "";
-    }
-
-    private void ApplySaved()
-    {
-        _savedList.Children.Clear();
+            _sceneList.Children.Add(BuildSceneRow(group));
         foreach (var group in _pendingSaved)
-            _savedList.Children.Add(BuildSavedRow(group));
+            _sceneList.Children.Add(BuildClosedSceneRow(group));
 
-        _savedEmpty.Visibility = _pendingSaved.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        int count = _pendingGroups.Count + _pendingSaved.Count;
+        _emptyHint.Visibility = count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        _summary.Text = _pendingTotal > 0 ? $"{_pendingTotal} 个窗口 · {count} 个场景" : "";
     }
 
     private void FlushSurface()
     {
         if (!_surfaceDirty) return;
         _surfaceDirty = false;
-        ApplyGroups();
-        ApplySaved();
+        ApplyScenes();
     }
 
     public void SetSingleWindow(bool value) => _singleRow.Set(value);
@@ -202,8 +183,6 @@ public sealed class MainPanelWindow : Window
         Activate();
     }
 
-    public void HidePanel() => Hide();
-
     /// <summary>退出程序时置 true：允许真正关闭窗口，否则 Closing 一律转成隐藏。</summary>
     public bool AllowClose { get; set; }
 
@@ -221,9 +200,13 @@ public sealed class MainPanelWindow : Window
     private void ClampToWorkArea()
     {
         double height = ActualHeight > 0 ? ActualHeight : EstimatedHeight;
-        var center = new System.Drawing.Point((int)(Left + Width / 2), (int)(Top + height / 2));
-        var area = Forms.Screen.FromPoint(center).WorkingArea;
-        Rect work = new Rect(area.Left, area.Top, area.Width, area.Height);
+        double scale = DpiScale();
+
+        // WorkingArea 是物理像素，WPF 的 Left/Top/Width 是 DIP：先统一单位再比较，
+        // 否则 125% / 150% 缩放下会把「物理右边界」当 DIP 用，面板整体跑到屏幕外。
+        var center = new System.Drawing.Point(
+            (int)((Left + Width / 2) * scale), (int)((Top + height / 2) * scale));
+        Rect work = ToDip(Forms.Screen.FromPoint(center).WorkingArea, scale);
 
         Left = Math.Min(Math.Max(Left, work.Left + 8), Math.Max(work.Left + 8, work.Right - Width - 12));
         Top = Math.Min(Math.Max(Top, work.Top + 8), Math.Max(work.Top + 8, work.Bottom - height - 12));
@@ -233,14 +216,25 @@ public sealed class MainPanelWindow : Window
     {
         // 跟着鼠标所在的显示器走：多屏下点哪块屏的托盘 / 胶囊，面板就出现在哪块屏，
         // 不再永远贴主屏右下角（副屏用户会以为面板「跑到别处去了」）。
+        double scale = DpiScale();
         System.Drawing.Point cursor = Forms.Cursor.Position;
-        var area = Forms.Screen.FromPoint(cursor).WorkingArea;
-        Rect work = new Rect(area.Left, area.Top, area.Width, area.Height);
+        Rect work = ToDip(Forms.Screen.FromPoint(cursor).WorkingArea, scale);
 
         double height = ActualHeight > 0 ? ActualHeight : EstimatedHeight;
         Left = Math.Max(work.Left + 8, work.Right - Width - 12);
         Top = Math.Max(work.Top + 8, work.Bottom - height - 12);
     }
+
+    /// <summary>面板当前所在显示器的缩放系数（96 DPI = 1.0）。</summary>
+    private double DpiScale()
+    {
+        IntPtr hwnd = new WindowInteropHelper(this).Handle;
+        return hwnd == IntPtr.Zero ? 1.0 : NativeMethods.DpiOf(hwnd) / 96.0;
+    }
+
+    /// <summary>物理像素矩形 → DIP 矩形。</summary>
+    private static Rect ToDip(System.Drawing.Rectangle area, double scale)
+        => new(area.Left / scale, area.Top / scale, area.Width / scale, area.Height / scale);
 
     protected override void OnSourceInitialized(EventArgs e)
     {
@@ -362,8 +356,7 @@ public sealed class MainPanelWindow : Window
 
         var stack = new StackPanel { Margin = new Thickness(20, 16, 20, 18) };
         stack.Children.Add(BuildHeader());
-        stack.Children.Add(BuildGroups());
-        stack.Children.Add(BuildSavedGroups());
+        stack.Children.Add(BuildScenes());
         stack.Children.Add(Divider());
         stack.Children.Add(BuildToggles());
         stack.Children.Add(Divider());
@@ -388,7 +381,7 @@ public sealed class MainPanelWindow : Window
 
         var texts = new StackPanel();
         texts.Children.Add(Text("任务栏收纳", 16, FontWeights.SemiBold, Theme.TextPrimary));
-        var hint = Text("每组一枚胶囊贴在任务栏 · 左键收起 / 展开，右键管理", 10.5, FontWeights.Normal, Theme.TextMuted);
+        var hint = Text("💾 场景 = 保存的窗口组合 · 单窗口模式下每个场景算一个窗口", 10.5, FontWeights.Normal, Theme.TextMuted);
         hint.Margin = new Thickness(0, 3, 0, 0);
         texts.Children.Add(hint);
         Grid.SetColumn(texts, 0);
@@ -411,14 +404,14 @@ public sealed class MainPanelWindow : Window
         return grid;
     }
 
-    private FrameworkElement BuildGroups()
+    private FrameworkElement BuildScenes()
     {
         var panel = new StackPanel { Margin = new Thickness(0, 18, 0, 0) };
 
         var head = new Grid();
         head.ColumnDefinitions.Add(new ColumnDefinition());
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var title = Text("编组", 11, FontWeights.SemiBold, Theme.TextSecondary);
+        var title = Text(Theme.SceneIcon + " 场景", 11, FontWeights.SemiBold, Theme.TextSecondary);
         title.Margin = new Thickness(2, 0, 0, 0);
         head.Children.Add(title);
         _summary.HorizontalAlignment = HorizontalAlignment.Right;
@@ -427,12 +420,12 @@ public sealed class MainPanelWindow : Window
         head.Children.Add(_summary);
         panel.Children.Add(head);
 
-        _groupList.Margin = new Thickness(0, 8, 0, 0);
+        _sceneList.Margin = new Thickness(0, 8, 0, 0);
 
-        // 组多了会把面板顶出屏幕：给列表一个高度上限并允许滚动，否则底部几组永远点不到。
+        // 场景多了会把面板顶出屏幕：给列表一个高度上限并允许滚动，否则底部几行永远点不到。
         var scroll = new ScrollViewer
         {
-            Content = _groupList,
+            Content = _sceneList,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
             MaxHeight = Math.Max(180, SystemParameters.WorkArea.Height * 0.45)
@@ -442,39 +435,19 @@ public sealed class MainPanelWindow : Window
 
         // 三个动作会自动换行，窄屏 / 大字号下也不会挤出面板。
         var actions = new WrapPanel { Margin = new Thickness(0, 12, 0, 0) };
-        var stashAction = CreateAction("把屏幕上的窗口收成一组", () => StashRequested?.Invoke(), accent: true);
+        var stashAction = CreateAction("＋ 新建场景", () => StashRequested?.Invoke(), accent: true);
         stashAction.Margin = new Thickness(0, 0, 8, 6);
-        stashAction.ToolTip = "把当前屏幕上可见的窗口全部收进新的一组，任务栏留一枚胶囊";
+        stashAction.ToolTip = "把当前显示器上可见的窗口收成一个新场景并保存，任务栏留一枚 💾 胶囊";
         actions.Children.Add(stashAction);
-        var latestAction = CreateAction("展开最近一组", () => ExpandLatestRequested?.Invoke());
+        var latestAction = CreateAction("展开最近的场景", () => ExpandLatestRequested?.Invoke());
         latestAction.Margin = new Thickness(0, 0, 8, 6);
         actions.Children.Add(latestAction);
         var allAction = CreateAction("全部展开", () => ExpandAllRequested?.Invoke());
         allAction.Margin = new Thickness(0, 0, 8, 6);
         actions.Children.Add(allAction);
         panel.Children.Add(actions);
-        return panel;
-    }
 
-    private FrameworkElement BuildSavedGroups()
-    {
-        var panel = new StackPanel { Margin = new Thickness(0, 16, 0, 0) };
-
-        var title = Text("已关闭的场景", 11, FontWeights.SemiBold, Theme.TextSecondary);
-        title.Margin = new Thickness(2, 0, 0, 0);
-        panel.Children.Add(title);
-
-        _savedList.Margin = new Thickness(0, 8, 0, 0);
-        panel.Children.Add(new ScrollViewer
-        {
-            Content = _savedList,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            MaxHeight = Math.Max(120, SystemParameters.WorkArea.Height * 0.28)
-        });
-        panel.Children.Add(_savedEmpty);
-
-        var note = Text("场景 = 保存过的一组软件和窗口位置。运行中它和编组一样：点胶囊收起 / 展开；「关闭窗口」（或窗口自己的 ×）才是真的关掉，关完后胶囊留下，点一下按保存的位置重新打开。",
+        var note = Text("💾 场景 = 保存下来的「软件 + 位置」。运行中点这一行收起 / 展开；「关闭窗口」才真的关掉，关完后场景留下，点一下按保存的位置重新打开。行上的「编辑」可以移除某个窗口，或把别的场景追加进来。",
             10.5, FontWeights.Normal, Theme.TextMuted);
         note.TextWrapping = TextWrapping.Wrap;
         note.Margin = new Thickness(2, 8, 0, 0);
@@ -494,7 +467,7 @@ public sealed class MainPanelWindow : Window
         panel.Children.Add(_singleRow.Root);
         panel.Children.Add(_autoStartRow.Root);
 
-        var note = Text("单窗口模式开启时，展开一组也只保留最后激活的那个窗口，其余自动最小化。",
+        var note = Text("单窗口模式开启时，每个场景算一个窗口：切到场景里的任意窗口，同场景的窗口一起保留；切到场景外时，整个场景收回胶囊。",
             10.5, FontWeights.Normal, Theme.TextMuted);
         note.TextWrapping = TextWrapping.Wrap;
         note.Margin = new Thickness(2, 10, 0, 0);
@@ -508,10 +481,10 @@ public sealed class MainPanelWindow : Window
         var title = Text("快捷键", 11, FontWeights.SemiBold, Theme.TextSecondary);
         title.Margin = new Thickness(2, 0, 0, 0);
         panel.Children.Add(title);
-        panel.Children.Add(BuildHotkeyRow("收起 / 展开", _stashHotkeyValue, stashEdit));
+        panel.Children.Add(BuildHotkeyRow("新建场景 / 展开", _stashHotkeyValue, stashEdit));
         panel.Children.Add(_status);
 
-        var note = Text("托盘左键单击图标打开主面板。编组胶囊右键：取消编组 / 存储编组 / 重命名；场景胶囊右键：重命名 / 关闭窗口 / 解散场景。",
+        var note = Text("托盘左键单击切换单窗口模式，双击打开主面板。💾 场景胶囊右键：重命名 / 关闭窗口 / 删除场景。移除或追加窗口请用场景行的「编辑」。",
             10.5, FontWeights.Normal, Theme.TextMuted);
         note.TextWrapping = TextWrapping.Wrap;
         note.Margin = new Thickness(2, 10, 0, 0);
@@ -550,11 +523,10 @@ public sealed class MainPanelWindow : Window
         return grid;
     }
 
-    private Border BuildGroupRow(StashGroupSummary group)
+    private Border BuildSceneRow(StashGroupSummary group)
     {
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition());
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
@@ -569,10 +541,8 @@ public sealed class MainPanelWindow : Window
             Margin = new Thickness(0, 1, 7, 0)
         });
         titleLine.Children.Add(Text(string.IsNullOrEmpty(group.Name)
-            ? $"第 {group.Id} 组 · {group.Count} 个窗口"
-            : group.SavedId != null
-                ? $"★ {group.Name} · {group.Count} 个窗口"
-                : $"{group.Name} · {group.Count} 个窗口", 12.5, FontWeights.SemiBold, Theme.TextPrimary));
+            ? $"{Theme.SceneIcon} 场景 {group.Id} · {group.Count} 个窗口"
+            : $"{Theme.SceneIcon} {group.Name} · {group.Count} 个窗口", 12.5, FontWeights.SemiBold, Theme.TextPrimary));
         texts.Children.Add(titleLine);
 
         var subGrid = new Grid { Margin = new Thickness(14, 2, 8, 0) };
@@ -591,47 +561,23 @@ public sealed class MainPanelWindow : Window
         grid.Children.Add(texts);
 
         int id = group.Id;
-        bool isScene = !string.IsNullOrEmpty(group.SavedId);
+        string savedId = group.SavedId;
 
-        // 按钮跟胶囊右键菜单完全一致：
-        // 编组 = 取消编组 / 存储编组 / 重命名；场景 = 重命名 / 关闭窗口 / 解散场景。
-        // 收起 / 展开仍然点这一行（见下面的 MouseLeftButtonUp）。
-        Border first;
-        Border second;
-        Border third;
+        // 收起 / 展开点这一行；「关闭窗口」是真的关，「编辑」只改保存的快照。
+        var close = CreateAction("关闭窗口", () => SceneCloseRequested?.Invoke(id));
+        close.Margin = new Thickness(0, 0, 6, 0);
+        close.VerticalAlignment = VerticalAlignment.Center;
+        close.ToolTip = "关闭这个场景自己的窗口（等于逐个点 ×）；场景胶囊保留，之后还能打开";
+        Grid.SetColumn(close, 1);
+        grid.Children.Add(close);
 
-        if (isScene)
+        if (!string.IsNullOrEmpty(savedId))
         {
-            string savedId = group.SavedId;
-
-            first = CreateAction("重命名", () => SavedRenameRequested?.Invoke(savedId));
-            first.ToolTip = "重命名这个场景（任务栏胶囊同步显示新名字）";
-
-            second = CreateAction("关闭窗口", () => CloseGroupRequested?.Invoke(id));
-            second.ToolTip = "关闭这一组自己的窗口（等于逐个点 ×）；场景胶囊保留，之后还能打开";
-
-            third = CreateAction("解散场景", () => SavedDeleteRequested?.Invoke(savedId));
-            third.ToolTip = "只删除这个场景的记录，不会关闭正在运行的窗口";
-        }
-        else
-        {
-            first = CreateAction("取消编组", () => CloseGroupRequested?.Invoke(id));
-            first.ToolTip = "解除这一组的管理关系，窗口原位留在桌面上，不会被关闭或最小化";
-
-            second = CreateAction("存储编组", () => SaveGroupRequested?.Invoke(id));
-            second.ToolTip = "给这一组起名并保存软件 + 窗口位置；之后关掉窗口也能一键打开";
-
-            third = CreateAction("重命名", () => GroupRenameRequested?.Invoke(id));
-            third.ToolTip = "给这一组起个显示名（重启后不保留；要留底请用「存储编组」）";
-        }
-
-        int column = 1;
-        foreach (var action in new[] { first, second, third })
-        {
-            action.Margin = new Thickness(0, 0, 6, 0);
-            action.VerticalAlignment = VerticalAlignment.Center;
-            Grid.SetColumn(action, column++);
-            grid.Children.Add(action);
+            var edit = CreateAction("编辑", () => SavedEditRequested?.Invoke(savedId), accent: true);
+            edit.VerticalAlignment = VerticalAlignment.Center;
+            edit.ToolTip = "编辑场景：移除某个窗口、追加其他正在运行的场景、重命名或删除";
+            Grid.SetColumn(edit, 2);
+            grid.Children.Add(edit);
         }
 
         var row = new Border
@@ -642,23 +588,22 @@ public sealed class MainPanelWindow : Window
             Margin = new Thickness(0, 6, 0, 0),
             Child = grid,
             Cursor = Cursors.Hand,
-            ToolTip = $"{group.CreatedAt:HH:mm} 收成一组 · 现在是{group.State}\n点这一行收起 / 展开"
+            ToolTip = $"{group.CreatedAt:HH:mm} 新建场景 · 现在是{group.State}\n点这一行收起 / 展开"
         };
         row.MouseEnter += (_, _) => row.Background = Theme.PanelCardHover;
         row.MouseLeave += (_, _) => row.Background = Theme.PanelCard;
         row.MouseLeftButtonUp += (_, e) =>
         {
             e.Handled = true;
-            ToggleGroupRequested?.Invoke(id);
+            SceneToggleRequested?.Invoke(id);
         };
         return row;
     }
 
-    private Border BuildSavedRow(SavedGroupSummary group)
+    private Border BuildClosedSceneRow(SavedGroupSummary group)
     {
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition());
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
@@ -672,7 +617,7 @@ public sealed class MainPanelWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 1, 7, 0)
         });
-        titleLine.Children.Add(Text("★ " + ShortName(group.Name), 12.5, FontWeights.SemiBold, Theme.TextPrimary));
+        titleLine.Children.Add(Text(Theme.SceneIcon + " " + ShortName(group.Name), 12.5, FontWeights.SemiBold, Theme.TextPrimary));
         texts.Children.Add(titleLine);
 
         var sub = Text($"{group.State} · {group.Count} 个窗口 · 点这一行打开", 10.5, FontWeights.SemiBold, Theme.TextMuted);
@@ -683,25 +628,18 @@ public sealed class MainPanelWindow : Window
         grid.Children.Add(texts);
 
         string id = group.Id;
-        var rename = CreateAction("重命名", () => SavedRenameRequested?.Invoke(id));
-        rename.Margin = new Thickness(0, 0, 6, 0);
-        rename.VerticalAlignment = VerticalAlignment.Center;
-        rename.ToolTip = "重命名这个场景（任务栏胶囊同步显示新名字）";
-        Grid.SetColumn(rename, 1);
-        grid.Children.Add(rename);
-
         var toggle = CreateAction("打开", () => SavedToggleRequested?.Invoke(id), accent: true);
         toggle.Margin = new Thickness(0, 0, 6, 0);
         toggle.VerticalAlignment = VerticalAlignment.Center;
-        toggle.ToolTip = "启动这组软件，并摆回保存时的窗口位置";
-        Grid.SetColumn(toggle, 2);
+        toggle.ToolTip = "启动这个场景的软件，并摆回保存时的窗口位置";
+        Grid.SetColumn(toggle, 1);
         grid.Children.Add(toggle);
 
-        var delete = CreateAction("解散场景", () => SavedDeleteRequested?.Invoke(id));
-        delete.VerticalAlignment = VerticalAlignment.Center;
-        delete.ToolTip = "只删除这个场景的记录，不会关闭任何窗口";
-        Grid.SetColumn(delete, 3);
-        grid.Children.Add(delete);
+        var edit = CreateAction("编辑", () => SavedEditRequested?.Invoke(id));
+        edit.VerticalAlignment = VerticalAlignment.Center;
+        edit.ToolTip = "编辑场景：移除某个窗口、追加其他正在运行的场景、重命名或删除";
+        Grid.SetColumn(edit, 2);
+        grid.Children.Add(edit);
 
         var row = new Border
         {
@@ -727,7 +665,7 @@ public sealed class MainPanelWindow : Window
 
     private static string ShortName(string name)
     {
-        if (string.IsNullOrWhiteSpace(name)) return "未命名";
+        if (string.IsNullOrWhiteSpace(name)) return "场景";
         return name.Length > 10 ? name[..10] + "…" : name;
     }
 

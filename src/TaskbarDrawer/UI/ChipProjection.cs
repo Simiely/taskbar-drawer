@@ -6,11 +6,12 @@ namespace TaskbarDrawer.UI;
 
 /// <summary>
 /// 胶囊与面板的只读投影：把运行时组 / 场景摘要变成界面文案。
+/// 用户只认「场景」：运行时组是场景的运行态，已关闭的场景只剩快照。
 /// 无状态、不引用任何控件，所以可以直接单测，不必起窗口。
 /// </summary>
 public static class ChipProjection
 {
-    /// <summary>已保存、但当前没有对应运行时编组的场景（只剩快照）。</summary>
+    /// <summary>已保存、但当前没有对应运行时组的场景（只剩快照）。</summary>
     public static SavedGroupSummary[] Dormant(
         IReadOnlyList<StashGroupSummary> groups, IReadOnlyList<SavedGroupSummary> saved)
     {
@@ -19,8 +20,8 @@ public static class ChipProjection
     }
 
     /// <summary>
-    /// 胶囊顺序：运行时编组靠托盘（当前工作），已关闭的场景依次排在外侧。
-    /// 存过的组只有一枚胶囊——跟它的运行时编组是同一组，不会重复出现。
+    /// 胶囊顺序：运行中的场景靠托盘（当前工作），已关闭的场景依次排在外侧。
+    /// 每个场景只有一枚胶囊——运行时组和快照共用它，不会重复出现。
     /// </summary>
     public static IReadOnlyList<ChipEntry> Chips(
         IReadOnlyList<StashGroupSummary> groups, IReadOnlyList<SavedGroupSummary> saved)
@@ -31,9 +32,7 @@ public static class ChipProjection
         {
             chips.Add(new ChipEntry
             {
-                Text = string.IsNullOrEmpty(group.Name)
-                    ? $"{group.Id}·{group.Count}"
-                    : group.SavedId != null ? "★" + ShortName(group.Name) : ShortName(group.Name),
+                Text = Theme.SceneIcon + ShortName(group.Name),
                 Tooltip = RuntimeTooltip(group),
                 Highlight = group.Expanded,
                 GroupId = group.Id,
@@ -48,7 +47,7 @@ public static class ChipProjection
         {
             chips.Add(new ChipEntry
             {
-                Text = "★" + ShortName(group.Name),
+                Text = Theme.SceneIcon + ShortName(group.Name),
                 Tooltip = SavedTooltip(group),
                 Highlight = false,
                 Dormant = true,
@@ -71,10 +70,8 @@ public static class ChipProjection
     public static string RuntimeTooltip(StashGroupSummary group)
     {
         string head = string.IsNullOrEmpty(group.Name)
-            ? $"编组 {group.Id} · {group.Count} 个窗口 · {group.State}"
-            : group.SavedId != null
-                ? $"★ {group.Name} · {group.Count} 个窗口 · {group.State}"
-                : $"{group.Name} · {group.Count} 个窗口 · {group.State}";
+            ? $"{Theme.SceneIcon} 场景 {group.Id} · {group.Count} 个窗口 · {group.State}"
+            : $"{Theme.SceneIcon} {group.Name} · {group.Count} 个窗口 · {group.State}";
 
         var lines = new List<string> { head };
         foreach (string title in group.Titles.Take(3))
@@ -86,7 +83,7 @@ public static class ChipProjection
 
     public static string SavedTooltip(SavedGroupSummary group)
     {
-        var lines = new List<string> { $"★ {group.Name} · {group.Count} 个窗口 · 已关闭" };
+        var lines = new List<string> { $"{Theme.SceneIcon} {group.Name} · {group.Count} 个窗口 · 已关闭" };
         foreach (string title in group.Titles.Take(3))
         {
             string text = title ?? "";

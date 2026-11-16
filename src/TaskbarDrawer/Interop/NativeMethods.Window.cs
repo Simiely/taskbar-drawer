@@ -25,8 +25,6 @@ public static partial class NativeMethods
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
-    [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
-    [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] public static extern IntPtr GetWindowLongPtrW(IntPtr h, int idx);
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")] public static extern IntPtr SetWindowLongPtrW(IntPtr h, int idx, IntPtr value);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowTextLengthW(IntPtr h);
@@ -36,6 +34,8 @@ public static partial class NativeMethods
     [DllImport("user32.dll")] public static extern bool GetWindowPlacement(IntPtr h, ref WINDOWPLACEMENT pl);
     [DllImport("user32.dll")] public static extern bool SetWindowPlacement(IntPtr h, ref WINDOWPLACEMENT pl);
     [DllImport("user32.dll")] public static extern IntPtr MonitorFromWindow(IntPtr h, uint flags);
+    [DllImport("user32.dll")] public static extern IntPtr MonitorFromPoint(POINT p, uint flags);
+    [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool GetMonitorInfoW(IntPtr mon, ref MONITORINFOEX mi);
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
@@ -138,15 +138,22 @@ public static partial class NativeMethods
         return sb.ToString();
     }
 
-    public static bool TryGetPlacement(IntPtr hwnd, out WINDOWPLACEMENT placement)
-    {
-        placement = new WINDOWPLACEMENT { length = Marshal.SizeOf<WINDOWPLACEMENT>() };
-        return GetWindowPlacement(hwnd, ref placement);
-    }
-
     public static string MonitorDeviceOf(IntPtr hwnd)
     {
         IntPtr mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if (mon == IntPtr.Zero) return null;
+        var mi = new MONITORINFOEX { cbSize = Marshal.SizeOf<MONITORINFOEX>() };
+        return GetMonitorInfoW(mon, ref mi) ? mi.szDevice : null;
+    }
+
+    /// <summary>
+    /// 鼠标所在显示器的设备名。从托盘菜单 / 面板按钮触发时前台是本程序或 shell，
+    /// 拿不到「用户正在操作的窗口」，就用鼠标位置判断当前屏幕。
+    /// </summary>
+    public static string MonitorDeviceOfCursor()
+    {
+        if (!GetCursorPos(out var point)) return null;
+        IntPtr mon = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
         if (mon == IntPtr.Zero) return null;
         var mi = new MONITORINFOEX { cbSize = Marshal.SizeOf<MONITORINFOEX>() };
         return GetMonitorInfoW(mon, ref mi) ? mi.szDevice : null;
@@ -190,21 +197,35 @@ public static partial class NativeMethods
             ? new POINT { X = info.rcWork.Left, Y = info.rcWork.Top }
             : default;
 
-    /// <summary>按设备名找显示器的工作区原点（隐藏窗口的矩形是哨兵值，不能按窗口位置反查）。</summary>
-    public static POINT WorkOriginOfDevice(string device)
+    /// <summary>
+    /// 按设备名找显示器的工作区原点（隐藏窗口的矩形是哨兵值，不能按窗口位置反查）。
+    /// 显示器被拔掉 / 设备名变化时退回窗口当前所在显示器，并按 (0,0) 换算会整体偏移。
+    /// </summary>
+    public static POINT WorkOriginOfDevice(string device, IntPtr fallbackWindow)
     {
-        if (string.IsNullOrEmpty(device)) return default;
         POINT origin = default;
-        EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr mon, IntPtr hdc, ref RECT r, IntPtr data) =>
+        bool found = false;
+
+        if (!string.IsNullOrEmpty(device))
         {
-            var mi = new MONITORINFOEX { cbSize = Marshal.SizeOf<MONITORINFOEX>() };
-            if (GetMonitorInfoW(mon, ref mi) && string.Equals(mi.szDevice, device, StringComparison.Ordinal))
+            EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr mon, IntPtr hdc, ref RECT r, IntPtr data) =>
             {
-                origin = new POINT { X = mi.rcWork.Left, Y = mi.rcWork.Top };
-                return false;
-            }
-            return true;
-        }, IntPtr.Zero);
+                var mi = new MONITORINFOEX { cbSize = Marshal.SizeOf<MONITORINFOEX>() };
+                if (GetMonitorInfoW(mon, ref mi) && string.Equals(mi.szDevice, device, StringComparison.Ordinal))
+                {
+                    origin = new POINT { X = mi.rcWork.Left, Y = mi.rcWork.Top };
+                    found = true;
+                    return false;
+                }
+                return true;
+            }, IntPtr.Zero);
+        }
+
+        if (found) return origin;
+
+        origin = WorkOriginOfWindow(fallbackWindow);
+        Diagnostics.Write("window placement", new InvalidOperationException(
+            $"找不到保存的显示器 {device ?? "(未记录)"}，已按窗口当前显示器还原"));
         return origin;
     }
 

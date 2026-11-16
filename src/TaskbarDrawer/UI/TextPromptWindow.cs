@@ -28,7 +28,7 @@ public sealed class TextPromptWindow : Window
         _input = new TextBox
         {
             Text = initial ?? "",
-            FontFamily = new FontFamily("Segoe UI Variable Text, Microsoft YaHei UI, Segoe UI"),
+            FontFamily = Ui.Font,
             FontSize = 12.5,
             Foreground = Theme.TextPrimary,
             Background = Theme.ControlBackground,
@@ -94,10 +94,18 @@ public sealed class TextPromptWindow : Window
         Loaded += (_, _) => _input.Focus();
     }
 
-    /// <summary>弹出输入框；取消 / 空名字返回 null。</summary>
-    public static string Ask(string title, string hint, string initial)
+    /// <summary>
+    /// 弹出输入框；取消 / 空名字返回 null。
+    /// owner 可见时挂上去，让输入框停在编辑器 / 面板正中央，而不是屏幕中央。
+    /// </summary>
+    public static string Ask(string title, string hint, string initial, Window owner = null)
     {
         var window = new TextPromptWindow(title, hint, initial);
+        if (owner != null && owner.IsVisible)
+        {
+            window.Owner = owner;
+            window.WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        }
         return window.ShowDialog() == true ? window._input.Text.Trim() : null;
     }
 

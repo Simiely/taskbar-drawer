@@ -32,29 +32,26 @@ public static class WindowRecovery
         var hidden = items.Where(i => i.Hidden).ToArray();
         string signature = string.Join(",", hidden.Select(i => i.Handle.ToInt64()).OrderBy(v => v));
         if (signature == _lastSignature) return;
-        _lastSignature = signature;
 
         try
         {
-            Directory.CreateDirectory(AppSettings.Folder);
-
             if (hidden.Length == 0)
             {
                 if (File.Exists(FilePath)) File.Delete(FilePath);
-                return;
+            }
+            else
+            {
+                WriteEntries(hidden.Select(i => new Entry
+                {
+                    Handle = i.Handle.ToInt64(),
+                    Title = i.Title,
+                    ProcessId = i.ProcessId,
+                    ProcessStartTicks = i.ProcessStartTime?.Ticks ?? 0
+                }).ToArray());
             }
 
-            var entries = hidden.Select(i => new Entry
-            {
-                Handle = i.Handle.ToInt64(),
-                Title = i.Title,
-                ProcessId = i.ProcessId,
-                ProcessStartTicks = i.ProcessStartTime?.Ticks ?? 0
-            }).ToArray();
-
-            string temp = FilePath + ".tmp";
-            File.WriteAllText(temp, JsonSerializer.Serialize(entries));
-            File.Move(temp, FilePath, true);
+            // 写盘成功后才记住签名：失败（磁盘满 / 被占用）时下一轮还会重试。
+            _lastSignature = signature;
         }
         catch
         {
@@ -71,6 +68,7 @@ public static class WindowRecovery
         if (!File.Exists(FilePath)) return 0;
 
         int recovered = 0;
+        var remaining = new List<Entry>();
         try
         {
             var entries = JsonSerializer.Deserialize<Entry[]>(File.ReadAllText(FilePath));
@@ -88,16 +86,30 @@ public static class WindowRecovery
 
                 // 显示成最小化：窗口回到任务栏，但不抢焦点、不打断开机流程。
                 NativeMethods.ShowWindow(hwnd, NativeMethods.SW_SHOWMINNOACTIVE);
-                recovered++;
+                if (NativeMethods.IsWindowVisible(hwnd)) recovered++;
+                else remaining.Add(entry);
             }
         }
         catch
         {
             // 文件损坏 / 无权限：按「没有恢复记录」处理。
+            Clear();
+            return recovered;
         }
 
-        Clear();
+        // 没救回来的记录留到下次启动再试；全部处理干净才删除文件。
+        if (remaining.Count == 0) Clear();
+        else WriteEntries(remaining);
         return recovered;
+    }
+
+    /// <summary>原子写入一组回收记录（临时文件 + 替换），由 Save / Recover 共用。</summary>
+    private static void WriteEntries(IReadOnlyCollection<Entry> entries)
+    {
+        Directory.CreateDirectory(AppSettings.Folder);
+        string temp = FilePath + ".tmp";
+        File.WriteAllText(temp, JsonSerializer.Serialize(entries));
+        File.Move(temp, FilePath, true);
     }
 
     /// <summary>正常退出时调用：窗口已被主动放回任务栏，回收记录不再需要。</summary>

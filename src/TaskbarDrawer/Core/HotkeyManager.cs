@@ -25,16 +25,21 @@ public sealed class HotkeyDefinition
 
 public sealed class HotkeyRegistration
 {
-    public HotkeyRegistration(HotkeyDefinition definition, bool success, int win32Error)
+    public HotkeyRegistration(
+        HotkeyDefinition definition, bool success, int win32Error, string rollbackError = null)
     {
         Definition = definition;
         Success = success;
         Win32Error = win32Error;
+        RollbackError = rollbackError;
     }
 
     public HotkeyDefinition Definition { get; }
     public bool Success { get; }
     public int Win32Error { get; }
+
+    /// <summary>改键失败且旧组合也没能注册回去时的说明；正常情况为 null。</summary>
+    public string RollbackError { get; }
 
     public string ErrorText
     {
@@ -105,7 +110,16 @@ public sealed class HotkeyManager : IDisposable
         if (previous != null) Unregister(definition.Id);
 
         var registration = Register(definition);
-        if (!registration.Success && previous != null) Register(previous);
+        if (!registration.Success && previous != null)
+        {
+            // 回滚也可能失败（旧组合刚被别的程序抢走）：结果必须带回界面，不能假装无事发生。
+            var rollback = Register(previous);
+            if (!rollback.Success)
+            {
+                registration = new HotkeyRegistration(definition, false, registration.Win32Error,
+                    $"旧快捷键 {previous.Gesture} 也无法恢复：{rollback.ErrorText}");
+            }
+        }
         return registration;
     }
 

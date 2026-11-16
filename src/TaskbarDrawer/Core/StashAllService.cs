@@ -2,14 +2,14 @@ using TaskbarDrawer.Interop;
 
 namespace TaskbarDrawer.Core;
 
-/// <summary>一组收纳：一次收纳动作产生的窗口集合，展开后仍然保留。</summary>
+/// <summary>一组收纳：一个场景的运行态，持有窗口句柄，展开后仍然保留。</summary>
 public sealed class StashGroup
 {
     public int Id { get; init; }
     public DateTime CreatedAt { get; init; }
     public IntPtr ForegroundBefore { get; init; }
 
-    /// <summary>关联的场景 Id；不为空表示这一组已经保存过，胶囊显示自定义名字。</summary>
+    /// <summary>关联的场景 Id；正常运行时必有，胶囊显示场景名字。</summary>
     public string SavedId { get; set; }
 
     /// <summary>场景的名字（保存 / 重命名后同步到这里）。</summary>
@@ -29,20 +29,20 @@ public sealed class StashGroupSummary
     /// <summary>组内窗口标题（最近一次收纳 / 展开时的快照），用于胶囊 tooltip 与面板列表。</summary>
     public IReadOnlyList<string> Titles { get; init; } = Array.Empty<string>();
 
-    /// <summary>关联的场景 Id；null = 普通运行时组。</summary>
+    /// <summary>关联的场景 Id；正常运行时必有。</summary>
     public string SavedId { get; init; }
 
-    /// <summary>场景名字；普通组为 null。</summary>
+    /// <summary>场景名字。</summary>
     public string Name { get; init; }
 
     public string State => Expanded ? "已展开" : "已收起";
 }
 
 /// <summary>
-/// 「收进任务栏」状态机（v4：组常驻）。
-/// 收纳 = 记录位置后 SW_HIDE；展开 = 原位还原但<b>不删组</b>；再次点同一组 = 重新收起。
-/// 这样一组窗口可以当「工作区」反复复用：展开干活，收起腾桌面。
-/// 新一次收纳只抓「不属于任何组」的窗口，不会把已展开的组卷进新组。
+/// 「收进任务栏」状态机（v4：场景常驻）。
+/// 运行时组就是场景的运行态：收纳 = 记录位置后 SW_HIDE；展开 = 原位还原但<b>不删组</b>；
+/// 再次点同一组 = 重新收起。这样一组窗口可以当「工作区」反复复用。
+/// 新一次收纳只抓「不属于任何场景」的窗口，不会把已展开的场景卷进新组。
 /// </summary>
 public sealed class StashAllService
 {
@@ -85,14 +85,20 @@ public sealed class StashAllService
             .ToArray();
     }
 
-    /// <summary>把屏幕上「还不属于任何组」的窗口收成新的一组；没有可收的窗口时不建组。</summary>
-    public int StashAll()
+    /// <summary>
+    /// 把屏幕上「还不属于任何场景」的窗口收成新的一组；没有可收的窗口时不建组。
+    /// monitorDevice 指定只收哪块屏幕的窗口（null = 全部屏幕），
+    /// 多显示器下每块屏幕各自形成独立场景，互不打扰。
+    /// groupId 返回新建组的组号（0 = 没有建组），供上层立刻保存成场景。
+    /// </summary>
+    public int StashAll(out int groupId, string monitorDevice = null)
     {
+        groupId = 0;
         _stash.Prune();
         SyncGroups();
 
         IntPtr foreground = NativeMethods.GetForegroundWindow();
-        int groupId = _nextGroupId;
+        int newGroupId = _nextGroupId;
         LastBlockedByElevation = 0;
 
         int hidden = 0;
@@ -100,6 +106,9 @@ public sealed class StashAllService
         {
             // 已属于某组（正展开）的窗口不再重复收，否则会把上一组拆散。
             if (_stash.Contains(candidate.Handle.ToInt64())) continue;
+
+            // 只看当前这块屏幕：在显示器 1 操作时不要动显示器 2 的窗口。
+            if (monitorDevice != null && NativeMethods.MonitorDeviceOf(candidate.Handle) != monitorDevice) continue;
 
             // 管理员窗口：本程序不是管理员时 SW_HIDE 会被 UIPI 拒绝（ShowWindow 返回 false），
             // 硬收只会留下一个点不开的空胶囊，所以跳过并计数，由界面提示原因。
@@ -109,7 +118,7 @@ public sealed class StashAllService
                 continue;
             }
 
-            var item = _stash.Capture(candidate.Handle, groupId);
+            var item = _stash.Capture(candidate.Handle, newGroupId);
             if (item == null) continue;
             if (_stash.Hide(item)) hidden++;
         }
@@ -119,10 +128,14 @@ public sealed class StashAllService
         _nextGroupId++;
         _groups.Add(new StashGroup
         {
-            Id = groupId,
+            Id = newGroupId,
             CreatedAt = DateTime.Now,
-            ForegroundBefore = IsEligibleActivationTarget(foreground) ? foreground : IntPtr.Zero
+            ForegroundBefore = IsEligibleActivationTarget(foreground) &&
+                               (monitorDevice == null || NativeMethods.MonitorDeviceOf(foreground) == monitorDevice)
+                ? foreground
+                : IntPtr.Zero
         });
+        groupId = newGroupId;
         Changed?.Invoke();
         return hidden;
     }
@@ -146,7 +159,7 @@ public sealed class StashAllService
     public int GroupIdOfSaved(string savedId)
         => string.IsNullOrEmpty(savedId) ? 0 : _groups.FirstOrDefault(g => g.SavedId == savedId)?.Id ?? 0;
 
-    /// <summary>这一组关联的场景 Id；普通组返回 null。</summary>
+    /// <summary>这一组关联的场景 Id；正常运行时必有。</summary>
     public string SavedIdOf(int groupId) => _groups.FirstOrDefault(g => g.Id == groupId)?.SavedId;
 
     /// <summary>保存后把运行时组和场景记关联起来：胶囊从此显示自定义名字。</summary>
@@ -171,22 +184,10 @@ public sealed class StashAllService
         if (changed) Changed?.Invoke();
     }
 
-    /// <summary>删除场景后，运行时组退回普通组（名字保留，继续可用）。</summary>
-    public void UnlinkSaved(string savedId)
-    {
-        bool changed = false;
-        foreach (var group in _groups.Where(g => g.SavedId == savedId))
-        {
-            group.SavedId = null;
-            changed = true;
-        }
-        if (changed) Changed?.Invoke();
-    }
-
     /// <summary>
     /// 把从场景拉起的窗口接入运行时组（保持可见，不隐藏）。
-    /// 这样打开后的组和普通组一样：点胶囊收起 / 展开，而不是反复关掉再开。
-    /// 窗口已属于别的组时不动它，避免拆散别的组。
+    /// 这样打开后的组和普通场景一样：点胶囊收起 / 展开，而不是反复关掉再开。
+    /// 窗口已属于别的组时不动它，避免拆散别的场景。
     /// </summary>
     public bool Adopt(IntPtr hwnd, string savedId, string name)
     {
@@ -215,13 +216,33 @@ public sealed class StashAllService
     }
 
     /// <summary>
+    /// 这个场景现在属于哪块屏幕：展开时按可见窗口实测（用户可能把它拖到别的屏），
+    /// 全部收起时用收纳时记下的设备名。多显示器下热键 / 收起都靠它按屏隔离。
+    /// </summary>
+    public string MonitorOfGroup(int groupId)
+    {
+        var items = _stash.Items.Where(i => i.GroupId == groupId).ToArray();
+        foreach (var item in items.Where(i => !i.Hidden))
+        {
+            string device = NativeMethods.MonitorDeviceOf(item.Handle);
+            if (device != null) return device;
+        }
+        return items.FirstOrDefault(i => !string.IsNullOrEmpty(i.MonitorDevice))?.MonitorDevice;
+    }
+
+    /// <summary>
     /// 展开一组仍收着的窗口。多组时按组号从新到旧轮转：这次展开第 3 组，下次第 2 组，
     /// 到最旧后回到最新。早先固定取「最新一个未展开组」，会导致热键永远只在同一组上来回，
     /// 更旧的组只能去点胶囊或面板。
+    /// monitorDevice 限定只在这块屏幕上轮转（null = 全部屏幕）。
     /// </summary>
-    public int ExpandNewest()
+    public int ExpandNewest(string monitorDevice = null)
     {
-        var collapsed = Groups().Where(g => !g.Expanded).OrderByDescending(g => g.Id).ToArray();
+        var collapsed = Groups()
+            .Where(g => !g.Expanded)
+            .Where(g => monitorDevice == null || MonitorOfGroup(g.Id) == monitorDevice)
+            .OrderByDescending(g => g.Id)
+            .ToArray();
         if (collapsed.Length == 0) return 0;
 
         var next = collapsed.FirstOrDefault(g => g.Id < _rotateFromId) ?? collapsed[0];
@@ -265,7 +286,7 @@ public sealed class StashAllService
         return hidden;
     }
 
-    /// <summary>点胶囊 / 按组热键：已展开 → 收起，已收起 → 展开。</summary>
+    /// <summary>点场景胶囊：已展开 → 收起，已收起 → 展开。</summary>
     public (bool expanded, int count) ToggleGroup(int groupId)
     {
         var summary = Groups().FirstOrDefault(g => g.Id == groupId);
@@ -275,17 +296,15 @@ public sealed class StashAllService
             : (true, ExpandGroup(groupId));
     }
 
-    /// <summary>
-    /// 取消编组：组内窗口原位还回桌面（不最小化、不关闭），组记录删除。
-    /// 这是普通胶囊右键的「取消编组」——只解除管理关系，不碰窗口本身。
-    /// </summary>
-    public int Ungroup(int groupId)
+    /// <summary>删除场景时，把运行时组整体交回桌面（不最小化、不关闭）。</summary>
+    public int Release(int groupId)
     {
         var group = _groups.FirstOrDefault(g => g.Id == groupId);
         if (group == null) return 0;
 
+        // 只还原被隐藏的窗口；已经可见的窗口保持原位，不能因为删除场景而跳动。
         int shown = 0;
-        foreach (var item in _stash.Items.Where(i => i.GroupId == groupId).ToArray())
+        foreach (var item in _stash.Items.Where(i => i.GroupId == groupId && i.Hidden).ToArray())
         {
             if (_stash.Restore(item.Handle.ToInt64())) shown++;
         }
@@ -296,22 +315,15 @@ public sealed class StashAllService
         return shown;
     }
 
-    /// <summary>给普通编组起个名字（不保存快照，重启后名字不保留）。</summary>
-    public bool RenameGroup(int groupId, string name)
-    {
-        var group = _groups.FirstOrDefault(g => g.Id == groupId);
-        if (group == null || string.IsNullOrWhiteSpace(name)) return false;
-        group.Name = name.Trim();
-        Changed?.Invoke();
-        return true;
-    }
-
-    /// <summary>展开全部组（组都保留）。</summary>
-    public int ExpandAll()
+    /// <summary>展开全部组（组都保留）。monitorDevice 限定只展开这块屏幕上的场景（null = 全部屏幕）。</summary>
+    public int ExpandAll(string monitorDevice = null)
     {
         int shown = 0;
         // 从旧到新依次还原：最后激活的是最新一组的前台窗口。
-        foreach (var group in Groups().Where(g => !g.Expanded).OrderBy(g => g.Id))
+        foreach (var group in Groups()
+                     .Where(g => !g.Expanded)
+                     .Where(g => monitorDevice == null || MonitorOfGroup(g.Id) == monitorDevice)
+                     .OrderBy(g => g.Id))
             shown += ExpandGroup(group.Id);
         return shown;
     }
@@ -327,18 +339,23 @@ public sealed class StashAllService
 
     public int Prune()
     {
-        int removed = _stash.Prune();
+        int changed = _stash.Prune();
         int before = _groups.Count;
         SyncGroups();
-        if (removed > 0 || _groups.Count != before) Changed?.Invoke();
-        return removed;
+        // changed 包含「被外部还原」的窗口：组还在，但展开状态和计数都变了，界面必须刷新。
+        if (changed > 0 || _groups.Count != before) Changed?.Invoke();
+        return changed;
     }
 
-    /// <summary>屏幕上是否还有不属于任何编组的窗口（规则里的条件卡片要用）。</summary>
-    public bool HasUntrackedVisibleWindows()
+    /// <summary>
+    /// 这块屏幕上是否还有不属于任何场景的窗口（规则里的条件卡片要用）。
+    /// 多显示器下按屏判断：另一块屏上有窗口不算，避免在空屏幕上误判「该新建场景」。
+    /// </summary>
+    public bool HasUntrackedVisibleWindows(string monitorDevice = null)
     {
         foreach (var candidate in WindowEnumerator.Enumerate(includeMinimized: false))
         {
+            if (monitorDevice != null && NativeMethods.MonitorDeviceOf(candidate.Handle) != monitorDevice) continue;
             if (!_stash.Contains(candidate.Handle.ToInt64())) return true;
         }
         return false;

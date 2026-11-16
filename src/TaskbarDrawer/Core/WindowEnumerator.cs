@@ -51,18 +51,22 @@ public static class WindowEnumerator
             NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
             bool own = pid == self;
             NativeMethods.GetWindowRect(hwnd, out var rect);
-            string title = own ? "" : NativeMethods.Title(hwnd);
 
+            // 先把不耗时的过滤全部算完；标题查询是跨线程 SendMessageTimeout（最长 120ms），
+            // 能一票否决的窗口不要为它等。
             var facts = new WindowFacts
             {
                 Visible = true,
                 Cloaked = cloaked,
                 ToolWindow = tool,
                 OwnProcess = own,
-                HasTitle = title.Length > 0,
+                HasTitle = true, // 标题最后单独查；能走到这里的窗口已经不多
                 HasArea = !rect.IsEmpty
             };
             if (!WindowFilter.IsCandidate(in facts)) return true;
+
+            string title = NativeMethods.Title(hwnd);
+            if (title.Length == 0) return true;
 
             string cls = NativeMethods.ClassName(hwnd);
             if (ShellClasses.Contains(cls)) return true;
