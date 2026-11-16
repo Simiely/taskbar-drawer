@@ -40,19 +40,37 @@ public sealed class WorkspaceService
     /// <summary>把旧版本保存的副屏矩形换算回屏幕坐标；返回修复条数。</summary>
     private int RepairLegacyRects()
     {
+        var monitors = NativeMethods.AllMonitors();
         int repaired = 0;
         foreach (var group in _groups)
         {
             foreach (var window in group.Windows)
             {
-                if (string.IsNullOrEmpty(window.MonitorDevice)) continue;
                 if (window.Width <= 0 || window.Height <= 0) continue;
-                if (!NativeMethods.TryGetMonitorOfDevice(window.MonitorDevice, out var monitor)) continue;
 
                 var saved = NativeMethods.RECT.FromLTRB(
                     window.Left, window.Top, window.Left + window.Width, window.Top + window.Height);
-                if (!DisplayRules.TryRepairLegacyRect(saved, monitor.rcMonitor, out var fixedRect))
-                    continue;
+                NativeMethods.RECT fixedRect = saved;
+                bool fixedThis = false;
+
+                if (!string.IsNullOrEmpty(window.MonitorDevice) &&
+                    NativeMethods.TryGetMonitorOfDevice(window.MonitorDevice, out var monitor))
+                {
+                    fixedThis = DisplayRules.TryRepairLegacyRect(saved, monitor.rcMonitor, out fixedRect);
+                }
+                else if (monitors.All(m => DisplayRules.VisibleRatio(saved, m.rcMonitor) == 0))
+                {
+                    // 更早的快照没记设备名：只有整个矩形完全不在任何屏幕上时，
+                    // 才按各屏原点试一次——被旧版多加的正是显示器原点。
+                    foreach (var candidate in monitors)
+                    {
+                        if (!DisplayRules.TryRepairLegacyRect(saved, candidate.rcMonitor, out fixedRect)) continue;
+                        fixedThis = true;
+                        break;
+                    }
+                }
+
+                if (!fixedThis) continue;
 
                 window.Left = fixedRect.Left;
                 window.Top = fixedRect.Top;
@@ -61,7 +79,8 @@ public sealed class WorkspaceService
                 repaired++;
                 Diagnostics.Info("scene",
                     $"旧坐标修复 scene={group.Name} exe={Path.GetFileName(window.ExePath)} " +
-                    $"「{Brief(window.Title)}」 {saved} → {fixedRect} device={window.MonitorDevice}");
+                    $"「{Brief(window.Title)}」 {saved} → {fixedRect} " +
+                    $"device={window.MonitorDevice ?? "(未记录，按屏幕原点推断)"}");
             }
         }
         return repaired;
