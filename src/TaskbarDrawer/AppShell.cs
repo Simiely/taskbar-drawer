@@ -869,6 +869,9 @@ public sealed class AppShell : IDisposable
             _settings.Save();
         }
         _single.SetEnabled(value, applyImmediately: persist);
+        // 托盘菜单 / 面板收起时，系统会把前台还给刚才的窗口；那不是用户「操作了另一块屏」，
+        // 不压住的话会在开关生效后紧接着把另一块屏也清一遍（一块屏留一个，两块各留一个）。
+        if (persist && value) _single.SuspendTemporarily();
         _tray.SetSingleWindowChecked(value);
         _panel?.SetSingleWindow(value);
         if (persist) Feedback(value ? "单窗口模式已开启" : "单窗口模式已关闭");

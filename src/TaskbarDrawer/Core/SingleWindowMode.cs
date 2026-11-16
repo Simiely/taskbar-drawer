@@ -89,22 +89,18 @@ public sealed class SingleWindowMode : IDisposable
     }
 
     /// <summary>
-    /// 立即应用一次。从托盘 / 面板点开关时，前台是本进程或 shell，不能直接当前台窗口用；
-    /// 这时退而取「鼠标所在屏幕上」Z 序最靠前的候选窗口。
-    /// 不能取全屏 Z 序第一枚：那可能是另一块屏的窗口，随后会最小化那块屏上的所有窗口。
+    /// 打开开关时立即应用一次。入口只有托盘 / 面板，鼠标（面板）在哪块屏，就只处理哪块屏。
+    /// 不能优先用前台窗口：点托盘菜单时前台很可能还是另一块屏上刚才用的窗口，
+    /// 拿它当目标会把另一块屏清空，看起来像「点一块屏、两块都被清」。
+    /// 这块屏没有可接管的窗口就提示，不回退到前台窗口。
     /// </summary>
     private void ApplyForegroundOrCandidate()
     {
         var windows = WindowEnumerator.Enumerate(includeMinimized: false);
-        IntPtr foreground = NativeMethods.GetForegroundWindow();
         string monitor = NativeMethods.MonitorDeviceOfCursor();
 
-        var target = windows.FirstOrDefault(w => w.Handle == foreground);
-        if (target == null)
-        {
-            target = windows.FirstOrDefault(w =>
-                DisplayRules.BelongsTo(monitor, NativeMethods.MonitorDeviceOf(w.Handle)));
-        }
+        var target = windows.FirstOrDefault(w =>
+            DisplayRules.BelongsTo(monitor, NativeMethods.MonitorDeviceOf(w.Handle)));
 
         if (target == null)
         {
