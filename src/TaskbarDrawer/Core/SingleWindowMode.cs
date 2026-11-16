@@ -51,10 +51,12 @@ public sealed class SingleWindowMode : IDisposable
     public Func<IntPtr, int> GroupOf { get; set; }
 
     /// <summary>
-    /// 由组合根注入：把某一场景整组收回收纳区（隐藏窗口、保留组），返回收起的窗口数。
+    /// 由组合根注入：把某一场景在这块屏幕上整组收回收纳区（隐藏窗口、保留组），返回收起的窗口数。
+    /// 必须带显示器设备名：场景里可能混有其它屏幕的窗口（旧快照还原 / 用户拖过去），
+    /// 不能因为这块屏幕上的切换让另一块屏幕的窗口跟着消失。
     /// 注入后「切到别的窗口」时，别的场景会整体回到胶囊里，而不是散成一排最小化按钮。
     /// </summary>
-    public Func<int, int> CollapseGroup { get; set; }
+    public Func<int, string, int> CollapseGroup { get; set; }
 
     /// <summary>一次应用里被最小化的窗口数（订阅方可用于状态提示）。</summary>
     public event Action<int> Applied;
@@ -155,6 +157,7 @@ public sealed class SingleWindowMode : IDisposable
             // 多显示器：单窗口模式只管前台所在的那块屏幕——在哪块屏操作，就只影响哪块屏，
             // 另一块屏上的窗口保持原样。
             IntPtr monitor = NativeMethods.MonitorFromWindow(foreground, NativeMethods.MONITOR_DEFAULTTONEAREST);
+            string monitorDevice = NativeMethods.MonitorDeviceOf(foreground);
 
             // 前台属于某个组：先把组里被最小化的同伴恢复（不抢焦点）。
             // 这样「切回组内任意一个窗口」时整组都会回到屏幕上。
@@ -183,9 +186,9 @@ public sealed class SingleWindowMode : IDisposable
 
                 // 别的场景整组收回胶囊（一个场景只收一次）：单窗口模式里场景是一个整体，
                 // 应该「收起来」而不是拆成一排最小化按钮留在任务栏。
-                if (memberGroup > 0 && CollapseGroup != null)
+                if (memberGroup > 0 && CollapseGroup != null && !string.IsNullOrEmpty(monitorDevice))
                 {
-                    if (collapsed.Add(memberGroup)) collapsedCount += CollapseGroup(memberGroup);
+                    if (collapsed.Add(memberGroup)) collapsedCount += CollapseGroup(memberGroup, monitorDevice);
                     continue;
                 }
 

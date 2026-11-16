@@ -95,7 +95,7 @@ public sealed class AppShell : IDisposable
         // 让单窗口模式认识场景：同一场景展开的窗口当成一个整体，而不是互斥的多个窗口。
         _single.GroupOf = hwnd => _stash.GroupIdOf(hwnd);
         // 切到别的场景 / 别的窗口时，别的场景整组收回胶囊（而不是最小化成一排任务栏按钮）。
-        _single.CollapseGroup = groupId => _stash.StashGroup(groupId);
+        _single.CollapseGroup = (groupId, monitorDevice) => _stash.StashGroup(groupId, monitorDevice);
         _single.Applied += count => Safe("single.applied", () =>
         {
             if (count > 0) _tray?.SetStatus($"单窗口模式：已收起 {count} 个窗口");
@@ -393,11 +393,10 @@ public sealed class AppShell : IDisposable
 
         _single.SuspendTemporarily();
         int hidden = 0;
-        foreach (var group in _stash.Groups()
-                     .Where(g => g.Expanded)
-                     .Where(g => _stash.MonitorOfGroup(g.Id) == monitorDevice)
-                     .ToArray())
-            hidden += _stash.StashGroup(group.Id);
+        // 不按「场景归属屏」整组过滤：场景可能有窗口被拖到另一块屏，
+        // 交给 StashGroup 按屏收紧，跨屏成员留在原屏幕。
+        foreach (var group in _stash.Groups().Where(g => g.Expanded).ToArray())
+            hidden += _stash.StashGroup(group.Id, monitorDevice);
 
         Feedback(hidden > 0 ? $"已收起 {hidden} 个窗口" : "这块屏幕上没有可收起的窗口", monitorDevice);
         UpdateSurface();
@@ -452,17 +451,16 @@ public sealed class AppShell : IDisposable
     {
         if (!_single.Enabled) return 0;
 
-        // 多显示器：只收起和这个场景在同一块屏幕上的场景，另一块屏上的场景保持不动。
+        // 多显示器：只收起和这个场景在同一块屏幕上的窗口，另一块屏上的窗口保持不动。
         // 场景属于哪块屏都判断不出来时，一个都不收：宁可少收，不要跨屏误收。
         string monitor = _stash.MonitorOfGroup(keepGroupId);
         if (monitor == null) return 0;
 
         int hidden = 0;
+        // 不按「场景归属屏」整组过滤：一个场景可能同时有窗口在两块屏上（旧快照 / 用户拖过），
+        // StashGroup 按屏收紧，只收当前屏的成员，另一块屏的窗口不会跟着消失。
         foreach (var group in _stash.Groups().Where(g => g.Id != keepGroupId && g.Expanded).ToArray())
-        {
-            if (_stash.MonitorOfGroup(group.Id) != monitor) continue;
-            hidden += _stash.StashGroup(group.Id);
-        }
+            hidden += _stash.StashGroup(group.Id, monitor);
         return hidden;
     }
 

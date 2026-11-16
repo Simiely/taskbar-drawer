@@ -274,8 +274,12 @@ public sealed class StashAllService
         return shown;
     }
 
-    /// <summary>把某一组重新收起（保留组记录，位置按当前状态刷新）。</summary>
-    public int StashGroup(int groupId)
+    /// <summary>
+    /// 把某一组重新收起（保留组记录，位置按当前状态刷新）。
+    /// monitorDevice 非空时只收这块屏幕上的成员：跨屏场景（旧快照还原 / 用户把窗口拖到副屏）
+    /// 不会因为一块屏上的操作整组消失。null = 整组收起（点胶囊这种明确的整场景操作）。
+    /// </summary>
+    public int StashGroup(int groupId, string monitorDevice = null)
     {
         var group = _groups.FirstOrDefault(g => g.Id == groupId);
         if (group == null) return 0;
@@ -283,6 +287,9 @@ public sealed class StashAllService
         int hidden = 0;
         foreach (var item in _stash.Items.Where(i => i.GroupId == groupId && !i.Hidden).ToArray())
         {
+            // 按屏隔离：收紧时再问一次窗口当前在哪块屏，跨屏成员留在原屏幕。
+            if (!string.IsNullOrEmpty(monitorDevice) &&
+                !DisplayRules.BelongsTo(monitorDevice, NativeMethods.MonitorDeviceOf(item.Handle))) continue;
             if (_stash.HideAgain(item.Handle.ToInt64())) hidden++;
         }
 
