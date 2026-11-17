@@ -1,6 +1,6 @@
 # AGENTS.md · 项目规则
 
-> 📌 **文档基线**：2026-11-17 · 1561390
+> 📌 **文档基线**：2026-11-17 · `0877b09`（文档维护：升级 repo-kit 2.6.0 / 规范 2.1.2）　← 前序：1561390
 > **更新文档 / 代码后，请更新此行**（日期 + 新 commit hash），并在 CHANGELOG 追加版本。
 
 > 生成文件，勿手改。改规则请改 `schema/agents.template.md`，再运行 `python tools/repo-kit/generate.py --root . --write`。
