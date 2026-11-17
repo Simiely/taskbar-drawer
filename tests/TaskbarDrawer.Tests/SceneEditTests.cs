@@ -104,6 +104,32 @@ public class SceneEditTests
     }
 
     [Fact]
+    public void Visible_同名窗口只过滤被移除的次数()
+    {
+        var first = Window(@"C:\A.exe", "同名");
+        var second = Window(@"C:\A.exe", "同名");
+
+        var visible = SceneEdit.Visible(new[] { first, second }, new[] { SceneEdit.Key(first) });
+
+        Assert.Single(visible);
+    }
+
+    [Fact]
+    public void Merge_重新加入同名窗口只清除一次抑制()
+    {
+        var removed = Window(@"C:\A.exe", "同名");
+        string key = SceneEdit.Key(removed);
+        var windows = new List<SavedWindow>();
+        var suppressed = new List<string> { key, key };
+
+        var (added, _) = SceneEdit.Merge(windows, suppressed, new[] { removed });
+
+        Assert.Equal(1, added);
+        Assert.Single(suppressed);
+        Assert.Equal(key, suppressed[0]);
+    }
+
+    [Fact]
     public void Visible_没有suppressed时原样返回()
     {
         var a = Window(@"C:\A.exe", "甲");
@@ -119,6 +145,14 @@ public class SceneEditTests
         Assert.Equal("", SceneEdit.Key(null!));
         Assert.Equal("", SceneEdit.Key(new SavedWindow()));
         Assert.Equal("", SceneEdit.Key(new SavedWindow { ExePath = "  " }));
+    }
+
+    [Fact]
+    public void Key_标题两端空白归一()
+    {
+        Assert.Equal(
+            SceneEdit.Key(Window(@"C:\A.exe", "甲")),
+            SceneEdit.Key(Window(@"C:\A.exe", " 甲 ")));
     }
 
     [Fact]

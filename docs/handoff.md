@@ -10,7 +10,7 @@ tier: normal
 topics: [development]
 source_type: doc
 source: DEVELOPMENT.md
-last_reviewed: 2026-11-16
+last_reviewed: 2026-11-17
 related: []
 ---
 # 交接：进度、待办与发布路径
@@ -19,20 +19,24 @@ related: []
 
 ## 当前状态
 
-- 版本 **1.6.7**，main 最新提交 `51f3bfa`（2026-11-16 18:12，本页随该提交入库）
-- 本轮已完成：场景标识改为彩色圆点 / 数字（可选 1–9、左上 / 右上）；8 个色块可右键改成任意颜色 + 「恢复默认」；第八色由灰改黑；图标 / 标识尺寸默认 90% / 55% 且两个滑块并排一行；`settings.json` 升到 v4
-- 验证结果：`dotnet build` 0 警告 0 错误；`dotnet test` 71 项全过；`check_repo.py` PASS；远端 tree 与发布副本逐 blob 比对零差异
+- 版本 **1.7.0**；上一提交基线 `51f3bfa`（1.6.7，2026-11-16 18:12），本轮改动待提交
+- 本地维护：1.7.0 已落地（说明窗口、详情侧窗、顶部拖动区、移除 / 追加修复）；`dotnet build` 0 警告 0 错误、`dotnet test` 77/77
+- 本地复验（2026-11-17）：发布 exe 502,392 B；本机 UIA + 真实鼠标 E2E 27 项全过：场景还原 / 收起 / 展开、移除窗口后运行时组同步、追加全部窗口并即时接入、说明窗口、详情侧窗初始 620 / 可拉高、顶部拖动区；滚动条拖动（点 10 px 判定区、避开 3 px 视觉细条）/ 滚轮滚动单独验证通过；最终构建冒烟测试通过（面板 400×550、说明 620×720）
+- 本轮完成：场景标识默认右上角（已有场景保留保存时的选择）；主面板顶部拖动条 + 空白 / 文字处可拖（按钮 / 卡片 / 滑块不抢）；面板内长说明移入「说明」窗口（SVG 重绘的矢量示意图 + 编号标注，不引入 SVG 运行时）；场景详情改为面板旁非模态侧窗（初始约半屏、窗内滚动条、右下角 ◢ 可调大小）；移除窗口同时从运行时组摘掉（标题尾随空格 / 大小写归一、同名窗口按次数抑制）；追加改为这块屏幕全部窗口并即时接入运行时组；面板 / 详情 / 说明统一深色细滚动条（透明轨道、圆角拇指、三态变亮）
+- 审计清理：删除 `NativeMethods.MonitorDeviceOfPoint`、`StashedWindow.OriginalIconOwned*`、`AppendableWindowItem.MonitorDevice`、`SceneAppendResult` 的 4 个未读计数属性；架构结论：主线清晰，`AppShell` / `WorkspaceService` / 两个大 UI 窗口需要后续拆分，窗口定位 / 路径归一 / 徽标双写存在重复实现
+- 入库前走查修正：启动迁移落盘延后到 `SaveFailed` 订阅之后；详情窗调整手柄在捕获丢失 / 按键松开时停止；说明图资源缺失或 XAML 解析失败写日志；旧运行时组兜底关闭收口到 `SceneService.CloseLegacy`；`.gitignore` 补齐 Python 缓存；README / 交接日期同步
+- 验证结果：`dotnet build` 0 警告 0 错误；`dotnet test` 77 项全过
 - 主线一句话：`AppShell` 是组合根，收纳走 `StashAllService`（运行时组），快照走 `WorkspaceService`，两者靠 `SavedGroup.Id` / `StashGroup.SavedId` 关联；窗口隐藏与图标装饰在 `WindowStash`
 
 ## 待办（按收益排序）
 
 P0：
 
-- [ ] 修复残留圆点：`WindowStash.RemoveSceneIcon` 按大 / 小图标槽位分别判断与恢复；启动时清理失效 HICON；`Prune` 释放已销毁窗口的图标句柄
-- [ ] 新增 `SceneService` 作为场景唯一写入口，合并 `SavedGroup` / `StashGroup` 的 Name / Badge / SavedId 双写，以及两份 `SetBadge` / `RemapBadgeColors`
-- [ ] 生命周期收敛为四动词 New / Restore / Stash / Dissolve，替换 `ToggleScene` / `RestoreSavedGroup` / `CloseScene` / `CloseRunningScene` / `DissolveScene` 五个重叠操作
-- [ ] 图标 / 标识尺寸的默认值与范围收敛到单一常量源（现散在 `AppSettings` / `SceneIconPainter` / `MainPanelWindow` / `AppShell.SetSceneIconSizes` 四处）
-- [ ] 规则引擎收口：面板 / 托盘也走同一命令表；清理 `RuleCatalog` 中生产代码无消费者的 `Find` / `ForTrigger` 元数据
+- [x] 修复残留圆点：`WindowStash.RemoveSceneIcon` 按大 / 小图标槽位分别判断与恢复；启动时清理失效 HICON；`Prune` 释放已销毁窗口的图标句柄
+- [x] 新增 `SceneService` 作为场景唯一写入口，合并 `SavedGroup` / `StashGroup` 的 Name / Badge / SavedId 双写，以及两份 `SetBadge` / `RemapBadgeColors`
+- [x] 生命周期收敛为四动词 New / Restore / Stash / Dissolve：删除 `StashAllService.ToggleGroup` 与 `AppShell.CloseScene`，`ToggleScene` 只做状态分派（落到 Restore / Stash），`Dissolve` 用 `keepSnapshot` 区分关闭窗口 / 删除场景
+- [x] 图标 / 标识尺寸的默认值与范围收敛到单一常量源（`Core/SceneIconMetrics`，设置 / 绘制 / 面板 / 夹取共用）
+- [x] 规则引擎边界确认：规则层只服务 Hotkey / SceneChip 两个状态不明确的入口；托盘 / 面板是显式命令，统一走 `SceneService` 命令层，不接入 `RuleRunner`。已删除无消费者的 `ForTrigger` / `TriggerTitle` / `TriggerHint`，以及 `RuleCardDefinition` 的 `Title` / `Description` / `ArgKey` / `ArgLabel` / `ArgDefault`；`Find`（解释器依赖）、`OnlyTriggers` / `AppliesTo`（规则约束测试）保留，`RuleStep.Args` 运行时参数保留（Toast 动作仍读 `text`）
 
 P1：
 
@@ -63,10 +67,10 @@ P2：
 ## 验收清单
 
 - `dotnet build src/TaskbarDrawer/TaskbarDrawer.csproj -c Release`：0 警告 0 错误
-- `dotnet test tests/TaskbarDrawer.Tests/TaskbarDrawer.Tests.csproj -c Release`：当前基线 71 项全过
+- `dotnet test tests/TaskbarDrawer.Tests/TaskbarDrawer.Tests.csproj -c Release`：当前基线 77 项全过
 - UI 用 UI Automation 找元素 + 真实鼠标点击验证；不要用模拟全局热键，会误触发收纳
 - 配置检查：`settings.json` 的 `Version` 应为 4，尺寸 0.90 / 0.55，`SceneBadgeColors` 第 8 项 `#000000`
-- 发布产物：`dotnet publish ... -p:PublishSingleFile=true -o publish`，单文件约 430 KB（框架依赖）
+- 发布产物：`dotnet publish ... -p:PublishSingleFile=true -o publish`，单文件约 500 KB（框架依赖，含 SVG 重绘的矢量说明图）
 
 ## 文档职责
 

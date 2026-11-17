@@ -51,7 +51,7 @@ public class ChipProjectionTests
         Assert.Equal("场景", chip.Text);
         Assert.Equal(SceneBadge.DefaultColor, chip.Badge.Color);
         Assert.Equal(0, chip.Badge.Number);
-        Assert.False(chip.Badge.Right);
+        Assert.True(chip.Badge.Right);
         Assert.Equal(3, chip.GroupId);
         Assert.False(chip.Dormant);
         Assert.Contains("场景 3", chip.Tooltip);
@@ -104,6 +104,23 @@ public class ChipProjectionTests
         Assert.Equal("一二三四五六…", ChipProjection.ShortName("一二三四五六七"));
         Assert.Equal("场景", ChipProjection.ShortName(" "));
         Assert.Equal("工作", ChipProjection.ShortName("工作"));
+    }
+
+    [Fact]
+    public void ShortName_可指定截断长度()
+    {
+        Assert.Equal("一二三四五六七八九十…", ChipProjection.ShortName("一二三四五六七八九十一", 10));
+        Assert.Equal("工作", ChipProjection.ShortName("工作", 10));
+    }
+
+    [Fact]
+    public void DescribeTitles_前两个加总数()
+    {
+        Assert.Equal("甲 · 乙 等 4 个",
+            ChipProjection.DescribeTitles(Group(1, titles: new[] { "甲", "乙", "丙", "丁" })));
+        Assert.Equal("甲", ChipProjection.DescribeTitles(Group(1, titles: new[] { "甲" })));
+        Assert.Equal("（窗口已关闭）", ChipProjection.DescribeTitles(
+            new StashGroupSummary { Id = 1, Titles = Array.Empty<string>() }));
     }
 
     [Fact]

@@ -10,7 +10,6 @@ public sealed class StashedWindow
     public IntPtr Handle { get; init; }
     public int GroupId { get; init; }
     public string Title { get; init; }
-    public string ClassName { get; init; }
     public uint ProcessId { get; init; }
     public string ProcessName { get; init; }
     public string ProcessPath { get; init; }
@@ -100,8 +99,8 @@ public sealed class WindowStash
             Handle = hwnd,
             GroupId = groupId,
             // 记录干净标题：旧版 emoji 前缀是我们临时挂的，不属于窗口自己的名字。
-            Title = SceneTitle.Strip(title),
-            ClassName = NativeMethods.ClassName(hwnd),
+            // 两端空白也去掉：它不影响显示，却会让场景移除 / 去重时认不出同一个窗口。
+            Title = SceneTitle.Strip(title).Trim(),
             ProcessId = pid,
             ProcessName = meta.Name,
             ProcessPath = meta.Path,
@@ -217,6 +216,29 @@ public sealed class WindowStash
         return true;
     }
 
+    /// <summary>
+    /// 把一个窗口从场景里摘掉（不关闭它）：收起中的先放回桌面，避免留下「不可见又不在任务栏」的孤儿；
+    /// 展开中的保持原位，只摘掉场景标识。返回 false 表示这个句柄已经不在记录里。
+    /// </summary>
+    public bool Untrack(IntPtr hwnd, out bool restored)
+    {
+        restored = false;
+        long key = hwnd.ToInt64();
+        if (!_items.TryGetValue(key, out var item)) return false;
+
+        item.Badge = null;
+        if (item.Hidden)
+        {
+            restored = Restore(key);
+            item.Hidden = false;
+        }
+        ClearSceneDecoration(item);
+        _items.Remove(key);
+        Diagnostics.Info("stash",
+            $"从场景摘掉 hwnd=0x{key:X} 「{Brief(item.Title)}」 已放回桌面={restored}");
+        return true;
+    }
+
     public void RemoveGroup(int groupId)
     {
         foreach (var item in _items.Values.Where(i => i.GroupId == groupId).ToArray())
@@ -309,6 +331,9 @@ public sealed class WindowStash
             var item = _items[key];
             if (!NativeMethods.IsWindow(item.Handle))
             {
+                // 窗口已经销毁：合成的图标是本进程持有的 USER 对象，不释放会泄漏；
+                // 没有窗口可还原，直接销毁句柄即可。
+                RemoveSceneIcon(item);
                 _items.Remove(key);
                 changed++;
                 continue;
@@ -434,7 +459,8 @@ public sealed class WindowStash
     /// 记下「还原时放回去」的图标句柄：有效就用；无效（多半是上一进程强杀后残留的
     /// 已销毁 HICON）先清掉，让 WM_GETICON 回落到窗口类图标；类图标也没有（资源管理器
     /// 这类窗口的图标由 shell 单独给）就按 exe 抽一张并设回窗口，免得摘图标后空着。
-    /// exe 这张不销毁：窗口还引用着它，销毁会立刻变成空图标。
+    /// exe 这张由本进程创建，窗口会继续引用它，所以摘图时不能立刻销毁；
+    /// 跨进程设置的 USER 句柄在设置进程退出后会失效，实测系统会把窗口槽位清空并回落到类图标。
     /// </summary>
     private static IntPtr CaptureOriginalIcon(StashedWindow item, IntPtr current, bool big)
     {
@@ -461,14 +487,25 @@ public sealed class WindowStash
 
         if (NativeMethods.IsWindow(item.Handle))
         {
-            // 只把自己换上去的图标放回去：应用中途自己改过图标（浏览器换 favicon 等）就别覆盖它。
-            // 用大图标判断归属：ICON_BIG 读回来的是精确句柄，ICON_SMALL2 可能被系统换成缩放版。
-            if (NativeMethods.WindowIcon(item.Handle, big: true) == item.SceneIconBig)
+            // 大 / 小图标是两个独立槽位，必须分别判断：Win11 任务栏读小图标，
+            // 应用可能只换了大图标（浏览器换 favicon 等），此时小图标还是我们的。
+            // 只把自己仍占着的槽位放回原图标；另一个槽位已经被应用改过，不能覆盖。
+            // 也不能因为「大图标不是我们的」就把小图标一起销毁——窗口还引用着它，
+            // 任务栏会残留我们的圆点，或者拿到已销毁的句柄变成空白。
+            if (item.SceneIconBig != IntPtr.Zero &&
+                NativeMethods.WindowIconSlot(item.Handle, big: true) == item.SceneIconBig)
             {
                 NativeMethods.SetWindowIcon(item.Handle, big: true, item.OriginalIconBig);
+            }
+
+            if (item.SceneIconSmall != IntPtr.Zero &&
+                NativeMethods.SmallWindowIconIs(item.Handle, item.SceneIconSmall))
+            {
                 NativeMethods.SetWindowIcon(item.Handle, big: false, item.OriginalIconSmall);
             }
         }
+        // OriginalIcon* 若由本进程从 exe 抽取，上面已经设回窗口：
+        // 目标窗口继续引用这个句柄，这里不能 DestroyIcon，否则会立刻变成空白。
         if (item.SceneIconBig != IntPtr.Zero) _icons?.Release(item.SceneIconBig);
         if (item.SceneIconSmall != IntPtr.Zero) _icons?.Release(item.SceneIconSmall);
         item.SceneIconBig = IntPtr.Zero;
@@ -548,6 +585,8 @@ public sealed class WindowStash
         }
         catch { /* 进程已退出（句柄可能已失效），返回空元数据 */ }
 
+        // 长时间运行时进程会不断变化：给缓存一个上限，避免按 PID 无限增长。
+        if (_processCache.Count >= 256) _processCache.Clear();
         _processCache[pid] = meta;
         return meta;
     }

@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Text;
 using TaskbarDrawer.Core;
 using TaskbarDrawer.Interop;
 using Forms = System.Windows.Forms;
@@ -30,6 +31,9 @@ public sealed class TrayService : IDisposable
     private readonly Icon _singleWindowIcon;
     private readonly List<IntPtr> _iconHandles = new();
     private bool _disposed;
+
+    /// <summary>上一次场景菜单的内容签名：没变化就不重建菜单项。</summary>
+    private string _sceneSignature;
 
     public TrayService()
     {
@@ -187,9 +191,14 @@ public sealed class TrayService : IDisposable
     }
 
     /// <summary>每次收纳 / 展开后刷新菜单：场景列表与可用状态。</summary>
-    public void SetScenes(IReadOnlyList<StashGroupSummary> groups, int total)
+    public void SetScenes(IReadOnlyList<StashGroupSummary> groups)
     {
         if (_disposed) return;
+
+        string signature = SignatureOf(groups);
+        if (signature == _sceneSignature) return;
+        _sceneSignature = signature;
+
         bool has = groups.Count > 0;
 
         _expandLatest.Enabled = has;
@@ -208,8 +217,7 @@ public sealed class TrayService : IDisposable
         foreach (var group in groups)
         {
             // 和胶囊、主面板同一套标识：用场景自己选的颜色 / 数字。
-            string icon = SceneBadge.GlyphOf(group.Badge);
-            string prefix = icon.Length == 0 ? "" : icon + " ";
+            string prefix = SceneBadge.PrefixOf(group.Badge);
             string head = string.IsNullOrEmpty(group.Name)
                 ? $"{prefix}场景 {group.Id}"
                 : $"{prefix}{group.Name}";
@@ -218,6 +226,25 @@ public sealed class TrayService : IDisposable
             item.Click += (_, _) => SceneRequested?.Invoke(id);
             _sceneMenu.DropDownItems.Add(item);
         }
+    }
+
+    /// <summary>场景菜单的稳定签名：名字 / 数量 / 展开态 / 标识没变就不重建。</summary>
+    private static string SignatureOf(IReadOnlyList<StashGroupSummary> groups)
+    {
+        var builder = new StringBuilder();
+        builder.Append(groups.Count).Append('|');
+        foreach (var group in groups)
+        {
+            builder.Append(group.Id).Append('|')
+                .Append(group.Count).Append('|')
+                .Append(group.Expanded).Append('|')
+                .Append(group.SavedId).Append('|')
+                .Append(group.Name).Append('|')
+                .Append(group.Badge?.Color).Append('|')
+                .Append(group.Badge?.Number).Append('|')
+                .Append(group.Badge?.Right).Append(';');
+        }
+        return builder.ToString();
     }
 
     /// <summary>同步单窗口模式：勾选状态 + 托盘图标（普通 / 带「1」角标）。</summary>

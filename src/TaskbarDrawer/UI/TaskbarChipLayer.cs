@@ -1,3 +1,4 @@
+using System.Text;
 using System.Windows.Controls.Primitives;
 using System.Windows.Threading;
 using TaskbarDrawer.Core;
@@ -78,6 +79,9 @@ public sealed class TaskbarChipLayer : IDisposable
     /// <summary>内容变了（组数 / 计数 / 展开态）就置脏，下一次必须完整重排。</summary>
     private bool _dirty = true;
 
+    /// <summary>上一次同步的内容签名：内容没变就不重建胶囊，位置仍由 2 s 定时器体检。</summary>
+    private string _signature;
+
     /// <summary>静止状态下每 15 个计时周期（约 30 s）仍完整重贴一次，兜底其它置顶窗口。</summary>
     private const int KeepAliveTicks = 15;
 
@@ -110,6 +114,10 @@ public sealed class TaskbarChipLayer : IDisposable
     public void Sync(IReadOnlyList<ChipEntry> entries)
     {
         if (_disposed) return;
+
+        string signature = SignatureOf(entries);
+        if (signature == _signature) return;
+        _signature = signature;
 
         _dirty = true;
         int shown = Math.Min(entries.Count, MaxChips);
@@ -152,6 +160,28 @@ public sealed class TaskbarChipLayer : IDisposable
         }
 
         RepositionAll();
+    }
+
+    /// <summary>胶囊内容的稳定签名：只比较会影响画面的字段，避免每次刷新都全量重排。</summary>
+    private static string SignatureOf(IReadOnlyList<ChipEntry> entries)
+    {
+        var builder = new StringBuilder();
+        builder.Append(entries.Count).Append('|');
+        foreach (var entry in entries)
+        {
+            builder.Append(entry.Text).Append('|')
+                .Append(entry.Tooltip).Append('|')
+                .Append(entry.Highlight).Append('|')
+                .Append(entry.Dormant).Append('|')
+                .Append(entry.GroupId).Append('|')
+                .Append(entry.SavedId).Append('|')
+                .Append(entry.Count).Append('|')
+                .Append(entry.Name).Append('|')
+                .Append(entry.Badge?.Color).Append('|')
+                .Append(entry.Badge?.Number).Append('|')
+                .Append(entry.Badge?.Right).Append(';');
+        }
+        return builder.ToString();
     }
 
     private ChipSlot SlotAt(int index)
@@ -245,8 +275,7 @@ public sealed class TaskbarChipLayer : IDisposable
 
     private static string Describe(ChipEntry entry)
     {
-        string icon = SceneBadge.GlyphOf(entry.Badge);
-        string prefix = icon.Length == 0 ? "" : icon + " ";
+        string prefix = SceneBadge.PrefixOf(entry.Badge);
         if (entry.Dormant) return $"{prefix}{entry.Name} · {entry.Count} 个窗口 · 已关闭";
         return $"{prefix}{entry.Name} · {entry.Count} 个窗口 · {(entry.Highlight ? "已展开" : "已收起")}";
     }

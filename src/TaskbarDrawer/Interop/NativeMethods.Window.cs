@@ -109,7 +109,6 @@ public static partial class NativeMethods
     public static extern IntPtr FindWindowExW(IntPtr parent, IntPtr childAfter, string className, string windowName);
 
     [DllImport("kernel32.dll")] public static extern bool AttachConsole(uint processId);
-    [DllImport("kernel32.dll")] public static extern bool FreeConsole();
     [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr icon);
 
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -259,9 +258,6 @@ public static partial class NativeMethods
         IntPtr monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
         return monitor != IntPtr.Zero && GetMonitorInfoW(monitor, ref info);
     }
-
-    public static string MonitorDeviceOfPoint(POINT point)
-        => TryGetMonitorOfPoint(point, out var info) ? info.szDevice : null;
 
     public static string MonitorDeviceOfRect(RECT rect)
         => TryGetMonitorOfRect(rect, out var info) ? info.szDevice : null;

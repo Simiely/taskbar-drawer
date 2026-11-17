@@ -24,10 +24,10 @@ public sealed class AppSettings
     public uint HotkeyVirtualKey { get; set; } = NativeMethods.VK_D;
 
     /// <summary>场景图标里程序原图标占画布边长的比例（0.55–1.0）。</summary>
-    public double SceneAppIconSize { get; set; } = 0.90;
+    public double SceneAppIconSize { get; set; } = SceneIconMetrics.DefaultAppIconScale;
 
     /// <summary>场景标识占画布边长的比例（0.25–0.65），叠在原图标左上角或右上角。</summary>
-    public double SceneBadgeSize { get; set; } = 0.55;
+    public double SceneBadgeSize { get; set; } = SceneIconMetrics.DefaultBadgeScale;
 
     /// <summary>场景标识的 8 色调色板（#RRGGBB）；可在场景编辑里逐个改色，恢复默认即还原这组值。</summary>
     public List<string> SceneBadgeColors { get; set; } = new(SceneBadge.DefaultPalette);
@@ -82,8 +82,10 @@ public sealed class AppSettings
             // v4 再次调整默认值（90% / 55%）：同样只替换恰好等于旧默认值的项。
             if (settings.Version < 4)
             {
-                if (Math.Abs(settings.SceneAppIconSize - 0.80) < 0.0001) settings.SceneAppIconSize = 0.90;
-                if (Math.Abs(settings.SceneBadgeSize - 0.60) < 0.0001) settings.SceneBadgeSize = 0.55;
+                if (Math.Abs(settings.SceneAppIconSize - 0.80) < 0.0001)
+                    settings.SceneAppIconSize = SceneIconMetrics.DefaultAppIconScale;
+                if (Math.Abs(settings.SceneBadgeSize - 0.60) < 0.0001)
+                    settings.SceneBadgeSize = SceneIconMetrics.DefaultBadgeScale;
             }
 
             if (settings.Version < CurrentVersion) settings.Version = CurrentVersion;
@@ -97,10 +99,12 @@ public sealed class AppSettings
             }
 
             // 图标尺寸只允许各自区间：手改配置文件写出离谱值时退回默认，避免图标画成一团。
-            if (settings.SceneAppIconSize < 0.55 || settings.SceneAppIconSize > 1.0)
-                settings.SceneAppIconSize = 0.90;
-            if (settings.SceneBadgeSize < 0.25 || settings.SceneBadgeSize > 0.65)
-                settings.SceneBadgeSize = 0.55;
+            if (settings.SceneAppIconSize < SceneIconMetrics.MinAppIconScale ||
+                settings.SceneAppIconSize > SceneIconMetrics.MaxAppIconScale)
+                settings.SceneAppIconSize = SceneIconMetrics.DefaultAppIconScale;
+            if (settings.SceneBadgeSize < SceneIconMetrics.MinBadgeScale ||
+                settings.SceneBadgeSize > SceneIconMetrics.MaxBadgeScale)
+                settings.SceneBadgeSize = SceneIconMetrics.DefaultBadgeScale;
 
             // 调色板补齐成 8 个合法颜色：缺项 / 非法值都落回默认，写回文件时就是干净的。
             settings.SceneBadgeColors = settings.BadgePalette().ToList();

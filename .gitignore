@@ -2,6 +2,7 @@
 bin/
 obj/
 publish/
+publish-sc/
 dist/
 
 # 用户 / 编辑器

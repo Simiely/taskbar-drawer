@@ -20,12 +20,12 @@ public class SceneIconPainterTests
     private const int Size = 32;
 
     [Fact]
-    public void 标识默认叠在左上角_程序图标在右下角()
+    public void 标识默认叠在右上角_程序图标在右下角()
     {
         OnSta(() =>
         {
             IntPtr appIcon = WhiteIcon(Size);
-            var painter = new SceneIconPainter(SceneIconPainter.DefaultAppIconScale, SceneIconPainter.DefaultBadgeScale);
+            var painter = new SceneIconPainter(SceneIconMetrics.DefaultAppIconScale, SceneIconMetrics.DefaultBadgeScale);
             try
             {
                 var badge = new SceneBadge { Color = SceneBadge.DefaultColor };
@@ -33,7 +33,8 @@ public class SceneIconPainterTests
                 try
                 {
                     byte[] pixels = ReadPixels(big);
-                    Assert.True(IsBadgeColor(pixels, 8, 8), "左上角应画出标识圆点");
+                    Assert.True(IsBadgeColor(pixels, 24, 8), "右上角应画出标识圆点");
+                    Assert.True(IsWhite(pixels, 8, 8), "左上角应保留程序原图标");
                     Assert.True(IsWhite(pixels, 29, 29), "右下角应保留程序原图标");
                     Assert.True(IsWhite(pixels, 8, 29), "图标左侧其余区域仍是程序图标");
                 }
@@ -51,21 +52,21 @@ public class SceneIconPainterTests
     }
 
     [Fact]
-    public void 开启Right后标识挪到右上角()
+    public void 关闭Right后标识挪到左上角()
     {
         OnSta(() =>
         {
             IntPtr appIcon = WhiteIcon(Size);
-            var painter = new SceneIconPainter(SceneIconPainter.DefaultAppIconScale, SceneIconPainter.DefaultBadgeScale);
+            var painter = new SceneIconPainter(SceneIconMetrics.DefaultAppIconScale, SceneIconMetrics.DefaultBadgeScale);
             try
             {
-                var badge = new SceneBadge { Color = "#0A6CDE", Right = true };
+                var badge = new SceneBadge { Color = "#0A6CDE", Right = false };
                 Assert.True(painter.TryCreate(badge, appIcon, appIcon, 96, out IntPtr big, out IntPtr small));
                 try
                 {
                     byte[] pixels = ReadPixels(big);
-                    Assert.True(IsColor(pixels, 24, 8, 0x0A, 0x6C, 0xDE), "右上角应画出标识圆点");
-                    Assert.True(IsTransparent(pixels, 1, 1), "左上角不应再画标识");
+                    Assert.True(IsColor(pixels, 8, 8, 0x0A, 0x6C, 0xDE), "左上角应画出标识圆点");
+                    Assert.True(IsWhite(pixels, 24, 8), "右上角不应再画标识");
                 }
                 finally
                 {
@@ -108,9 +109,6 @@ public class SceneIconPainterTests
 
     private static bool IsWhite(byte[] pixels, int x, int y)
         => IsColor(pixels, x, y, 0xFF, 0xFF, 0xFF);
-
-    private static bool IsTransparent(byte[] pixels, int x, int y)
-        => pixels[(y * Size + x) * 4 + 3] == 0;
 
     /// <summary>BGRA 像素近似比较（允许 2 的量化误差）。</summary>
     private static bool IsColor(byte[] pixels, int x, int y, byte r, byte g, byte b)

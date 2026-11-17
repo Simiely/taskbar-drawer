@@ -45,9 +45,10 @@
 
 - `TaskbarChipLayer`：胶囊层。每 2 s 重贴任务栏、体检 z 序；最多 7 枚，多出的进溢出槽（逐场景可点）。
 - `TaskbarChipWindow`：单枚胶囊（深色圆角、数量、tooltip）。
-- `MainPanelWindow`：主面板（场景列表 / 开关 / 热键）。
-- `SceneEditorWindow`：场景编辑小窗（移除窗口 / 追加其他正在运行的场景 / 重命名 / 删除）。只读数据 + 抛事件，写操作全部回 `AppShell` → `WorkspaceService`。
-- `Theme` / `Ui`：深色画刷、统一字体 / 文本工厂与场景标识圆点控件，窗口只引用，不再各自定义颜色和字体。
+- `MainPanelWindow`：主面板（场景列表 / 开关 / 热键）；顶部拖动条与空白 / 文字处可拖，长说明统一收进 `HelpWindow`。
+- `SceneEditorWindow`：场景详情侧窗（面板旁、非模态、初始约半屏、窗内滚动、右下角可调大小；移除窗口 / 追加这块屏幕上的全部窗口 / 重命名 / 删除）。只读数据 + 抛事件，写操作全部回 `AppShell` → `WorkspaceService` / `SceneService`。
+- `HelpWindow`：使用说明（内嵌 `Assets/help-panel.svg` / `help-scene.svg` 重绘的矢量示意图；构建前转成 WPF 图形 XAML + 原生文本 XAML，不引入 SVG 运行时）。改 SVG 后需用 SharpVectors 转换工具重新生成 `help-*.xaml` / `help-*-labels.xaml`，当前提交只保留生成后的 XAML。
+- `Theme` / `Ui`：深色画刷、统一字体 / 文本工厂、场景标识圆点控件与深色细滚动条样式，窗口只引用，不再各自定义颜色和字体。
 - `TrayService`（托盘 + 深色菜单）、`TextPromptWindow`（重命名）、`ToastWindow`、`DarkMenuRenderer`、`AppIcon`。
 
 ### 2.3 关键数据流
@@ -57,7 +58,7 @@
       → WorkspaceService.SaveFrom(组内窗口) → saved-groups.json → LinkSaved(组, 场景 id, 名字) → UpdateSurface → 胶囊
 展开：胶囊 / 面板 / 热键 → ExpandGroup → 逐句柄 Restore → 前台还给收纳前窗口
 按屏：ExpandNewest / ExpandAll / CollapseExpandedScenes 都带显示器条件；场景归属用 StashedWindow.MonitorDevice 判断
-改场景：场景行「编辑」→ SceneEditorWindow → RemoveWindow / AppendRunningScene → saved-groups.json（只改快照，下次打开生效）
+改场景：场景行「详情」→ SceneEditorWindow → RemoveWindow（快照 + 从运行时组 Detach）/ AppendWindows（枚举全部窗口 + Adopt）→ saved-groups.json 与运行时组立即同步
 关场景：「关闭窗口」→ UpdateSnapshot + 逐句柄 PostMessage(WM_CLOSE) → 胶囊转为已关闭
 删场景：「删除场景」→ StashAllService.Release（隐藏的窗口还原，可见的不动）→ Delete 快照
 开场景：场景胶囊 → Restore → 已有窗口摆位 / 缺失的启动 + 轮询 → Adopt 接回运行时组
@@ -66,7 +67,7 @@
 
 术语只有两个：**场景**（持久化 + 运行态，标识为彩色圆点 / 数字）与**单窗口模式**。运行时组是场景的运行态，靠 `SavedId` 与快照一一对应；正常路径下每个运行时组都有 `SavedId`。
 
-场景快照里的 `Suppressed` 记录用户移除过的窗口（`SceneEdit.Key`：规范化 exe 路径 + 标题）。关闭场景时 `UpdateSnapshot` 会按它过滤，否则运行时组整份覆盖快照会把移除项又写回来；重新追加同名窗口时自动从集合里删掉。
+场景快照里的 `Suppressed` 记录用户移除过的窗口（`SceneEdit.Key`：规范化 exe 路径 + 去两端空白的标题，按出现次数生效）。移除时 `SceneService` 会同时把窗口从运行时组摘掉（收起中的先放回桌面）；关闭场景时 `UpdateSnapshot` 仍按它过滤，防止运行时组整份覆盖快照把移除项写回来；重新追加同名窗口时只清除一条抑制记录。
 
 ## 三、关键问题与方案
 
@@ -130,8 +131,8 @@
 - `%LOCALAPPDATA%\TaskbarDrawer\settings.json`、`saved-groups.json`、`recovery.json`、`logs\`
 - `--probe`：确认候选窗口集合（判断「为什么这个窗口没被收进去」）
 - `dotnet test tests/TaskbarDrawer.Tests`：规则引擎回归测试（默认手感 / 步数与深度护栏 / 目录约束）
-- 面板「场景」区块：点整行收起 / 展开；「关闭窗口」真关，「编辑」只改快照
-- 发布：`dotnet publish ... -p:PublishSingleFile=true`，刻意保持框架依赖以把 exe 压到约 430 KB；完整步骤见 [交接](docs/handoff.md)
+- 面板「场景」区块：点整行收起 / 展开；「关闭窗口」真关；「详情」在面板旁打开侧窗，移除 / 追加立即同步运行时组
+- 发布：`dotnet publish ... -p:PublishSingleFile=true`，刻意保持框架依赖以把 exe 压到约 500 KB（含 SVG 重绘的矢量说明图）；完整步骤见 [交接](docs/handoff.md)
 
 ## 五、文档维护
 

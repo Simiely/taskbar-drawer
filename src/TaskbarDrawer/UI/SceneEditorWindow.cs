@@ -13,22 +13,21 @@ using Forms = System.Windows.Forms;
 namespace TaskbarDrawer.UI;
 
 /// <summary>
-/// 场景编辑：移除场景里的某个窗口、把其它正在运行的场景追加进来、重命名 / 删除场景。
+/// 场景详情：在主面板旁边展开的非模态小窗，显示场景里的窗口并完成移除 / 追加 / 重命名 / 删除。
 /// 只读数据 + 抛事件，真正的读写留在 <see cref="WorkspaceService"/>；AppShell 负责推送最新数据。
-/// 修改只改保存的快照，正在运行的窗口不会被关闭或移动，下次打开场景才生效。
+/// 移除 / 追加会同时同步运行中的场景（收起中的窗口会放回桌面），不需要关掉再打开。
 /// </summary>
 public sealed class SceneEditorWindow : Window
 {
     private readonly TextBlock _name;
-    private readonly TextBlock _title;
     private readonly WrapPanel _positionRow = new();
     private readonly WrapPanel _numberRow = new();
     private readonly WrapPanel _colorRow = new();
     private readonly StackPanel _windowList = new();
-    private readonly StackPanel _runningList = new();
+    private readonly StackPanel _appendList = new();
     private readonly Border _runningHint;
     private readonly TextBlock _windowEmpty;
-    private readonly TextBlock _runningEmpty;
+    private readonly TextBlock _appendEmpty;
     private ScrollViewer _scroll;
 
     /// <summary>当前选中的场景标识（颜色 + 可选数字 + 角上位置）。</summary>
@@ -40,6 +39,9 @@ public sealed class SceneEditorWindow : Window
     /// <summary>上一次渲染的数据签名：2.5 s 的 Prune 刷新不能把滚动位置打回顶部。</summary>
     private string _signature = "";
 
+    /// <summary>上一次展示的场景 Id：切换场景时回到顶部，同一场景刷新时保留滚动位置。</summary>
+    private string _detailId;
+
     public SceneEditorWindow()
     {
         WindowStyle = WindowStyle.None;
@@ -48,14 +50,17 @@ public sealed class SceneEditorWindow : Window
         ShowInTaskbar = false;
         Topmost = true;
         ResizeMode = ResizeMode.NoResize;
-        SizeToContent = SizeToContent.Height;
+        SizeToContent = SizeToContent.Manual;
         Width = 440;
-        WindowStartupLocation = WindowStartupLocation.CenterScreen;
+        // 初始高度只占屏幕一半左右，内容多时用窗内滚动条；右下角可以手动拉高。
+        Height = 620;
+        MinWidth = 380;
+        MinHeight = 360;
+        MaxWidth = 760;
+        WindowStartupLocation = WindowStartupLocation.Manual;
 
         _name = Ui.Text("", 10.5, FontWeights.Normal, Theme.TextMuted);
         _name.Margin = new Thickness(0, 3, 0, 0);
-
-        _title = Ui.Text("场景编辑", 15, FontWeights.SemiBold, Theme.TextPrimary);
 
         _runningHint = new Border
         {
@@ -64,8 +69,7 @@ public sealed class SceneEditorWindow : Window
             Padding = new Thickness(10, 8, 10, 8),
             Margin = new Thickness(0, 12, 0, 0),
             Visibility = Visibility.Collapsed,
-            Child = Ui.Text(
-                "这个场景正在运行：这里的修改只改保存的快照，下次打开生效；当前窗口不会被关闭。",
+            Child = Ui.Text("这个场景正在运行：移除 / 追加会立刻同步到当前窗口。",
                 10.5, FontWeights.Normal, Theme.AccentBrush, wrap: true)
         };
 
@@ -73,10 +77,10 @@ public sealed class SceneEditorWindow : Window
         _windowEmpty.Margin = new Thickness(2, 8, 0, 0);
         _windowEmpty.Visibility = Visibility.Collapsed;
 
-        _runningEmpty = Ui.Text("现在没有正在运行的其他场景。",
+        _appendEmpty = Ui.Text("这块屏幕上没有可追加的窗口。",
             11, FontWeights.Normal, Theme.TextMuted, wrap: true);
-        _runningEmpty.Margin = new Thickness(2, 8, 0, 0);
-        _runningEmpty.Visibility = Visibility.Collapsed;
+        _appendEmpty.Margin = new Thickness(2, 8, 0, 0);
+        _appendEmpty.Visibility = Visibility.Collapsed;
 
         Content = BuildRoot();
 
@@ -91,8 +95,11 @@ public sealed class SceneEditorWindow : Window
     /// <summary>移除场景里第 index 个窗口。</summary>
     public event Action<int> RemoveWindowRequested;
 
-    /// <summary>把正在运行的其他场景 groupId 追加进场景。</summary>
-    public event Action<int> AppendSceneRequested;
+    /// <summary>把某个顶层窗口（句柄）追加进场景；场景运行中会立刻接入。</summary>
+    public event Action<long> AppendWindowRequested;
+
+    /// <summary>重新枚举这块屏幕上的可追加窗口。</summary>
+    public event Action RefreshListRequested;
 
     public event Action RenameRequested;
     public event Action DeleteRequested;
@@ -115,13 +122,20 @@ public sealed class SceneEditorWindow : Window
     }
 
     /// <summary>由 AppShell 推送最新数据；数据没变化时不重建，避免打断滚动。</summary>
-    public void Reload(SavedGroupDetail detail, IReadOnlyList<StashGroupSummary> runningScenes, int runningGroupId)
+    public void Reload(
+        SavedGroupDetail detail,
+        int runningGroupId,
+        IReadOnlyList<AppendableWindowItem> appendable)
     {
         if (detail == null) return;
 
-        string signature = Signature(detail, runningScenes, runningGroupId);
+        string signature = Signature(detail, runningGroupId, appendable);
         if (signature == _signature) return;
         _signature = signature;
+
+        bool switchedScene = !string.Equals(_detailId, detail.Id, StringComparison.Ordinal);
+        _detailId = detail.Id;
+        double offset = _scroll?.VerticalOffset ?? 0;
 
         _name.Text = string.IsNullOrWhiteSpace(detail.Name) ? "未命名场景" : detail.Name;
         _badge = SceneBadge.Coerce(detail.Badge);
@@ -133,14 +147,51 @@ public sealed class SceneEditorWindow : Window
             _windowList.Children.Add(BuildWindowRow(window, detail.Windows.Count));
         _windowEmpty.Visibility = detail.Windows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
-        var running = runningScenes == null
-            ? Array.Empty<StashGroupSummary>()
-            : runningScenes.Where(g => g.Count > 0).ToArray();
+        var windows = appendable ?? Array.Empty<AppendableWindowItem>();
+        _appendList.Children.Clear();
+        foreach (var item in windows)
+            _appendList.Children.Add(BuildAppendRow(item));
+        _appendEmpty.Visibility = windows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
-        _runningList.Children.Clear();
-        foreach (var group in running)
-            _runningList.Children.Add(BuildRunningSceneRow(group, group.Id == runningGroupId));
-        _runningEmpty.Visibility = running.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        // 追加 / 移除后整块重建：同一场景保留用户刚才的滚动位置，切换场景才回到顶部。
+        if (_scroll != null)
+        {
+            _scroll.UpdateLayout();
+            if (switchedScene) _scroll.ScrollToTop();
+            else _scroll.ScrollToVerticalOffset(offset);
+        }
+    }
+
+    /// <summary>贴在主面板旁边：优先放右侧；面板贴屏幕右边放不下时自动换到左侧。</summary>
+    public void PlaceBeside(Window anchor)
+    {
+        if (anchor == null) return;
+
+        const double gap = 10;
+        double width = ActualWidth > 0 ? ActualWidth : Width;
+        double height = ActualHeight > 0 ? ActualHeight : Height;
+        double left = anchor.Left + anchor.ActualWidth + gap;
+        double top = anchor.Top;
+
+        IntPtr hwnd = new WindowInteropHelper(anchor).Handle;
+        if (hwnd == IntPtr.Zero || !NativeMethods.GetWindowRect(hwnd, out var rect) ||
+            !NativeMethods.TryGetMonitorOfRect(rect, out var monitor))
+        {
+            Left = left;
+            Top = top;
+            return;
+        }
+
+        // 面板 / 详情必须在同一块屏：工作区从物理像素换成面板所在屏的 DIP。
+        double scale = NativeMethods.DpiOfDevice(monitor.szDevice) / 96.0;
+        double workLeft = monitor.rcWork.Left / scale;
+        double workTop = monitor.rcWork.Top / scale;
+        double workRight = monitor.rcWork.Right / scale;
+        double workBottom = monitor.rcWork.Bottom / scale;
+
+        if (left + width > workRight - 8) left = anchor.Left - width - gap;
+        Left = Math.Min(Math.Max(left, workLeft + 8), Math.Max(workLeft + 8, workRight - width - 8));
+        Top = Math.Min(Math.Max(top, workTop + 8), Math.Max(workTop + 8, workBottom - height - 8));
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -155,7 +206,8 @@ public sealed class SceneEditorWindow : Window
             NativeMethods.TryGetMonitorOfRect(rect, out var monitor))
         {
             double workHeight = monitor.rcWork.Height / (NativeMethods.DpiOfDevice(monitor.szDevice) / 96.0);
-            _scroll.MaxHeight = Math.Max(240, workHeight - 80);
+            MaxHeight = Math.Max(MinHeight, workHeight - 40);
+            if (Height > MaxHeight) Height = MaxHeight;
         }
     }
 
@@ -163,27 +215,32 @@ public sealed class SceneEditorWindow : Window
 
     private FrameworkElement BuildRoot()
     {
-        var stack = new StackPanel { Margin = new Thickness(18, 16, 18, 16) };
+        var stack = new StackPanel { Margin = new Thickness(18, 4, 18, 16) };
+        stack.Children.Add(Ui.DragHandle(this));
         stack.Children.Add(BuildHeader());
         stack.Children.Add(BuildBadgeSection());
         stack.Children.Add(_runningHint);
         stack.Children.Add(BuildWindowSection());
         stack.Children.Add(BuildAppendSection());
-        stack.Children.Add(Divider());
+        stack.Children.Add(Ui.Divider());
         stack.Children.Add(BuildManageActions());
-        stack.Children.Add(Divider());
+        stack.Children.Add(Ui.Divider());
         stack.Children.Add(BuildFooter());
 
-        // 初始值按主屏算，OnSourceInitialized 里再按实际所在显示器重算。
+        // 窗口高度固定（可拖右下角调整），内容超出时在窗内滚动。
         _scroll = new ScrollViewer
         {
             Content = stack,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            MaxHeight = Math.Max(240, SystemParameters.WorkArea.Height - 80)
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
         };
+        Ui.ApplyDarkScrollBars(_scroll);
 
-        return new Border
+        var host = new Grid();
+        host.Children.Add(_scroll);
+        host.Children.Add(BuildResizeGrip());
+
+        var root = new Border
         {
             Background = Theme.PanelBackground,
             BorderBrush = Theme.PanelBorder,
@@ -196,18 +253,71 @@ public sealed class SceneEditorWindow : Window
                 Opacity = 0.55,
                 Color = Colors.Black
             },
-            Child = _scroll
+            Child = host
         };
+        Ui.EnableDrag(root, this);
+        return root;
+    }
+
+    /// <summary>右下角的调整手柄：拖动按像素改宽高，窗口高度不跟内容无限增长。</summary>
+    private FrameworkElement BuildResizeGrip()
+    {
+        var grip = new TextBlock
+        {
+            Text = "◢",
+            FontFamily = Ui.Font,
+            FontSize = 13,
+            Foreground = Theme.TextMuted,
+            Cursor = Cursors.SizeNWSE,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(0, 0, 6, 2),
+            ToolTip = "拖动调整详情窗大小"
+        };
+
+        Point origin = default;
+        Size start = default;
+        bool dragging = false;
+
+        grip.MouseLeftButtonDown += (_, e) =>
+        {
+            if (e.ButtonState != MouseButtonState.Pressed) return;
+            dragging = true;
+            origin = e.GetPosition(this);
+            start = new Size(ActualWidth, ActualHeight);
+            grip.CaptureMouse();
+            e.Handled = true;
+        };
+        grip.MouseMove += (_, e) =>
+        {
+            if (!dragging || e.LeftButton != MouseButtonState.Pressed) return;
+            Point now = e.GetPosition(this);
+            double width = Math.Max(MinWidth, start.Width + (now.X - origin.X));
+            double height = Math.Max(MinHeight, start.Height + (now.Y - origin.Y));
+            Width = Math.Min(Math.Min(width, MaxWidth), SystemParameters.VirtualScreenWidth);
+            Height = MaxHeight > 0
+                ? Math.Min(height, MaxHeight)
+                : Math.Min(height, SystemParameters.VirtualScreenHeight);
+        };
+        grip.MouseLeftButtonUp += (_, e) =>
+        {
+            dragging = false;
+            grip.ReleaseMouseCapture();
+            e.Handled = true;
+        };
+        // 切换窗口 / 被其它窗口抢走捕获时，必须结束拖动，否则鼠标再移动会继续改大小。
+        grip.LostMouseCapture += (_, _) => dragging = false;
+        return grip;
     }
 
     private FrameworkElement BuildHeader()
     {
-        var grid = new Grid { Background = Brushes.Transparent };
+        var grid = new Grid { Background = Brushes.Transparent, MinHeight = 32 };
         grid.ColumnDefinitions.Add(new ColumnDefinition());
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
         var texts = new StackPanel();
-        texts.Children.Add(_title);
+        texts.Children.Add(Ui.Text("场景详情", 15, FontWeights.SemiBold, Theme.TextPrimary));
         texts.Children.Add(_name);
         Grid.SetColumn(texts, 0);
         grid.Children.Add(texts);
@@ -231,12 +341,6 @@ public sealed class SceneEditorWindow : Window
         };
         Grid.SetColumn(close, 1);
         grid.Children.Add(close);
-
-        grid.MouseLeftButtonDown += (_, e) =>
-        {
-            if (e.ButtonState != MouseButtonState.Pressed) return;
-            try { DragMove(); } catch (InvalidOperationException) { /* 已松手 */ }
-        };
         return grid;
     }
 
@@ -247,11 +351,6 @@ public sealed class SceneEditorWindow : Window
         panel.Children.Add(BuildChoiceRow("位置", _positionRow));
         panel.Children.Add(BuildChoiceRow("数字", _numberRow));
         panel.Children.Add(BuildChoiceRow("颜色", _colorRow));
-
-        var hint = Ui.Text("左键点色块选用；右键任意色块可改成自定义颜色。8 个色块所有场景共用，改完已用该颜色的场景会一起变。",
-            10.5, FontWeights.Normal, Theme.TextMuted, wrap: true);
-        hint.Margin = new Thickness(34, 6, 2, 0);
-        panel.Children.Add(hint);
         return panel;
     }
 
@@ -306,7 +405,7 @@ public sealed class SceneEditorWindow : Window
                 () => EditPaletteColor(slot, picked)));
         }
 
-        var reset = MakeAction("恢复默认", false, () => PaletteResetRequested?.Invoke());
+        var reset = Ui.ActionButton("恢复默认", () => PaletteResetRequested?.Invoke());
         reset.Margin = new Thickness(4, 2, 0, 2);
         reset.ToolTip = "把这 8 个颜色恢复成默认配色；用了这些颜色的场景会按色块位置跟着换回来";
         _colorRow.Children.Add(reset);
@@ -448,26 +547,29 @@ public sealed class SceneEditorWindow : Window
         _windowList.Margin = new Thickness(0, 6, 0, 0);
         panel.Children.Add(_windowList);
         panel.Children.Add(_windowEmpty);
-
-        var note = Ui.Text("移除只改保存的快照：当前正在运行的窗口不会关闭，下次打开场景时少开一个。",
-            10.5, FontWeights.Normal, Theme.TextMuted, wrap: true);
-        note.Margin = new Thickness(2, 8, 0, 0);
-        panel.Children.Add(note);
         return panel;
     }
 
+    /// <summary>追加区：列出这块屏幕上的全部窗口，已在场景 / 其它场景的也显示出来并说明原因。</summary>
     private FrameworkElement BuildAppendSection()
     {
         var panel = new StackPanel { Margin = new Thickness(0, 16, 0, 0) };
-        panel.Children.Add(SectionTitle("把其它场景的窗口追加进来"));
-        _runningList.Margin = new Thickness(0, 6, 0, 0);
-        panel.Children.Add(_runningList);
-        panel.Children.Add(_runningEmpty);
 
-        var note = Ui.Text("追加的是那个场景此刻的窗口和位置。同样只改快照：当前场景正在运行时，下次打开才生效。",
-            10.5, FontWeights.Normal, Theme.TextMuted, wrap: true);
-        note.Margin = new Thickness(2, 8, 0, 0);
-        panel.Children.Add(note);
+        var head = new Grid();
+        head.ColumnDefinitions.Add(new ColumnDefinition());
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        head.Children.Add(SectionTitle("追加窗口（这块屏幕上的全部窗口）"));
+
+        var refresh = Ui.ActionButton("刷新", () => RefreshListRequested?.Invoke());
+        refresh.VerticalAlignment = VerticalAlignment.Center;
+        refresh.ToolTip = "重新扫描这块屏幕上的窗口";
+        Grid.SetColumn(refresh, 1);
+        head.Children.Add(refresh);
+        panel.Children.Add(head);
+
+        _appendList.Margin = new Thickness(0, 6, 0, 0);
+        panel.Children.Add(_appendList);
+        panel.Children.Add(_appendEmpty);
         return panel;
     }
 
@@ -476,7 +578,7 @@ public sealed class SceneEditorWindow : Window
         var panel = new StackPanel { Margin = new Thickness(0, 14, 0, 0) };
         var actions = new WrapPanel();
 
-        var rename = MakeAction("重命名场景", false, () => RenameRequested?.Invoke());
+        var rename = Ui.ActionButton("重命名场景", () => RenameRequested?.Invoke());
         rename.Margin = new Thickness(0, 0, 8, 6);
         actions.Children.Add(rename);
 
@@ -484,17 +586,12 @@ public sealed class SceneEditorWindow : Window
         delete.Margin = new Thickness(0, 0, 8, 6);
         actions.Children.Add(delete);
         panel.Children.Add(actions);
-
-        var note = Ui.Text("删除场景会移除保存的记录：正在运行的窗口会留在桌面上，不再由本程序管理。",
-            10.5, FontWeights.Normal, Theme.TextMuted, wrap: true);
-        note.Margin = new Thickness(2, 2, 0, 0);
-        panel.Children.Add(note);
         return panel;
     }
 
     private FrameworkElement BuildFooter()
     {
-        var done = MakeAction("完成", true, Close);
+        var done = Ui.ActionButton("完成", Close, accent: true);
         done.HorizontalAlignment = HorizontalAlignment.Right;
         done.Margin = new Thickness(0, 14, 0, 0);
         return done;
@@ -522,7 +619,7 @@ public sealed class SceneEditorWindow : Window
         grid.Children.Add(texts);
 
         int index = item.Index;
-        var remove = MakeAction("移除", false, () => RemoveWindowRequested?.Invoke(index), enabled: total > 1);
+        var remove = Ui.ActionButton("移除", () => RemoveWindowRequested?.Invoke(index), enabled: total > 1);
         if (total <= 1) remove.ToolTip = "场景至少保留一个窗口；整个场景不要了请用「删除场景」";
         remove.Margin = new Thickness(8, 0, 0, 0);
         Grid.SetColumn(remove, 1);
@@ -538,24 +635,27 @@ public sealed class SceneEditorWindow : Window
         };
     }
 
-    private Border BuildRunningSceneRow(StashGroupSummary group, bool isSelf)
+    /// <summary>一个可追加 / 已在场景 / 属于其它场景的窗口行。</summary>
+    private Border BuildAppendRow(AppendableWindowItem item)
     {
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition());
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
         var texts = new StackPanel();
-        string icon = SceneBadge.GlyphOf(group.Badge);
-        string prefix = icon.Length == 0 ? "" : icon + " ";
-        string head = string.IsNullOrEmpty(group.Name)
-            ? $"{prefix}场景 {group.Id} · {group.Count} 个窗口"
-            : $"{prefix}{group.Name} · {group.Count} 个窗口";
-        var title = Ui.Text(head, 12, FontWeights.SemiBold, Theme.TextPrimary);
+        var title = Ui.Text(string.IsNullOrWhiteSpace(item.Title) ? "未命名窗口" : item.Title,
+            12, FontWeights.SemiBold, Theme.TextPrimary);
         title.TextTrimming = TextTrimming.CharacterEllipsis;
         texts.Children.Add(title);
 
-        var sub = Ui.Text((group.Expanded ? "已展开 · " : "已收起 · ") + DescribeTitles(group),
-            10.5, FontWeights.Normal, Theme.TextMuted);
+        var details = new List<string>();
+        if (!string.IsNullOrWhiteSpace(item.ProcessName)) details.Add(item.ProcessName);
+        if (item.Minimized) details.Add("已最小化");
+        if (item.InScene) details.Add("已在当前场景");
+        else if (item.InOtherScene) details.Add("属于其它场景");
+        else details.Add("可追加");
+        var sub = Ui.Text(string.Join(" · ", details), 10.5, FontWeights.Normal,
+            item.CanAppend ? Theme.TextMuted : Theme.TextSecondary);
         sub.Margin = new Thickness(0, 2, 0, 0);
         sub.TextTrimming = TextTrimming.CharacterEllipsis;
         texts.Children.Add(sub);
@@ -563,9 +663,33 @@ public sealed class SceneEditorWindow : Window
         Grid.SetColumn(texts, 0);
         grid.Children.Add(texts);
 
-        int groupId = group.Id;
-        var append = MakeAction("追加", false, () => AppendSceneRequested?.Invoke(groupId), enabled: !isSelf);
-        if (isSelf) append.ToolTip = "这就是当前场景自己";
+        string label;
+        bool enabled;
+        if (item.InScene)
+        {
+            label = "已在场景";
+            enabled = false;
+        }
+        else if (item.InOtherScene)
+        {
+            label = "在其它场景";
+            enabled = false;
+        }
+        else
+        {
+            label = "追加";
+            enabled = true;
+        }
+
+        long handle = item.Handle;
+        var append = Ui.ActionButton(label,
+            () => AppendWindowRequested?.Invoke(handle), accent: enabled, enabled: enabled);
+        if (!item.CanAppend)
+            append.ToolTip = item.InScene
+                ? "这个窗口已经在当前场景里"
+                : "这个窗口被另一个场景管理，先把它从那个场景移除";
+        else
+            append.ToolTip = "把这个窗口加入当前场景；场景正在运行会立刻生效";
         append.Margin = new Thickness(8, 0, 0, 0);
         Grid.SetColumn(append, 1);
         grid.Children.Add(append);
@@ -578,13 +702,6 @@ public sealed class SceneEditorWindow : Window
             Margin = new Thickness(0, 5, 0, 0),
             Child = grid
         };
-    }
-
-    private static string DescribeTitles(StashGroupSummary group)
-    {
-        if (group.Titles.Count == 0) return "（窗口已关闭）";
-        string joined = string.Join(" · ", group.Titles.Take(2));
-        return group.Titles.Count > 2 ? $"{joined} 等 {group.Titles.Count} 个" : joined;
     }
 
     private static string FallbackTitle(SavedWindowItem item)
@@ -601,7 +718,7 @@ public sealed class SceneEditorWindow : Window
     }
 
     private static string Signature(
-        SavedGroupDetail detail, IReadOnlyList<StashGroupSummary> runningScenes, int runningGroupId)
+        SavedGroupDetail detail, int runningGroupId, IReadOnlyList<AppendableWindowItem> appendable)
     {
         var builder = new StringBuilder();
         builder.Append(detail.Id).Append('|').Append(detail.Name).Append('|')
@@ -618,17 +735,16 @@ public sealed class SceneEditorWindow : Window
         }
 
         builder.Append('|');
-        if (runningScenes != null)
+        if (appendable != null)
         {
-            foreach (var group in runningScenes)
+            foreach (var window in appendable)
             {
-                builder.Append(group.Id).Append(':')
-                    .Append(group.Count).Append(':')
-                    .Append(group.Expanded).Append(':')
-                    .Append(group.SavedId).Append(':')
-                    .Append(group.Name).Append(':')
-                    .Append(BadgeKey(group.Badge)).Append(':')
-                    .Append(string.Join("/", group.Titles)).Append(';');
+                builder.Append(window.Handle).Append(':')
+                    .Append(window.Title).Append(':')
+                    .Append(window.ProcessName).Append(':')
+                    .Append(window.Minimized).Append(':')
+                    .Append(window.InScene).Append(':')
+                    .Append(window.InOtherScene).Append(';');
             }
         }
         return builder.ToString();
@@ -643,40 +759,6 @@ public sealed class SceneEditorWindow : Window
         var title = Ui.Text(text, 11, FontWeights.SemiBold, Theme.TextSecondary);
         title.Margin = new Thickness(2, 0, 0, 0);
         return title;
-    }
-
-    private static FrameworkElement Divider() => new Border
-    {
-        Height = 1,
-        Background = Theme.Divider,
-        Margin = new Thickness(0, 16, 0, 0)
-    };
-
-    private static Border MakeAction(string text, bool accent, Action onClick, bool enabled = true)
-    {
-        var label = Ui.Text(text, 11.5, accent ? FontWeights.SemiBold : FontWeights.Normal,
-            accent ? Brushes.White : Theme.TextPrimary);
-        var border = new Border
-        {
-            Background = accent ? Theme.AccentBrush : Theme.ControlBackground,
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(11, 5, 11, 5),
-            Child = label,
-            Cursor = enabled ? Cursors.Hand : Cursors.Arrow,
-            Opacity = enabled ? 1 : 0.45,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        if (!enabled) return border;
-
-        border.MouseEnter += (_, _) => border.Background = accent ? Theme.AccentBrush : Theme.ControlHover;
-        border.MouseLeave += (_, _) => border.Background = accent ? Theme.AccentBrush : Theme.ControlBackground;
-        border.MouseLeftButtonDown += (_, e) => e.Handled = true;
-        border.MouseLeftButtonUp += (_, e) =>
-        {
-            e.Handled = true;
-            onClick();
-        };
-        return border;
     }
 
     private static Border MakeDanger(string text, Action onClick)

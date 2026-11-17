@@ -53,14 +53,14 @@ public sealed class TextPromptWindow : Window
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(0, 14, 0, 0)
         };
-        var cancel = MakeAction("取消", false, () => { DialogResult = false; });
+        var cancel = Ui.ActionButton("取消", () => { DialogResult = false; });
         cancel.Margin = new Thickness(0, 0, 8, 0);
         buttons.Children.Add(cancel);
-        buttons.Children.Add(MakeAction("确定", true, () =>
+        buttons.Children.Add(Ui.ActionButton("确定", () =>
         {
             if (string.IsNullOrWhiteSpace(_input.Text)) return;
             DialogResult = true;
-        }));
+        }, accent: true));
         stack.Children.Add(buttons);
 
         var root = new Border
@@ -110,33 +110,6 @@ public sealed class TextPromptWindow : Window
             window.WindowStartupLocation = WindowStartupLocation.CenterOwner;
         }
         return window.ShowDialog() == true ? window._input.Text.Trim() : null;
-    }
-
-    /// <summary>
-    /// 点按钮时不能冒泡到根 Border 的 DragMove：DragMove 会接管鼠标并吞掉后续 MouseLeftButtonUp，
-    /// 表现就是「取消 / 确定都没反应」。与场景编辑器的按钮保持一致。
-    /// </summary>
-    private static Border MakeAction(string text, bool accent, Action onClick)
-    {
-        var label = Ui.Text(text, 11.5, accent ? FontWeights.SemiBold : FontWeights.Normal,
-            accent ? Brushes.White : Theme.TextPrimary, wrap: true);
-        var border = new Border
-        {
-            Background = accent ? Theme.AccentBrush : Theme.ControlBackground,
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(13, 5, 13, 5),
-            Child = label,
-            Cursor = Cursors.Hand
-        };
-        border.MouseEnter += (_, _) => border.Background = accent ? Theme.AccentBrush : Theme.ControlHover;
-        border.MouseLeave += (_, _) => border.Background = accent ? Theme.AccentBrush : Theme.ControlBackground;
-        border.MouseLeftButtonDown += (_, e) => e.Handled = true;
-        border.MouseLeftButtonUp += (_, e) =>
-        {
-            e.Handled = true;
-            onClick();
-        };
-        return border;
     }
 
     private static bool IsInsideInput(DependencyObject source)

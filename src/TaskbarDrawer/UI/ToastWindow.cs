@@ -134,7 +134,6 @@ public sealed class ToastWindow : Window
         {
             double scale = NativeMethods.DpiOfDevice(monitor.szDevice) / 96.0;
             double left = monitor.rcWork.Left / scale;
-            double top = monitor.rcWork.Top / scale;
             double areaWidth = monitor.rcWork.Width / scale;
             double bottom = monitor.rcWork.Bottom / scale;
             Left = left + (areaWidth - width) / 2;

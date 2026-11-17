@@ -170,6 +170,41 @@ public sealed class StashAllService
     /// <summary>按窗口当前实际位置刷新记录（保存场景前调用，拿到最新矩形）。</summary>
     public void RefreshPlacement(StashedWindow item) => _stash.Refresh(item);
 
+    /// <summary>只读抓取一个窗口的快照数据（不加入任何组、不隐藏），用于「追加窗口」。</summary>
+    public StashedWindow CaptureSnapshot(IntPtr hwnd) => _stash.Capture(hwnd, 0);
+
+    /// <summary>
+    /// 从运行中的场景摘掉一个窗口：先按快照里的 exe + 标题匹配运行时记录，
+    /// 匹配不到时退回同程序的第一个窗口。收起中的窗口会放回桌面，展开中的保持原位。
+    /// </summary>
+    public bool Detach(string savedId, SavedWindow target, out bool restored)
+    {
+        restored = false;
+        int groupId = GroupIdOfSaved(savedId);
+        if (groupId == 0 || target == null) return false;
+
+        var items = _stash.Items.Where(i => i.GroupId == groupId).ToArray();
+        string exe = NormalizePath(target.ExePath);
+        var sameExe = items.Where(i => NormalizePath(i.ProcessPath) == exe).ToArray();
+        var match = sameExe.FirstOrDefault(i =>
+            string.Equals(SceneTitle.Strip(i.Title).Trim(), (target.Title ?? "").Trim(),
+                StringComparison.OrdinalIgnoreCase));
+        // 标题匹配不上时只在同程序只有一个窗口时兜底；多个同名程序里不能猜，
+        // 宁可只改快照，也不能把另一个窗口从场景里摘错。
+        if (match == null && sameExe.Length == 1) match = sameExe[0];
+        if (match == null) return false;
+
+        if (!_stash.Untrack(match.Handle, out restored)) return false;
+        SyncGroups();
+        Diagnostics.Info("scene",
+            $"从场景移除运行窗口 group={groupId}「{match.Title}」 已放回桌面={restored}");
+        Changed?.Invoke();
+        return true;
+    }
+
+    private static string NormalizePath(string path)
+        => string.IsNullOrWhiteSpace(path) ? "" : path.Replace('\\', '/').ToLowerInvariant();
+
     /// <summary>这个场景现在有没有对应的运行时组（0 = 已关闭，只有存下来的快照）。</summary>
     public int GroupIdOfSaved(string savedId)
         => string.IsNullOrEmpty(savedId) ? 0 : _groups.FirstOrDefault(g => g.SavedId == savedId)?.Id ?? 0;
@@ -375,16 +410,6 @@ public sealed class StashAllService
                 $"收起 group={groupId}「{group.Name}」 screen={monitorDevice ?? "(整组)"} 个数={hidden}");
         }
         return hidden;
-    }
-
-    /// <summary>点场景胶囊：已展开 → 收起，已收起 → 展开。</summary>
-    public (bool expanded, int count) ToggleGroup(int groupId)
-    {
-        var summary = Groups().FirstOrDefault(g => g.Id == groupId);
-        if (summary == null) return (false, 0);
-        return summary.Expanded
-            ? (false, StashGroup(groupId))
-            : (true, ExpandGroup(groupId));
     }
 
     /// <summary>删除场景时，把运行时组整体交回桌面（不最小化、不关闭）。</summary>

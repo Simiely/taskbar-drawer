@@ -62,19 +62,19 @@ public static class ChipProjection
         return chips;
     }
 
-    /// <summary>胶囊上的名字：最多 6 个字，超出省略。</summary>
-    public static string ShortName(string name)
+    /// <summary>胶囊 / 面板上的名字：超过 maxLength 个字就省略。</summary>
+    public static string ShortName(string name, int maxLength = 6)
     {
         if (string.IsNullOrWhiteSpace(name)) return "场景";
-        return name.Length > 6 ? name[..6] + "…" : name;
+        if (maxLength < 1) maxLength = 1;
+        return name.Length > maxLength ? name[..maxLength] + "…" : name;
     }
 
     public static string RuntimeTooltip(StashGroupSummary group)
     {
-        string icon = Prefix(group.Badge);
         string head = string.IsNullOrEmpty(group.Name)
-            ? $"{icon}场景 {group.Id} · {group.Count} 个窗口 · {group.State}"
-            : $"{icon}{group.Name} · {group.Count} 个窗口 · {group.State}";
+            ? $"{SceneBadge.PrefixOf(group.Badge)}场景 {group.Id} · {group.Count} 个窗口 · {group.State}"
+            : $"{SceneBadge.PrefixOf(group.Badge)}{group.Name} · {group.Count} 个窗口 · {group.State}";
 
         var lines = new List<string> { head };
         foreach (string title in group.Titles.Take(3))
@@ -86,8 +86,7 @@ public static class ChipProjection
 
     public static string SavedTooltip(SavedGroupSummary group)
     {
-        string icon = Prefix(group.Badge);
-        var lines = new List<string> { $"{icon}{group.Name} · {group.Count} 个窗口 · 已关闭" };
+        var lines = new List<string> { $"{SceneBadge.PrefixOf(group.Badge)}{group.Name} · {group.Count} 个窗口 · 已关闭" };
         foreach (string title in group.Titles.Take(3))
         {
             string text = title ?? "";
@@ -98,10 +97,11 @@ public static class ChipProjection
         return string.Join("\n", lines);
     }
 
-    /// <summary>文字里的标识前缀（① / ● + 空格）；没有标识时为空。</summary>
-    private static string Prefix(SceneBadge badge)
+    /// <summary>场景里的窗口标题摘要：取前两个，多于两个时带总数。</summary>
+    public static string DescribeTitles(StashGroupSummary group)
     {
-        string glyph = SceneBadge.GlyphOf(badge);
-        return glyph.Length == 0 ? "" : glyph + " ";
+        if (group == null || group.Titles.Count == 0) return "（窗口已关闭）";
+        string joined = string.Join(" · ", group.Titles.Take(2));
+        return group.Titles.Count > 2 ? $"{joined} 等 {group.Titles.Count} 个" : joined;
     }
 }

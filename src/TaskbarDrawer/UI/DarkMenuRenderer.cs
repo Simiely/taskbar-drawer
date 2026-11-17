@@ -15,7 +15,7 @@ namespace TaskbarDrawer.UI;
 /// </summary>
 internal sealed class DarkMenuRenderer : Forms.ToolStripProfessionalRenderer
 {
-    internal static readonly Color Back = Color.FromArgb(0x1C, 0x1C, 0x1E);
+    private static readonly Color Back = Color.FromArgb(0x1C, 0x1C, 0x1E);
     private static readonly Color Border = Color.FromArgb(0x38, 0x38, 0x3A);
     private static readonly Color Hover = Color.FromArgb(0x2C, 0x2C, 0x2E);
     private static readonly Color Pressed = Color.FromArgb(0x3A, 0x3A, 0x3C);

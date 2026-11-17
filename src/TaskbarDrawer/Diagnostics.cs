@@ -19,7 +19,7 @@ public static class Diagnostics
     private static string _day;
 
     /// <summary>日志目录；首次使用时探测可写性（程序目录优先）。</summary>
-    public static string Folder
+    private static string Folder
     {
         get
         {

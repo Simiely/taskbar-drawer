@@ -11,14 +11,11 @@ public static partial class NativeMethods
     public const int GWL_EXSTYLE = -20;
 
     public const long WS_EX_TOOLWINDOW = 0x00000080;
-    public const long WS_EX_TOPMOST = 0x00000008;
     public const long WS_EX_NOACTIVATE = 0x08000000;
-    public const long WS_EX_TRANSPARENT = 0x00000020;
 
     public const int SW_HIDE = 0;
     public const int SW_SHOWNORMAL = 1;
     public const int SW_SHOWNOACTIVATE = 4;
-    public const int SW_SHOW = 5;
     public const int SW_MINIMIZE = 6;
     public const int SW_SHOWMINNOACTIVE = 7;
     public const int SW_RESTORE = 9;
@@ -31,8 +28,6 @@ public static partial class NativeMethods
     public const int WM_MOUSEACTIVATE = 0x0021;
     public const int MA_NOACTIVATE = 3;
 
-    public const uint SWP_NOSIZE = 0x0001;
-    public const uint SWP_NOMOVE = 0x0002;
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_NOACTIVATE = 0x0010;
     public const uint SWP_SHOWWINDOW = 0x0040;

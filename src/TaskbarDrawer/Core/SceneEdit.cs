@@ -11,11 +11,15 @@ public static class SceneEdit
     /// 空路径返回空串，表示这一项不参与去重 / 过滤（读不到程序路径的窗口无法再启动，也不会进快照）。
     /// </summary>
     public static string Key(SavedWindow window)
+        => window == null ? "" : Key(window.ExePath, window.Title);
+
+    /// <summary>去重键的字符串形式：exe 路径 + 标题。路径为空时返回空串。</summary>
+    public static string Key(string exePath, string title)
     {
-        if (window == null) return "";
-        string exe = Normalize(window.ExePath);
+        string exe = Normalize(exePath);
         if (exe.Length == 0) return "";
-        return exe + "\n" + (window.Title ?? "");
+        // 标题两端的空白不可见，但会让同一窗口的键对不上（控制台 / 终端标题常见）。
+        return exe + "\n" + (title ?? "").Trim();
     }
 
     /// <summary>场景编辑窗口里的一行。</summary>
@@ -78,6 +82,7 @@ public static class SceneEdit
             }
 
             windows.Add(window);
+            // 同一个键可能被移除过多次（同程序同名窗口）：只放行一次，剩下的仍要挡住。
             suppressed?.Remove(key);
             added++;
         }
@@ -97,11 +102,23 @@ public static class SceneEdit
             return visible;
         }
 
-        var blocked = new HashSet<string>(suppressed, StringComparer.Ordinal);
+        // 按出现次数抑制：同一个程序可能有两个同名窗口，移除其中一个时
+        // 不能把另一个也一起过滤掉。
+        var blocked = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (string key in suppressed)
+        {
+            if (string.IsNullOrEmpty(key)) continue;
+            blocked[key] = blocked.TryGetValue(key, out int count) ? count + 1 : 1;
+        }
+
         foreach (var window in captured)
         {
             string key = Key(window);
-            if (key.Length > 0 && blocked.Contains(key)) continue;
+            if (key.Length > 0 && blocked.TryGetValue(key, out int count) && count > 0)
+            {
+                blocked[key] = count - 1;
+                continue;
+            }
             visible.Add(window);
         }
         return visible;

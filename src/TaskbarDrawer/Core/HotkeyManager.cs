@@ -7,16 +7,14 @@ namespace TaskbarDrawer.Core;
 
 public sealed class HotkeyDefinition
 {
-    public HotkeyDefinition(int id, string name, uint modifiers, uint virtualKey)
+    public HotkeyDefinition(int id, uint modifiers, uint virtualKey)
     {
         Id = id;
-        Name = name;
         Modifiers = modifiers;
         VirtualKey = virtualKey;
     }
 
     public int Id { get; }
-    public string Name { get; }
     public uint Modifiers { get; }
     public uint VirtualKey { get; }
 
@@ -25,16 +23,13 @@ public sealed class HotkeyDefinition
 
 public sealed class HotkeyRegistration
 {
-    public HotkeyRegistration(
-        HotkeyDefinition definition, bool success, int win32Error, string rollbackError = null)
+    public HotkeyRegistration(bool success, int win32Error, string rollbackError = null)
     {
-        Definition = definition;
         Success = success;
         Win32Error = win32Error;
         RollbackError = rollbackError;
     }
 
-    public HotkeyDefinition Definition { get; }
     public bool Success { get; }
     public int Win32Error { get; }
 
@@ -59,7 +54,7 @@ public static class HotkeyDefaults
 {
     /// <summary>Ctrl+Alt+Shift+D：收起 / 展开全部窗口。</summary>
     public static readonly HotkeyDefinition StashAll =
-        new(1, "收起 / 展开当前窗口",
+        new(1,
             NativeMethods.MOD_CONTROL | NativeMethods.MOD_ALT | NativeMethods.MOD_SHIFT,
             NativeMethods.VK_D);
 }
@@ -91,7 +86,7 @@ public sealed class HotkeyManager : IDisposable
             _hwnd, definition.Id, definition.Modifiers | NativeMethods.MOD_NOREPEAT, definition.VirtualKey);
         int error = ok ? 0 : Marshal.GetLastWin32Error();
         if (ok) _registered[definition.Id] = definition;
-        return new HotkeyRegistration(definition, ok, error);
+        return new HotkeyRegistration(ok, error);
     }
 
     public void Unregister(int id)
@@ -116,7 +111,7 @@ public sealed class HotkeyManager : IDisposable
             var rollback = Register(previous);
             if (!rollback.Success)
             {
-                registration = new HotkeyRegistration(definition, false, registration.Win32Error,
+                registration = new HotkeyRegistration(false, registration.Win32Error,
                     $"旧快捷键 {previous.Gesture} 也无法恢复：{rollback.ErrorText}");
             }
         }

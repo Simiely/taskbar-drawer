@@ -4,7 +4,7 @@ namespace TaskbarDrawer.Core;
 
 /// <summary>
 /// 场景标识：叠在任务栏窗口图标角上的小圆标。
-/// 数字 1–9 可选（白色粗体居中），不选数字就是纯色圆点；颜色默认八色预设（可自行改色），位置左上或右上。
+/// 数字 1–9 可选（白色粗体居中），不选数字就是纯色圆点；颜色默认八色预设（可自行改色），位置左上或右上（默认右上）。
 /// 纯几何形状在小尺寸下比 emoji 清楚，也不依赖任何图片资源。
 /// </summary>
 public sealed class SceneBadge
@@ -35,8 +35,8 @@ public sealed class SceneBadge
     /// <summary>0 = 纯色圆点；1–9 = 圆底上写这个数字。</summary>
     public int Number { get; set; }
 
-    /// <summary>true = 叠在图标右上角；false = 左上角。</summary>
-    public bool Right { get; set; }
+    /// <summary>true = 叠在图标右上角（默认）；false = 左上角。</summary>
+    public bool Right { get; set; } = true;
 
     /// <summary>把外部数据夹回合法范围：颜色必须是 #RRGGBB（统一大写），数字只留 0–9。</summary>
     public SceneBadge Normalized()
@@ -83,6 +83,13 @@ public sealed class SceneBadge
     public string Glyph => Glyphs[Number is >= 0 and <= 9 ? Number : 0];
 
     public static string GlyphOf(SceneBadge badge) => badge?.Normalized().Glyph ?? "";
+
+    /// <summary>文字里的标识前缀（● / ① + 空格）；没有标识时为空。</summary>
+    public static string PrefixOf(SceneBadge badge)
+    {
+        string glyph = GlyphOf(badge);
+        return glyph.Length == 0 ? "" : glyph + " ";
+    }
 
     private static readonly string[] Glyphs =
     {

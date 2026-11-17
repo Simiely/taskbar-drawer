@@ -16,21 +16,12 @@ namespace TaskbarDrawer.UI;
 /// </summary>
 public sealed class SceneIconPainter : ISceneIconPainter
 {
-    /// <summary>默认程序图标大小：占画布 90%，右下对齐，把左上角让给场景标识。</summary>
-    public const double DefaultAppIconScale = 0.90;
-
-    /// <summary>默认场景标识大小：占画布 55%，叠在原图标角上。</summary>
-    public const double DefaultBadgeScale = 0.55;
-
-    public const double MinAppIconScale = 0.55;
-    public const double MaxAppIconScale = 1.0;
-    public const double MinBadgeScale = 0.25;
-    public const double MaxBadgeScale = 0.65;
-
     private static readonly Typeface DigitTypeface = new(
         new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.Bold, FontStretches.Normal);
 
-    public SceneIconPainter(double appIconScale = DefaultAppIconScale, double badgeScale = DefaultBadgeScale)
+    public SceneIconPainter(
+        double appIconScale = SceneIconMetrics.DefaultAppIconScale,
+        double badgeScale = SceneIconMetrics.DefaultBadgeScale)
     {
         AppIconScale = appIconScale;
         BadgeScale = badgeScale;
@@ -40,22 +31,18 @@ public sealed class SceneIconPainter : ISceneIconPainter
     public double AppIconScale
     {
         get => _appIconScale;
-        set => _appIconScale = double.IsNaN(value)
-            ? DefaultAppIconScale
-            : Math.Clamp(value, MinAppIconScale, MaxAppIconScale);
+        set => _appIconScale = SceneIconMetrics.ClampAppIconScale(value);
     }
 
     /// <summary>场景标识占画布边长的比例（0.25–0.65）。</summary>
     public double BadgeScale
     {
         get => _badgeScale;
-        set => _badgeScale = double.IsNaN(value)
-            ? DefaultBadgeScale
-            : Math.Clamp(value, MinBadgeScale, MaxBadgeScale);
+        set => _badgeScale = SceneIconMetrics.ClampBadgeScale(value);
     }
 
-    private double _appIconScale = DefaultAppIconScale;
-    private double _badgeScale = DefaultBadgeScale;
+    private double _appIconScale = SceneIconMetrics.DefaultAppIconScale;
+    private double _badgeScale = SceneIconMetrics.DefaultBadgeScale;
 
     public bool TryCreate(SceneBadge badge, IntPtr originalBig, IntPtr originalSmall, uint dpi,
         out IntPtr big, out IntPtr small)

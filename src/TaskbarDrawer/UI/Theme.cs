@@ -40,6 +40,13 @@ internal static class Theme
     /// <summary>细分隔线（1 px 横线）。</summary>
     internal static readonly SolidColorBrush Divider = Frozen(0xFF, 0x38, 0x38, 0x3A);
 
+    /// <summary>深色滚动条拇指（半透明白，静止 / 悬停 / 拖动三态）。</summary>
+    internal static readonly SolidColorBrush ScrollThumb = Frozen(0x4D, 0xFF, 0xFF, 0xFF);
+
+    internal static readonly SolidColorBrush ScrollThumbHover = Frozen(0x80, 0xFF, 0xFF, 0xFF);
+
+    internal static readonly SolidColorBrush ScrollThumbDrag = Frozen(0xB3, 0xFF, 0xFF, 0xFF);
+
     /// <summary>开关滑轨的关闭态底色。</summary>
     internal static readonly SolidColorBrush SwitchTrackOff = Frozen(0xFF, 0x39, 0x39, 0x3D);
 

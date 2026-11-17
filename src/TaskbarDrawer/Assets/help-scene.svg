@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1000" viewBox="0 0 720 1000">
+<rect x="0" y="0" width="720" height="1000" fill="#0E0E10"/>
+<rect x="30" y="30" width="660" height="940" rx="28" ry="28" fill="#1C1C1E" stroke="#38383A" stroke-width="1"/>
+<rect x="352" y="46" width="36" height="4" rx="2" ry="2" fill="#5A5A5E"/>
+<text x="60" y="94" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="22" font-weight="600" text-anchor="start">场景详情</text>
+<text x="60" y="114" fill="#8E8E93" font-family="Microsoft YaHei UI" font-size="12" font-weight="400" text-anchor="start">写代码</text>
+<text x="654" y="94" fill="#98989D" font-family="Microsoft YaHei UI" font-size="16" font-weight="400" text-anchor="start">✕</text>
+<circle cx="360" cy="46" r="11" fill="#0A84FF" stroke="#0E0E10" stroke-width="2"/><text x="360" y="50" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="11" font-weight="700" text-anchor="middle">1</text>
+<text x="60" y="150" fill="#98989D" font-family="Microsoft YaHei UI" font-size="13" font-weight="600" text-anchor="start">场景标识</text>
+<circle cx="44" cy="150" r="11" fill="#0A84FF" stroke="#0E0E10" stroke-width="2"/><text x="44" y="154" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="11" font-weight="700" text-anchor="middle">4</text>
+<text x="60" y="182" fill="#8E8E93" font-family="Microsoft YaHei UI" font-size="11" font-weight="400" text-anchor="start">位置</text>
+<rect x="110" y="164" width="48" height="24" rx="6" ry="6" fill="#3A3A3C"/><text x="134.0" y="179.85" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="11" font-weight="400" text-anchor="middle">左上</text>
+<rect x="164" y="164" width="48" height="24" rx="6" ry="6" fill="#0A84FF"/><text x="188.0" y="179.85" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="11" font-weight="600" text-anchor="middle">右上</text>
+<text x="60" y="216" fill="#8E8E93" font-family="Microsoft YaHei UI" font-size="11" font-weight="400" text-anchor="start">数字</text>
+<rect x="110" y="198" width="40" height="24" rx="6" ry="6" fill="#3A3A3C"/><text x="130.0" y="213.85" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="11" font-weight="400" text-anchor="middle">无</text>
+<rect x="156" y="198" width="30" height="24" rx="6" ry="6" fill="#0A84FF"/><text x="171.0" y="213.85" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="11" font-weight="600" text-anchor="middle">1</text>
+<rect x="192" y="198" width="30" height="24" rx="6" ry="6" fill="#3A3A3C"/><text x="207.0" y="213.85" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="11" font-weight="400" text-anchor="middle">2</text>
+<rect x="228" y="198" width="30" height="24" rx="6" ry="6" fill="#3A3A3C"/><text x="243.0" y="213.85" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="11" font-weight="400" text-anchor="middle">3</text>
+<rect x="264" y="198" width="30" height="24" rx="6" ry="6" fill="#3A3A3C"/><text x="279.0" y="213.85" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="11" font-weight="400" text-anchor="middle">4</text>
+<text x="60" y="252" fill="#8E8E93" font-family="Microsoft YaHei UI" font-size="11" font-weight="400" text-anchor="start">颜色</text>
+<circle cx="118" cy="248" r="8" fill="#E5484D"/>
+<circle cx="150" cy="248" r="8" fill="#F76B15"/>
+<circle cx="182" cy="248" r="8" fill="#F5B301"/>
+<circle cx="214" cy="248" r="8" fill="#46A758"/>
+<circle cx="246" cy="248" r="8" fill="#0A6CDE"/>
+<text x="290" y="252" fill="#C7C7CC" font-family="Microsoft YaHei UI" font-size="11" font-weight="400" text-anchor="start">恢复默认</text>
+<rect x="60" y="272" width="600" height="40" rx="8" ry="8" fill="#2C2C2E"/>
+<text x="76" y="297" fill="#0A84FF" font-family="Microsoft YaHei UI" font-size="11" font-weight="400" text-anchor="start">运行中：改动立刻生效</text>
+<text x="60" y="344" fill="#98989D" font-family="Microsoft YaHei UI" font-size="13" font-weight="600" text-anchor="start">场景里的窗口</text>
+<rect x="60" y="360" width="600" height="56" rx="10" ry="10" fill="#2C2C2E"/>
+<text x="76" y="384" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="14" font-weight="600" text-anchor="start">VS Code</text>
+<text x="76" y="404" fill="#8E8E93" font-family="Microsoft YaHei UI" font-size="10.5" font-weight="400" text-anchor="start">Code · 打开时还原位置</text>
+<rect x="580" y="372" width="64" height="28" rx="8" ry="8" fill="#3A3A3C"/><text x="612.0" y="389.85" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="11" font-weight="400" text-anchor="middle">移除</text>
+<rect x="60" y="426" width="600" height="56" rx="10" ry="10" fill="#2C2C2E"/>
+<text x="76" y="450" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="14" font-weight="600" text-anchor="start">Chrome</text>
+<text x="76" y="470" fill="#8E8E93" font-family="Microsoft YaHei UI" font-size="10.5" font-weight="400" text-anchor="start">chrome · 打开时还原位置</text>
+<rect x="580" y="438" width="64" height="28" rx="8" ry="8" fill="#3A3A3C"/><text x="612.0" y="455.85" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="11" font-weight="400" text-anchor="middle">移除</text>
+<rect x="60" y="492" width="600" height="56" rx="10" ry="10" fill="#2C2C2E"/>
+<text x="76" y="516" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="14" font-weight="600" text-anchor="start">PowerShell</text>
+<text x="76" y="536" fill="#8E8E93" font-family="Microsoft YaHei UI" font-size="10.5" font-weight="400" text-anchor="start">WindowsTerminal · 打开时还原位置</text>
+<rect x="580" y="504" width="64" height="28" rx="8" ry="8" fill="#3A3A3C"/><text x="612.0" y="521.85" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="11" font-weight="400" text-anchor="middle">移除</text>
+<text x="60" y="572" fill="#98989D" font-family="Microsoft YaHei UI" font-size="13" font-weight="600" text-anchor="start">追加窗口（全部窗口）</text>
+<rect x="590" y="552" width="64" height="26" rx="8" ry="8" fill="#3A3A3C"/><text x="622.0" y="568.85" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="11" font-weight="400" text-anchor="middle">刷新</text>
+<rect x="60" y="588" width="600" height="52" rx="10" ry="10" fill="#2C2C2E"/>
+<text x="76" y="610" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="14" font-weight="600" text-anchor="start">资源管理器</text>
+<text x="76" y="628" fill="#8E8E93" font-family="Microsoft YaHei UI" font-size="10.5" font-weight="400" text-anchor="start">explorer · 可追加</text>
+<rect x="532" y="600" width="64" height="28" rx="8" ry="8" fill="#0A84FF"/><text x="564.0" y="617.85" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="11" font-weight="600" text-anchor="middle">追加</text>
+<rect x="60" y="648" width="600" height="52" rx="10" ry="10" fill="#2C2C2E"/>
+<text x="76" y="670" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="14" font-weight="600" text-anchor="start">微信</text>
+<text x="76" y="688" fill="#8E8E93" font-family="Microsoft YaHei UI" font-size="10.5" font-weight="400" text-anchor="start">WeChat · 可追加</text>
+<rect x="532" y="660" width="64" height="28" rx="8" ry="8" fill="#0A84FF"/><text x="564.0" y="677.85" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="11" font-weight="600" text-anchor="middle">追加</text>
+<rect x="60" y="708" width="600" height="52" rx="10" ry="10" fill="#2C2C2E"/>
+<text x="76" y="730" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="14" font-weight="600" text-anchor="start">PowerShell</text>
+<text x="76" y="748" fill="#8E8E93" font-family="Microsoft YaHei UI" font-size="10.5" font-weight="400" text-anchor="start">WindowsTerminal · 已在当前场景</text>
+<rect x="516" y="720" width="80" height="28" rx="8" ry="8" fill="#3A3A3C"/><text x="556.0" y="737.85" fill="#98989D" font-family="Microsoft YaHei UI" font-size="11" font-weight="400" text-anchor="middle">已在场景</text>
+<rect x="60" y="768" width="600" height="52" rx="10" ry="10" fill="#2C2C2E"/>
+<text x="76" y="790" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="14" font-weight="600" text-anchor="start">任务管理器</text>
+<text x="76" y="808" fill="#8E8E93" font-family="Microsoft YaHei UI" font-size="10.5" font-weight="400" text-anchor="start">Taskmgr · 属于其它场景</text>
+<rect x="516" y="780" width="80" height="28" rx="8" ry="8" fill="#3A3A3C"/><text x="556.0" y="797.85" fill="#98989D" font-family="Microsoft YaHei UI" font-size="11" font-weight="400" text-anchor="middle">在其它场景</text>
+<circle cx="644" cy="372" r="11" fill="#0A84FF" stroke="#0E0E10" stroke-width="2"/><text x="644" y="376" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="11" font-weight="700" text-anchor="middle">2</text>
+<circle cx="644" cy="600" r="11" fill="#0A84FF" stroke="#0E0E10" stroke-width="2"/><text x="644" y="604" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="11" font-weight="700" text-anchor="middle">3</text>
+<line x1="60" y1="836" x2="660" y2="836" stroke="#38383A" stroke-width="1" stroke-linecap="butt"/>
+<rect x="60" y="856" width="100" height="30" rx="8" ry="8" fill="#3A3A3C"/><text x="110.0" y="874.85" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="11" font-weight="400" text-anchor="middle">重命名场景</text>
+<rect x="172" y="856" width="100" height="30" rx="8" ry="8" fill="none" stroke="#FF453A" stroke-width="1"/>
+<text x="222" y="875" fill="#FF453A" font-family="Microsoft YaHei UI" font-size="11" font-weight="400" text-anchor="middle">删除场景</text>
+<rect x="610" y="916" width="64" height="30" rx="8" ry="8" fill="#0A84FF"/><text x="642.0" y="934.85" fill="#FFFFFF" font-family="Microsoft YaHei UI" font-size="11" font-weight="600" text-anchor="middle">完成</text>
+<rect x="677.5" y="48" width="3" height="860" rx="1.5" ry="1.5" fill="#2A2A2C"/>
+<rect x="677.5" y="48" width="3" height="300" rx="1.5" ry="1.5" fill="#5A5A5E"/>
+<text x="664" y="938" fill="#8E8E93" font-family="Microsoft YaHei UI" font-size="14" font-weight="400" text-anchor="start">◢</text>
+</svg>

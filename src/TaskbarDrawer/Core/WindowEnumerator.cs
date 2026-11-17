@@ -10,7 +10,6 @@ public sealed class WindowCandidate
     public string ClassName { get; init; }
     public uint ProcessId { get; init; }
     public NativeMethods.RECT Rect { get; init; }
-    public bool Minimized { get; init; }
 }
 
 /// <summary>
@@ -54,16 +53,7 @@ public static class WindowEnumerator
 
             // 先把不耗时的过滤全部算完；标题查询是跨线程 SendMessageTimeout（最长 120ms），
             // 能一票否决的窗口不要为它等。
-            var facts = new WindowFacts
-            {
-                Visible = true,
-                Cloaked = cloaked,
-                ToolWindow = tool,
-                OwnProcess = own,
-                HasTitle = true, // 标题最后单独查；能走到这里的窗口已经不多
-                HasArea = !rect.IsEmpty
-            };
-            if (!WindowFilter.IsCandidate(in facts)) return true;
+            if (cloaked || tool || own || rect.IsEmpty) return true;
 
             string title = NativeMethods.Title(hwnd);
             if (title.Length == 0) return true;
@@ -80,8 +70,7 @@ public static class WindowEnumerator
                 Title = title,
                 ClassName = cls,
                 ProcessId = pid,
-                Rect = rect,
-                Minimized = minimized
+                Rect = rect
             });
             return true;
         }, IntPtr.Zero);

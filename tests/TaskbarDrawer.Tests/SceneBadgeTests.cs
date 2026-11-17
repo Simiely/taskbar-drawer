@@ -57,7 +57,7 @@ public class SceneBadgeTests
         var badge = SceneBadge.Coerce(null);
         Assert.Equal(SceneBadge.DefaultColor, badge.Color);
         Assert.Equal(0, badge.Number);
-        Assert.False(badge.Right);
+        Assert.True(badge.Right);
     }
 
     [Fact]
@@ -67,6 +67,14 @@ public class SceneBadgeTests
         Assert.Equal("①", SceneBadge.GlyphOf(new SceneBadge { Number = 1 }));
         Assert.Equal("⑨", SceneBadge.GlyphOf(new SceneBadge { Number = 9 }));
         Assert.Equal("", SceneBadge.GlyphOf(null));
+    }
+
+    [Fact]
+    public void Prefix_圆点或圈号后带空格()
+    {
+        Assert.Equal("● ", SceneBadge.PrefixOf(new SceneBadge()));
+        Assert.Equal("① ", SceneBadge.PrefixOf(new SceneBadge { Number = 1 }));
+        Assert.Equal("", SceneBadge.PrefixOf(null));
     }
 
     [Fact]

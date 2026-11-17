@@ -16,11 +16,29 @@ public sealed class WorkspaceService
         public IntPtr Handle;
         public string Path;
         public string Title;
+        public string ClassName;
         public bool Visible;
         public bool ToolWindow;
+        public bool Cloaked;
+        public bool Minimized;
     }
 
+    /// <summary>不是「用户可见的应用窗口」但会被 EnumWindows 枚举到的内部类：追加列表里不列。</summary>
+    private static readonly HashSet<string> InternalWindowClasses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "IME",
+        "MSCTFIME UI",
+        "OleDdeWndClass",
+        "OperationStatusWindow",
+        "GDI+ Hook Window Class",
+        "MS_WebcheckMonitor",
+        "BluetoothNotificationAreaIconWindowClass"
+    };
+
     private readonly List<SavedGroup> _groups;
+
+    /// <summary>启动时旧数据迁移是否还没落盘（等 AppShell 订阅 SaveFailed 后再写）。</summary>
+    private bool _migrationsPending;
 
     /// <summary>启动时加载场景文件的问题（损坏 / 无权限）；正常时为 null。</summary>
     public string LoadWarning { get; }
@@ -36,9 +54,50 @@ public sealed class WorkspaceService
         // 1.6.4 及更早保存的副屏矩形多算了一次显示器原点（详见 DisplayRules.TryRepairLegacyRect）。
         // 升级后第一次启动就把这些场景修好，用户不用把每个场景重新存一遍。
         int repaired = RepairLegacyRects();
+
+        // 旧版移除记录按原样保存标题：控制台 / 终端标题常带尾随空格，和新的去重键对不上。
+        int normalized = NormalizeSuppressedKeys();
+
         Diagnostics.Info("scene",
-            $"加载场景 {_groups.Count} 个，迁移旧图标 {migrated} 个，修复旧版副屏坐标 {repaired} 个窗口");
-        if (repaired > 0 || migrated > 0) Persist();
+            $"加载场景 {_groups.Count} 个，迁移旧图标 {migrated} 个，修复旧版副屏坐标 {repaired} 个窗口，归一移除记录 {normalized} 条");
+        // 迁移结果先不落盘：构造函数里 SaveFailed 还没有订阅者，写失败会静默。
+        // 由 AppShell 订阅后调用 PersistPendingMigrations()，失败才能提示用户。
+        _migrationsPending = repaired > 0 || migrated > 0 || normalized > 0;
+    }
+
+    /// <summary>把启动时旧数据迁移的结果落盘；由 AppShell 在订阅 SaveFailed 之后调用。</summary>
+    public void PersistPendingMigrations()
+    {
+        if (!_migrationsPending) return;
+        _migrationsPending = false;
+        Persist();
+    }
+
+    /// <summary>把旧数据里的移除记录去掉两端空白：与 <see cref="SceneEdit.Key"/> 的新规则对齐。</summary>
+    private int NormalizeSuppressedKeys()
+    {
+        int changed = 0;
+        foreach (var group in _groups)
+        {
+            if (group.Suppressed == null)
+            {
+                group.Suppressed = new List<string>();
+                continue;
+            }
+
+            int before = group.Suppressed.Count;
+            for (int i = 0; i < group.Suppressed.Count; i++)
+            {
+                string value = group.Suppressed[i];
+                string trimmed = value?.Trim();
+                if (!string.Equals(trimmed, value, StringComparison.Ordinal))
+                    group.Suppressed[i] = trimmed ?? "";
+            }
+
+            group.Suppressed.RemoveAll(string.IsNullOrEmpty);
+            changed += before - group.Suppressed.Count;
+        }
+        return changed;
     }
 
     /// <summary>旧 emoji 图标 → 场景标识；返回迁移了多少个场景。</summary>
@@ -122,10 +181,11 @@ public sealed class WorkspaceService
     /// <summary>落盘失败：场景仍在内存里可用，但重启后会丢，必须让用户知道。</summary>
     public event Action<string> SaveFailed;
 
-    private void Persist()
+    private bool Persist()
     {
-        if (SavedGroupStore.Save(_groups)) return;
+        if (SavedGroupStore.Save(_groups)) return true;
         SaveFailed?.Invoke("场景保存失败（磁盘满 / 无权限），本次运行改动的场景重启后会丢失");
+        return false;
     }
 
     public IReadOnlyList<SavedGroupSummary> Summaries()
@@ -178,7 +238,8 @@ public sealed class WorkspaceService
         }
 
         string key = SceneEdit.Key(removed);
-        if (key.Length > 0 && !group.Suppressed.Contains(key)) group.Suppressed.Add(key);
+        // 同名窗口可能被逐个移除：每次都记一次，过滤时按出现次数抵消。
+        if (key.Length > 0) group.Suppressed.Add(key);
         Persist();
 
         return new SceneEditResult
@@ -187,11 +248,14 @@ public sealed class WorkspaceService
             Title = string.IsNullOrWhiteSpace(removed.Title)
                 ? string.IsNullOrWhiteSpace(removed.ProcessName) ? "窗口" : removed.ProcessName
                 : removed.Title,
-            Count = group.Windows.Count
+            Count = group.Windows.Count,
+            Removed = removed
         };
     }
 
-    /// <summary>把窗口追加进场景快照：已存在的跳过；只改快照，下次打开场景生效。</summary>
+    /// <summary>
+    /// 把一组窗口追加进场景快照：已存在的跳过；只改快照，下次打开场景生效。
+    /// </summary>
     public SceneAppendResult AppendWindows(string savedId, IReadOnlyList<SavedWindow> incoming)
     {
         var group = Find(savedId);
@@ -202,7 +266,6 @@ public sealed class WorkspaceService
         {
             return new SceneAppendResult
             {
-                Skipped = skipped,
                 Error = skipped > 0
                     ? $"这 {skipped} 个窗口已经在场景里了"
                     : "没有可追加的窗口"
@@ -210,21 +273,37 @@ public sealed class WorkspaceService
         }
 
         Persist();
-        return new SceneAppendResult { Ok = true, Added = added, Skipped = skipped };
+        return new SceneAppendResult { Ok = true, Added = added };
     }
 
-    /// <summary>把一个正在运行的其他场景追加进场景：只支持正在运行、且不是场景自己这一组。</summary>
-    public SceneAppendResult AppendRunningScene(string savedId, StashAllService stash, int groupId)
+    /// <summary>只读抓取一个窗口的保存数据（不隐藏、不改动窗口），供「追加窗口」使用。</summary>
+    public SavedWindow CaptureWindow(StashAllService stash, IntPtr hwnd)
     {
-        var group = Find(savedId);
-        if (group == null) return new SceneAppendResult { Error = "场景已经不存在" };
-        if (stash == null || groupId <= 0) return new SceneAppendResult { Error = "这个场景已经不存在了" };
-        if (stash.SavedIdOf(groupId) == savedId)
-            return new SceneAppendResult { Error = "不能把场景自己这一组追加给自己" };
+        var item = stash?.CaptureSnapshot(hwnd);
+        if (item == null) return null;
+        stash.RefreshPlacement(item);
+        return ToSaved(item);
+    }
 
-        var windows = CaptureWindows(stash, groupId);
-        if (windows.Count == 0) return new SceneAppendResult { Error = "这个场景已经没有窗口" };
-        return AppendWindows(savedId, windows);
+    /// <summary>枚举当前屏幕 / 全部屏幕上的可见窗口，供场景详情列出所有可追加的窗口。</summary>
+    public IReadOnlyList<WindowSnapshot> EnumerateWindows()
+    {
+        return TopLevelWindows()
+            .Where(w => w.Visible && w.Title.Length > 0 && !w.ToolWindow && !w.Cloaked &&
+                        !InternalWindowClasses.Contains(w.ClassName))
+            .Select(w => new WindowSnapshot
+            {
+                Handle = w.Handle,
+                // 追加列表里显示干净标题：控制台 / 终端标题常带尾随空格。
+                Title = w.Title.Trim(),
+                ProcessName = string.IsNullOrWhiteSpace(w.Path)
+                    ? ""
+                    : Path.GetFileNameWithoutExtension(w.Path),
+                ExePath = w.Path,
+                MonitorDevice = NativeMethods.MonitorDeviceOf(w.Handle),
+                Minimized = w.Minimized
+            })
+            .ToArray();
     }
 
     /// <summary>
@@ -466,27 +545,35 @@ public sealed class WorkspaceService
             if (string.IsNullOrWhiteSpace(item.ProcessPath)) continue;
 
             stash.RefreshPlacement(item);
-            var rect = item.Placement.rcNormalPosition;
-            if (rect.IsEmpty) NativeMethods.GetWindowRect(item.Handle, out rect);
-
-            windows.Add(new SavedWindow
-            {
-                ExePath = item.ProcessPath,
-                ProcessName = item.ProcessName,
-                // 快照存干净标题：旧版 emoji 前缀只在场景展开期间挂在窗口上，不属于窗口自己的名字。
-                Title = SceneTitle.Strip(item.Title),
-                Left = rect.Left,
-                Top = rect.Top,
-                Width = rect.Width,
-                Height = rect.Height,
-                MonitorDevice = item.MonitorDevice,
-                Maximized = item.Maximized
-            });
+            var saved = ToSaved(item);
+            windows.Add(saved);
             Diagnostics.Info("scene",
                 $"保存窗口 hwnd=0x{item.Handle.ToInt64():X} exe={Path.GetFileName(item.ProcessPath)} " +
-                $"「{Brief(item.Title)}」 device={item.MonitorDevice} rect={rect} max={item.Maximized}");
+                $"「{Brief(item.Title)}」 device={item.MonitorDevice} rect={saved.Left},{saved.Top} " +
+                $"{saved.Width}x{saved.Height} max={item.Maximized}");
         }
         return windows;
+    }
+
+    /// <summary>把运行时记录转成快照项；位置统一取 rcNormalPosition（工作区坐标已换算成屏幕坐标）。</summary>
+    private static SavedWindow ToSaved(StashedWindow item)
+    {
+        var rect = item.Placement.rcNormalPosition;
+        if (rect.IsEmpty) NativeMethods.GetWindowRect(item.Handle, out rect);
+
+        return new SavedWindow
+        {
+            ExePath = item.ProcessPath,
+            ProcessName = item.ProcessName,
+            // 快照存干净标题：旧版 emoji 前缀只在场景展开期间挂在窗口上，不属于窗口自己的名字。
+            Title = SceneTitle.Strip(item.Title).Trim(),
+            Left = rect.Left,
+            Top = rect.Top,
+            Width = rect.Width,
+            Height = rect.Height,
+            MonitorDevice = item.MonitorDevice,
+            Maximized = item.Maximized
+        };
     }
 
     /// <summary>启动后等主窗口出现再摆位：Process.Start 返回时窗口往往还没建好。</summary>
@@ -622,7 +709,7 @@ public sealed class WorkspaceService
         var list = new List<TopWindow>();
         var paths = new Dictionary<uint, string>();
 
-        NativeMethods.EnumWindows((hwnd, _) =>
+        NativeMethods.EnumWindows((hwnd, lParam) =>
         {
             if (WindowEnumerator.IsOwnProcessWindow(hwnd)) return true;
             if (WindowEnumerator.IsShellWindow(hwnd)) return true;
@@ -640,8 +727,11 @@ public sealed class WorkspaceService
                 Path = path,
                 // 缩掉场景前缀再比较标题，否则「同标题优先」会因为我们自己加的前缀失配。
                 Title = SceneTitle.Strip(NativeMethods.Title(hwnd)),
+                ClassName = NativeMethods.ClassName(hwnd),
                 Visible = NativeMethods.IsWindowVisible(hwnd),
-                ToolWindow = (NativeMethods.ExStyle(hwnd) & NativeMethods.WS_EX_TOOLWINDOW) != 0
+                ToolWindow = (NativeMethods.ExStyle(hwnd) & NativeMethods.WS_EX_TOOLWINDOW) != 0,
+                Cloaked = NativeMethods.IsCloaked(hwnd, out _),
+                Minimized = NativeMethods.IsIconic(hwnd)
             });
             return true;
         }, IntPtr.Zero);
@@ -681,14 +771,28 @@ public sealed class SceneEditResult
     /// <summary>移除后剩下的窗口数。</summary>
     public int Count { get; init; }
 
+    /// <summary>被移除的快照项（用于同步运行中的场景）。</summary>
+    public SavedWindow Removed { get; init; }
+
+    /// <summary>是否同时从运行中的场景摘掉了这个窗口（场景没在运行时为 false）。</summary>
+    public bool Detached { get; init; }
+
+    /// <summary>摘掉时窗口原本收在收纳区，已经放回桌面。</summary>
+    public bool Restored { get; init; }
+
     public string Error { get; init; }
 }
 
-/// <summary>往场景追加窗口 / 其它场景的运行结果。</summary>
+/// <summary>往场景追加窗口的运行结果。</summary>
 public sealed class SceneAppendResult
 {
     public bool Ok { get; init; }
+
+    /// <summary>写入快照的新窗口数。</summary>
     public int Added { get; init; }
-    public int Skipped { get; init; }
+
+    /// <summary>场景正在运行时，追加后立刻接入运行时组的窗口数。</summary>
+    public int Adopted { get; init; }
+
     public string Error { get; init; }
 }

@@ -66,6 +66,34 @@ public sealed class SavedWindowItem
     public bool Maximized { get; init; }
 }
 
+/// <summary>场景详情里「追加窗口」的一项：这块屏幕上的一个窗口及它的归属状态。</summary>
+public sealed class AppendableWindowItem
+{
+    public long Handle { get; init; }
+    public string Title { get; init; }
+    public string ProcessName { get; init; }
+    public bool Minimized { get; init; }
+
+    /// <summary>已经在当前场景里：运行中的场景看运行时组，已关闭的场景看快照。</summary>
+    public bool InScene { get; init; }
+
+    /// <summary>已经被另一个场景接管，不能直接追加。</summary>
+    public bool InOtherScene { get; init; }
+
+    public bool CanAppend => !InScene && !InOtherScene;
+}
+
+/// <summary>枚举到的一个顶层窗口（只读），用来组装追加候选。</summary>
+public sealed class WindowSnapshot
+{
+    public IntPtr Handle { get; init; }
+    public string Title { get; init; }
+    public string ProcessName { get; init; }
+    public string ExePath { get; init; }
+    public string MonitorDevice { get; init; }
+    public bool Minimized { get; init; }
+}
+
 /// <summary>场景详情：编辑器只读展示 + 由 <see cref="WorkspaceService"/> 组装。</summary>
 public sealed class SavedGroupDetail
 {

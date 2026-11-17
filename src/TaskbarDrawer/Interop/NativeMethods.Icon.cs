@@ -94,6 +94,29 @@ public static partial class NativeMethods
     }
 
     /// <summary>
+    /// 只读一个槽位里「窗口自己设过」的图标，不做窗口类图标回落。
+    /// 大 / 小图标是两个独立槽位：判断「这枚图标还是不是我们换上去的」必须按槽位分别看，
+    /// 不能只凭大图标推断小图标（Win11 任务栏读的是小图标）。
+    /// </summary>
+    public static IntPtr WindowIconSlot(IntPtr hwnd, bool big)
+    {
+        if (hwnd == IntPtr.Zero) return IntPtr.Zero;
+        if (big) return IconMessage(hwnd, WM_GETICON, (IntPtr)ICON_BIG);
+
+        // ICON_SMALL2 返回应用提供的小图标；读不到再退回 WM_SETICON 实际写入的 ICON_SMALL。
+        IntPtr icon = IconMessage(hwnd, WM_GETICON, (IntPtr)ICON_SMALL2);
+        return icon != IntPtr.Zero ? icon : IconMessage(hwnd, WM_GETICON, (IntPtr)ICON_SMALL);
+    }
+
+    /// <summary>小图标槽位里是否还是这一枚图标（ICON_SMALL2 / ICON_SMALL 任一命中即可）。</summary>
+    public static bool SmallWindowIconIs(IntPtr hwnd, IntPtr icon)
+    {
+        if (hwnd == IntPtr.Zero || icon == IntPtr.Zero) return false;
+        return IconMessage(hwnd, WM_GETICON, (IntPtr)ICON_SMALL2) == icon ||
+               IconMessage(hwnd, WM_GETICON, (IntPtr)ICON_SMALL) == icon;
+    }
+
+    /// <summary>
     /// 句柄是否还是一张有效图标。上一进程被强杀时，窗口会残留一张已销毁的 HICON；
     /// WM_GETICON 仍会返回这个非零值，直接拿去画只会得到空白。
     /// </summary>
@@ -158,6 +181,42 @@ public static partial class NativeMethods
         IntPtr ok = SendMessageTimeoutValue(
             hwnd, msg, wParam, IntPtr.Zero, SMTO_ABORTIFHUNG, 120, out IntPtr result);
         return ok == IntPtr.Zero ? IntPtr.Zero : result;
+    }
+
+    /// <summary>
+    /// 启动时清理失效的窗口图标句柄。上一进程被强杀时，它用 WM_SETICON 换上去的 HICON
+    /// 会随进程销毁，但窗口仍然引用着这个句柄，任务栏按钮就变成空白 / 残留角标。
+    /// 只清「非零且 GetIconInfo 失败」的槽位，让系统回落到窗口类 / exe 图标；
+    /// 有效图标和没有单独设过图标（0）的窗口都不碰。
+    /// </summary>
+    public static int ClearStaleWindowIcons()
+    {
+        uint self = (uint)Environment.ProcessId;
+        int cleared = 0;
+
+        EnumWindows((hwnd, _) =>
+        {
+            // 挂起的窗口跳过：读写图标要跨进程发消息，别为它们各等一次超时。
+            if (hwnd == IntPtr.Zero || IsHungAppWindow(hwnd)) return true;
+            GetWindowThreadProcessId(hwnd, out uint pid);
+            if (pid == self) return true;
+
+            if (ClearStaleIconSlot(hwnd, big: true)) cleared++;
+            if (ClearStaleIconSlot(hwnd, big: false)) cleared++;
+            return true;
+        }, IntPtr.Zero);
+
+        return cleared;
+    }
+
+    private static bool ClearStaleIconSlot(IntPtr hwnd, bool big)
+    {
+        IntPtr icon = WindowIconSlot(hwnd, big);
+        if (icon == IntPtr.Zero || IsIconValid(icon)) return false;
+
+        // 清掉窗口自己的图标，让系统回落到窗口类图标（资源管理器这类窗口会由 shell 补上）。
+        // 提权窗口可能被 UIPI 拒绝：以实际发送结果为准，别把失败也记成「已清理」。
+        return SetWindowIcon(hwnd, big, IntPtr.Zero);
     }
 
     /// <summary>

@@ -19,6 +19,7 @@ public sealed class AppShell : IDisposable
     private StashAllService _stash;
     private SceneIconPainter _sceneIcons;
     private WorkspaceService _workspace;
+    private SceneService _scenes;
     private SingleWindowMode _single;
     private HotkeyManager _hotkeys;
     private HwndSource _messageHost;
@@ -27,6 +28,7 @@ public sealed class AppShell : IDisposable
     private MainPanelWindow _panel;
     private SceneEditorWindow _sceneEditor;
     private string _sceneEditorId;
+    private HelpWindow _helpWindow;
     private RuleSet _rules;
     private RuleRunner _runner;
     private HotkeyDefinition _stashHotkey;
@@ -37,6 +39,8 @@ public sealed class AppShell : IDisposable
     private Thread _signalThread;
     private bool _disposed;
     private bool _showPending;
+    /// <summary>本轮消息里已经排过一次界面刷新：Changed 和方法末尾的刷新合并成一次重建。</summary>
+    private bool _surfaceUpdateScheduled;
     /// <summary>正在打开（等窗口出现）的场景：同一场景连点两次会重复启动实例。</summary>
     private readonly HashSet<string> _restoringScenes = new(StringComparer.Ordinal);
 
@@ -67,7 +71,7 @@ public sealed class AppShell : IDisposable
         _stash = new StashAllService(_sceneIcons);
         // Changed 是同步广播：UI 构建一旦抛异常，会沿「业务方法 → RunRules → 入口 Safe」冒泡，
         // 结果是状态已改、界面没刷、日志还记在错误的 scope 上。隔离必须在订阅处收口。
-        _stash.Changed += () => Safe("surface", UpdateSurface);
+        _stash.Changed += () => Safe("surface", RequestSurfaceUpdate);
 
         // 场景：收纳时立刻抓快照落盘，之后可一键关闭 / 还原，跨启动保留。
         _workspace = new WorkspaceService();
@@ -75,6 +79,11 @@ public sealed class AppShell : IDisposable
         // 延后一拍再提示：失败往往发生在「已收起 / 已改名」的成功提示之前，同步弹会被覆盖。
         _workspace.SaveFailed += message => Safe("workspace.save", () =>
             _dispatcher.BeginInvoke(new Action(() => Feedback(message)), DispatcherPriority.Background));
+        // 构造函数里的旧数据迁移等这里订阅完再落盘：写失败才能通过 SaveFailed 提示用户。
+        _workspace.PersistPendingMigrations();
+
+        // 场景的写操作只走这一个入口：快照与运行时组的名字 / 标识 / 关联不会各改一边。
+        _scenes = new SceneService(_workspace, _stash);
 
         // 被收纳的窗口如果被外部还原 / 关闭，计数要跟着变，不能让胶囊一直显示旧数字。
         _pruneTimer = new DispatcherTimer(DispatcherPriority.Background)
@@ -106,8 +115,10 @@ public sealed class AppShell : IDisposable
         _chips = new TaskbarChipLayer();
         _chips.Clicked += entry => Safe("chip.click", () => OnChipClicked(entry));
         _chips.RenameSceneRequested += entry => Safe("chip.renameScene", () => RenameSavedGroup(entry.SavedId));
-        _chips.CloseWindowsRequested += entry => Safe("chip.closeScene", () => CloseScene(entry.SavedId));
-        _chips.DissolveSceneRequested += entry => Safe("chip.dissolveScene", () => DissolveScene(entry.SavedId));
+        _chips.CloseWindowsRequested += entry =>
+            Safe("chip.closeScene", () => DissolveScene(entry.SavedId, keepSnapshot: true));
+        _chips.DissolveSceneRequested += entry =>
+            Safe("chip.dissolveScene", () => DissolveScene(entry.SavedId, keepSnapshot: false));
         _chips.ShowPanelRequested += () => Safe("chip.panel", OpenPanel);
 
         // 热键挂在消息专用窗口上：胶囊会随场景增删，不能拿它的句柄当宿主。
@@ -117,6 +128,14 @@ public sealed class AppShell : IDisposable
 
         // 上次如果是被强杀 / 断电结束的，这里把还处在隐藏状态的窗口交回任务栏。
         Safe("recovery", () => WindowRecovery.Recover());
+
+        // 强杀时来不及还原窗口图标：窗口上会残留一张本进程已销毁的 HICON（任务栏图标空白 /
+        // 残留圆点）。启动时统一清掉失效句柄，让系统回落到窗口类图标；有效图标不动。
+        Safe("icons.cleanup", () =>
+        {
+            int cleared = NativeMethods.ClearStaleWindowIcons();
+            if (cleared > 0) Diagnostics.Info("icons", $"启动清理失效窗口图标 {cleared} 个");
+        });
 
         _tray = new TrayService();
         // 每个入口都过 Safe：托盘 / 面板的菜单点击是用户随时会触发的路径，
@@ -155,8 +174,14 @@ public sealed class AppShell : IDisposable
         _panel.StashRequested += () => Safe("panel.stash", () => NewScene());
         _panel.SceneToggleRequested += id => Safe("panel.scene", () => ToggleScene(id));
         _panel.SceneCloseRequested += id => Safe("panel.closeScene", () => CloseRunningScene(id));
-        _panel.SavedToggleRequested += id => Safe("panel.savedToggle", () => RestoreSavedGroup(id));
+        _panel.SavedToggleRequested += id => Safe("panel.savedToggle", () => RestoreScene(id));
         _panel.SavedEditRequested += id => Safe("panel.savedEdit", () => OpenSceneEditor(id));
+        _panel.HelpRequested += () => Safe("panel.help", ShowHelp);
+        // 详情窗跟着面板走：面板收起（✕ / Esc）时一起关掉，不留一个孤立的侧窗。
+        _panel.IsVisibleChanged += (_, e) =>
+        {
+            if (!(bool)e.NewValue) Safe("panel.hide", CloseSceneEditor);
+        };
         _panel.ExpandLatestRequested += () => Safe("panel.expandLatest", () => ExpandLatest());
         _panel.ExpandAllRequested += () => Safe("panel.expandAll", () => ExpandAll());
         _panel.SingleWindowRequested += value => Safe("panel.singleWindow", () => SetSingleWindowMode(value));
@@ -234,7 +259,7 @@ public sealed class AppShell : IDisposable
         uint modifiers, uint virtualKey, HotkeyDefinition fallback, out string error)
     {
         error = null;
-        var candidate = new HotkeyDefinition(fallback.Id, fallback.Name, modifiers, virtualKey);
+        var candidate = new HotkeyDefinition(fallback.Id, modifiers, virtualKey);
         var registration = _hotkeys.Register(candidate);
         if (registration.Success) return candidate;
 
@@ -320,7 +345,7 @@ public sealed class AppShell : IDisposable
         runner.Do(RuleCatalog.ActionToggleScene, (facts, _) => ToggleScene(facts.GroupId));
         runner.Do(RuleCatalog.ActionRestoreScene, (facts, _) =>
         {
-            if (!string.IsNullOrEmpty(facts.SavedId)) RestoreSavedGroup(facts.SavedId);
+            if (!string.IsNullOrEmpty(facts.SavedId)) RestoreScene(facts.SavedId);
         });
         runner.Do(RuleCatalog.ActionOpenPanel, (_, _) => OpenPanel());
         runner.Do(RuleCatalog.ActionToast, (facts, step) =>
@@ -355,7 +380,7 @@ public sealed class AppShell : IDisposable
     {
         if (_disposed) return;
 
-        var candidate = new HotkeyDefinition(_stashHotkey.Id, _stashHotkey.Name, modifiers, virtualKey);
+        var candidate = new HotkeyDefinition(_stashHotkey.Id, modifiers, virtualKey);
         var registration = _hotkeys.Change(candidate);
         if (!registration.Success)
         {
@@ -372,7 +397,7 @@ public sealed class AppShell : IDisposable
         _settings.Save();
         _panel.ApplyHotkeyResult(true, candidate.Gesture, null);
         Feedback($"快捷键已更新 · {candidate.Gesture}");
-        UpdateSurface();
+        RequestSurfaceUpdate();
     }
 
     /// <summary>统一的用户反馈：底部浮窗弹一条，随后自动消失；托盘提示同步更新。</summary>
@@ -397,14 +422,21 @@ public sealed class AppShell : IDisposable
         }
 
         _single.SuspendTemporarily();
-        int hidden = 0;
-        // 不按「场景归属屏」整组过滤：场景可能有窗口被拖到另一块屏，
-        // 交给 StashGroup 按屏收紧，跨屏成员留在原屏幕。
-        foreach (var group in _stash.Groups().Where(g => g.Expanded).ToArray())
-            hidden += _stash.StashGroup(group.Id, monitorDevice);
+        int hidden = StashExpandedGroups(monitorDevice);
 
         Feedback(hidden > 0 ? $"已收起 {hidden} 个窗口" : "这块屏幕上没有可收起的窗口", monitorDevice);
-        UpdateSurface();
+        RequestSurfaceUpdate();
+    }
+
+    /// <summary>把这块屏幕上已展开的场景收回胶囊；keepGroupId 非 0 时保留指定组。</summary>
+    private int StashExpandedGroups(string monitorDevice, int keepGroupId = 0)
+    {
+        int hidden = 0;
+        foreach (var group in _stash.Groups()
+                     .Where(g => g.Expanded && g.Id != keepGroupId)
+                     .ToArray())
+            hidden += _stash.StashGroup(group.Id, monitorDevice);
+        return hidden;
     }
 
     private void NewScene(string monitorDevice = null)
@@ -424,15 +456,13 @@ public sealed class AppShell : IDisposable
         if (count > 0)
         {
             // 收纳即建场景：每次收起都立刻落一份快照，之后胶囊 / 面板只认场景。
-            var saved = _workspace.SaveFrom(_stash, groupId, null);
+            var saved = _scenes.New(groupId);
             if (saved == null)
             {
-                _stash.Release(groupId);
                 Feedback("这些窗口读不到程序路径，无法存成场景", monitorDevice);
             }
             else
             {
-                _stash.LinkSaved(groupId, saved.Id, saved.Name, saved.Badge);
                 Feedback(WithElevationNote(
                     $"{BadgeText(saved.Badge)}已收起 {count} 个窗口 · 新建场景「{saved.Name}」"), monitorDevice);
             }
@@ -445,7 +475,7 @@ public sealed class AppShell : IDisposable
         {
             Feedback("这块屏幕上没有可收起的窗口", monitorDevice);
         }
-        UpdateSurface();
+        RequestSurfaceUpdate();
     }
 
     /// <summary>
@@ -461,12 +491,9 @@ public sealed class AppShell : IDisposable
         string monitor = _stash.MonitorOfGroup(keepGroupId);
         if (monitor == null) return 0;
 
-        int hidden = 0;
         // 不按「场景归属屏」整组过滤：一个场景可能同时有窗口在两块屏上（旧快照 / 用户拖过），
         // StashGroup 按屏收紧，只收当前屏的成员，另一块屏的窗口不会跟着消失。
-        foreach (var group in _stash.Groups().Where(g => g.Id != keepGroupId && g.Expanded).ToArray())
-            hidden += _stash.StashGroup(group.Id, monitor);
-        return hidden;
+        return StashExpandedGroups(monitor, keepGroupId);
     }
 
     /// <summary>收纳成功但漏掉了管理员窗口时，在提示里补一句原因，避免用户以为程序坏了。</summary>
@@ -494,10 +521,10 @@ public sealed class AppShell : IDisposable
         Feedback(shown > 0
             ? $"{BadgeText(BadgeOfGroup(_stash.LastExpandedGroupId))}已展开「{SceneLabel(_stash.LastExpandedGroupId)}」· {shown} 个窗口"
             : "这块屏幕上没有已收起的场景", monitorDevice);
-        UpdateSurface();
+        RequestSurfaceUpdate();
     }
 
-    /// <summary>点胶囊 / 面板场景行：已收起 → 展开，已展开 → 收起（场景始终保留）。</summary>
+    /// <summary>点胶囊 / 面板场景行：已收起 → Restore，已展开 → Stash（场景始终保留）。</summary>
     private void ToggleScene(int groupId)
     {
         if (_disposed) return;
@@ -505,19 +532,37 @@ public sealed class AppShell : IDisposable
         string label = SceneLabel(groupId);
         // 提示跟着场景走：在任务栏胶囊上操作副屏场景时，提示出现在副屏而不是主屏。
         string monitor = _stash.MonitorOfGroup(groupId);
-        var (expanded, count) = _stash.ToggleGroup(groupId);
-        if (count == 0)
-            Feedback($"「{label}」已经不存在", monitor);
-        else if (expanded)
+        var summary = _stash.Groups().FirstOrDefault(g => g.Id == groupId);
+        if (summary == null)
         {
-            int collapsed = CollapseOtherScenes(groupId);
-            Feedback(collapsed > 0
-                ? $"已展开「{label}」· {count} 个窗口 · 其它场景已收起"
-                : $"已展开「{label}」· {count} 个窗口", monitor);
+            Feedback($"「{label}」已经不存在", monitor);
+            RequestSurfaceUpdate();
+            return;
+        }
+
+        if (summary.Expanded)
+        {
+            int count = _scenes.Stash(groupId);
+            Feedback(count > 0
+                ? $"已收起「{label}」· {count} 个窗口"
+                : $"「{label}」已经不存在", monitor);
         }
         else
-            Feedback($"已收起「{label}」· {count} 个窗口", monitor);
-        UpdateSurface();
+        {
+            int count = _scenes.Restore(groupId);
+            if (count == 0)
+            {
+                Feedback($"「{label}」已经不存在", monitor);
+            }
+            else
+            {
+                int collapsed = CollapseOtherScenes(groupId);
+                Feedback(collapsed > 0
+                    ? $"已展开「{label}」· {count} 个窗口 · 其它场景已收起"
+                    : $"已展开「{label}」· {count} 个窗口", monitor);
+            }
+        }
+        RequestSurfaceUpdate();
     }
 
     private string SceneLabel(int groupId)
@@ -534,11 +579,7 @@ public sealed class AppShell : IDisposable
     }
 
     /// <summary>提示文字里的标识前缀（① / ● + 空格）。</summary>
-    private static string BadgeText(SceneBadge badge)
-    {
-        string glyph = SceneBadge.GlyphOf(badge);
-        return glyph.Length == 0 ? "" : glyph + " ";
-    }
+    private static string BadgeText(SceneBadge badge) => SceneBadge.PrefixOf(badge);
 
     /// <summary>面板场景行的「关闭窗口」：有关联快照就按场景关闭，否则兜底直接关这个场景的窗口。</summary>
     private void CloseRunningScene(int groupId)
@@ -547,44 +588,13 @@ public sealed class AppShell : IDisposable
         string savedId = _stash.SavedIdOf(groupId);
         if (savedId != null)
         {
-            CloseScene(savedId);
+            DissolveScene(savedId, keepSnapshot: true);
             return;
         }
 
-        int closed = _workspace.Close(_stash, groupId);
+        int closed = _scenes.CloseLegacy(groupId);
         Feedback(closed > 0 ? $"已关闭 {closed} 个窗口" : "没有可关闭的窗口", _stash.MonitorOfGroup(groupId));
-        UpdateSurface();
-    }
-
-    /// <summary>
-    /// 关闭场景里的窗口（WM_CLOSE，等价逐个点 ×）：只关这个场景自己的窗口，
-    /// 胶囊留下来显示已关闭；之后点它是重新打开并摆回位置。
-    /// </summary>
-    private void CloseScene(string savedId)
-    {
-        if (_disposed) return;
-        var saved = _workspace.Find(savedId);
-        if (saved == null)
-        {
-            UpdateSurface();
-            return;
-        }
-
-        int groupId = _stash.GroupIdOfSaved(savedId);
-        if (groupId == 0)
-        {
-            Feedback($"「{saved.Name}」已经没有打开的窗口", _workspace.MonitorOfSaved(saved));
-            return;
-        }
-
-        // 关之前按当前位置再存一次，下次打开才是用户最后摆放的样子。
-        _workspace.UpdateSnapshot(saved, _stash, groupId);
-        string monitor = _stash.MonitorOfGroup(groupId) ?? _workspace.MonitorOfSaved(saved);
-        int closed = _workspace.Close(_stash, groupId);
-        Feedback(closed > 0
-            ? $"{BadgeText(saved.Badge)}已关闭「{saved.Name}」· {closed} 个窗口"
-            : $"「{saved.Name}」没有可关闭的窗口", monitor);
-        UpdateSurface();
+        RequestSurfaceUpdate();
     }
 
     private void ExpandAll(string monitorDevice = null)
@@ -604,7 +614,7 @@ public sealed class AppShell : IDisposable
         Feedback(shown > 0
             ? $"已展开这块屏幕上的全部场景 · {shown} 个窗口"
             : "这块屏幕上没有已收起的场景", monitorDevice);
-        UpdateSurface();
+        RequestSurfaceUpdate();
     }
 
     /// <summary>左键点胶囊：把点击当成规则的一个入口，具体做什么由固定规则决定。</summary>
@@ -624,14 +634,14 @@ public sealed class AppShell : IDisposable
     /// 打开已关闭的场景：启动软件并摆回保存位置；已经在跑的窗口直接挪回去，不重复开实例。
     /// 拉起来的窗口会接入运行时组，之后这个场景和普通场景一样收起 / 展开。
     /// </summary>
-    private void RestoreSavedGroup(string id)
+    private void RestoreScene(string id)
     {
         if (_disposed) return;
         var group = _workspace.Find(id);
         if (group == null)
         {
             Feedback("场景已经不存在");
-            UpdateSurface();
+            RequestSurfaceUpdate();
             return;
         }
 
@@ -646,7 +656,7 @@ public sealed class AppShell : IDisposable
         var managed = new HashSet<long>(_stash.Items.Select(i => i.Handle.ToInt64()));
         try
         {
-            var (moved, launched, busy, failed) = _workspace.Restore(
+            var (moved, launched, busy, failed) = _scenes.Restore(
                 group,
                 managed,
                 hwnd => _stash.Adopt(hwnd, group.Id, group.Name, group.Badge),
@@ -663,7 +673,7 @@ public sealed class AppShell : IDisposable
             if (busy > 0) message += $"（{busy} 个窗口已在其它场景，未重复打开）";
             if (failed > 0) message += $"（{failed} 个窗口未能接入场景）";
             Feedback(message, _workspace.MonitorOfSaved(group));
-            UpdateSurface();
+            RequestSurfaceUpdate();
         }
         catch
         {
@@ -676,7 +686,7 @@ public sealed class AppShell : IDisposable
     private void AdoptRestoredWindow(SavedGroup group, IntPtr hwnd)
     {
         if (_disposed) return;
-        if (_stash.Adopt(hwnd, group.Id, group.Name, group.Badge)) UpdateSurface();
+        if (_stash.Adopt(hwnd, group.Id, group.Name, group.Badge)) RequestSurfaceUpdate();
     }
 
     private void RenameSavedGroup(string id, Window owner = null)
@@ -692,13 +702,10 @@ public sealed class AppShell : IDisposable
             string name = TextPromptWindow.Ask("重命名场景", "这个名字会显示在任务栏胶囊上", group.Name, owner);
             if (name == null) return;
 
-            if (_workspace.Rename(id, name))
-            {
-                // 运行时组上的名字同步刷新，胶囊文字立刻变。
-                _stash.RenameSaved(id, name);
+            // 运行时组上的名字同步刷新，胶囊文字立刻变。
+            if (_scenes.Rename(id, name))
                 Feedback($"已重命名为「{name}」");
-            }
-            UpdateSurface();
+            RequestSurfaceUpdate();
         }));
     }
 
@@ -710,11 +717,10 @@ public sealed class AppShell : IDisposable
         if (group == null) return;
 
         var normalized = SceneBadge.Coerce(badge);
-        if (!_workspace.SetBadge(id, normalized)) return;
-        // 正在运行的组同步重画窗口图标；收起的成员等展开时再挂。
-        _stash.SetBadge(id, normalized);
+        // 快照、运行时组、已展开成员窗口的图标一起更新；收起的成员等展开时再挂。
+        if (!_scenes.SetBadge(id, normalized)) return;
         Feedback($"{BadgeText(normalized)}场景标识已更新");
-        UpdateSurface();
+        RequestSurfaceUpdate();
     }
 
     /// <summary>
@@ -765,45 +771,56 @@ public sealed class AppShell : IDisposable
     /// <summary>调色板变化后统一刷新：场景快照、运行中窗口图标、编辑器色块与胶囊。</summary>
     private void ApplyPaletteRemap(Func<string, string> remap)
     {
-        _workspace.RemapBadgeColors(remap);
-        _stash.RemapBadgeColors(remap);
+        _scenes.RemapBadgeColors(remap);
         _sceneEditor?.SetPalette(_settings.BadgePalette());
         RefreshSceneEditor();
-        UpdateSurface();
+        RequestSurfaceUpdate();
     }
 
     /// <summary>
-    /// 删除场景：删掉快照，并把这个场景的窗口交回桌面（不关闭、不移动已经可见的窗口）。
+    /// 解除场景：keepSnapshot = true 关闭窗口（快照保留，胶囊转为已关闭）；
+    /// false 删除场景（窗口交回桌面，快照移除）。
     /// </summary>
-    private void DissolveScene(string id)
+    private void DissolveScene(string id, bool keepSnapshot)
     {
         if (_disposed) return;
-        var group = _workspace.Find(id);
-        if (group == null)
+
+        var result = _scenes.Dissolve(id, keepSnapshot);
+        if (!result.Found)
         {
-            UpdateSurface();
+            RequestSurfaceUpdate();
             return;
         }
 
-        int groupId = _stash.GroupIdOfSaved(id);
-        int released = groupId != 0 ? _stash.Release(groupId) : 0;
-
-        if (_workspace.Delete(id))
+        string badge = BadgeText(result.Badge);
+        if (keepSnapshot)
         {
-            string note = groupId != 0 ? " · 窗口留在桌面上" : "";
-            Feedback($"{BadgeText(group.Badge)}已删除场景「{group.Name}」{note}");
+            if (result.GroupId == 0)
+                Feedback($"「{result.Name}」已经没有打开的窗口", result.MonitorDevice);
+            else
+                Feedback(result.Closed > 0
+                    ? $"{badge}已关闭「{result.Name}」· {result.Closed} 个窗口"
+                    : $"「{result.Name}」没有可关闭的窗口", result.MonitorDevice);
+            RequestSurfaceUpdate();
+            return;
         }
-        else if (released > 0)
+
+        if (result.SnapshotDeleted)
+        {
+            string note = result.GroupId != 0 ? " · 窗口留在桌面上" : "";
+            Feedback($"{badge}已删除场景「{result.Name}」{note}");
+        }
+        else if (result.Released > 0)
         {
             // 快照已经不在了：窗口已经交回桌面，界面刷新即可。
-            Feedback($"窗口已交回桌面（{released} 个被还原）");
+            Feedback($"窗口已交回桌面（{result.Released} 个被还原）");
         }
-        UpdateSurface();
+        RequestSurfaceUpdate();
     }
 
     /// <summary>
-    /// 场景编辑：独立小窗，移除 / 追加 / 重命名 / 删除都在里面完成。
-    /// 修改只改保存的快照，正在运行的窗口不关也不动，下次打开场景才生效。
+    /// 场景详情：贴在主面板旁边的非模态窗口，移除 / 追加 / 重命名 / 删除都在里面完成。
+    /// 移除和追加会同时同步运行中的场景，不需要关掉再打开。
     /// </summary>
     private void OpenSceneEditor(string savedId)
     {
@@ -811,24 +828,33 @@ public sealed class AppShell : IDisposable
         if (_workspace.Detail(savedId) == null)
         {
             Feedback("场景已经不存在");
-            UpdateSurface();
+            RequestSurfaceUpdate();
             return;
         }
 
+        // 已经开着：直接把内容切到新场景并置前，不再叠一个新窗口。
         if (_sceneEditor != null)
         {
-            try { _sceneEditor.Activate(); } catch { /* 窗口可能正在关闭 */ }
+            _sceneEditorId = savedId;
             RefreshSceneEditor();
+            try { _sceneEditor.Activate(); } catch { /* 窗口可能正在关闭 */ }
+            if (_panel != null) _sceneEditor.PlaceBeside(_panel);
             return;
         }
 
         var editor = new SceneEditorWindow();
         editor.SetPalette(_settings.BadgePalette());
-        editor.RemoveWindowRequested += index => Safe("sceneEditor.remove", () => RemoveSceneWindow(savedId, index));
-        editor.AppendSceneRequested += groupId => Safe("sceneEditor.append", () => AppendRunningSceneToScene(savedId, groupId));
-        editor.RenameRequested += () => Safe("sceneEditor.rename", () => RenameSavedGroup(savedId, editor));
-        editor.DeleteRequested += () => Safe("sceneEditor.delete", () => DissolveScene(savedId));
-        editor.BadgeChangeRequested += badge => Safe("sceneEditor.badge", () => SetSceneBadge(savedId, badge));
+        editor.RemoveWindowRequested += index =>
+            Safe("sceneEditor.remove", () => RemoveSceneWindow(_sceneEditorId, index));
+        editor.AppendWindowRequested += handle =>
+            Safe("sceneEditor.append", () => AppendWindowToScene(_sceneEditorId, handle));
+        editor.RefreshListRequested += () => Safe("sceneEditor.refreshList", RefreshSceneEditor);
+        editor.RenameRequested += () =>
+            Safe("sceneEditor.rename", () => RenameSavedGroup(_sceneEditorId, editor));
+        editor.DeleteRequested += () =>
+            Safe("sceneEditor.delete", () => DissolveScene(_sceneEditorId, keepSnapshot: false));
+        editor.BadgeChangeRequested += badge =>
+            Safe("sceneEditor.badge", () => SetSceneBadge(_sceneEditorId, badge));
         editor.PaletteColorRequested += (index, color) =>
             Safe("sceneEditor.paletteColor", () => ChangePaletteColor(index, color));
         editor.PaletteResetRequested += () => Safe("sceneEditor.paletteReset", ResetBadgePalette);
@@ -845,30 +871,30 @@ public sealed class AppShell : IDisposable
 
         try
         {
-            // 隐藏的窗口不能当 Owner；只有面板真的可见时才挂，否则让编辑器居中到屏幕。
+            // 隐藏的窗口不能当 Owner；面板可见时挂上，保证详情始终跟着面板的层级。
             if (_panel != null && _panel.IsVisible) editor.Owner = _panel;
-            editor.ShowDialog();
-
-            // 正常关闭时 Closed 已经清过；这里兜底，避免留下指向已关闭窗口的引用。
-            if (ReferenceEquals(_sceneEditor, editor))
-            {
-                _sceneEditor = null;
-                _sceneEditorId = null;
-            }
+            editor.Show();
+            editor.UpdateLayout();
+            if (_panel != null) editor.PlaceBeside(_panel);
         }
         catch (Exception ex)
         {
             Diagnostics.Write("scene editor", ex);
-            if (ReferenceEquals(_sceneEditor, editor))
-            {
-                _sceneEditor = null;
-                _sceneEditorId = null;
-            }
-            try { editor.Close(); } catch { }
+            CloseSceneEditor();
         }
     }
 
-    /// <summary>把最新场景详情 / 正在运行的其他场景推给编辑器；场景已被删除时关闭它。</summary>
+    /// <summary>关闭详情窗；先摘引用再关，避免 Closed 里再次走刷新。</summary>
+    private void CloseSceneEditor()
+    {
+        var editor = _sceneEditor;
+        _sceneEditor = null;
+        _sceneEditorId = null;
+        if (editor == null) return;
+        try { editor.Close(); } catch { /* 窗口可能已经在关闭 */ }
+    }
+
+    /// <summary>把最新场景详情 + 全部可追加窗口推给详情窗；场景被删除时自动关闭。</summary>
     private void RefreshSceneEditor()
     {
         var editor = _sceneEditor;
@@ -877,19 +903,130 @@ public sealed class AppShell : IDisposable
         var detail = _workspace.Detail(_sceneEditorId);
         if (detail == null)
         {
-            // 先摘掉引用再关闭：Closed 里不会再走刷新，避免递归。
-            _sceneEditor = null;
-            _sceneEditorId = null;
-            try { editor.Close(); } catch { }
+            CloseSceneEditor();
             return;
         }
 
-        // 只把同一块屏幕上的运行场景给编辑器：跨屏追加会把「一块屏一个场景」的约束破掉。
+        int runningGroupId = _stash.GroupIdOfSaved(detail.Id);
+        editor.Reload(detail, runningGroupId, BuildAppendableWindows(detail, runningGroupId));
+    }
+
+    /// <summary>
+    /// 这块屏幕上的全部窗口：可追加的排在前面；已在当前场景 / 属于其它场景的也列出来，
+    /// 只是按钮禁用并说明原因。场景没有窗口时按全部屏幕处理。
+    /// </summary>
+    private IReadOnlyList<AppendableWindowItem> BuildAppendableWindows(SavedGroupDetail detail, int runningGroupId)
+    {
         string monitor = SceneMonitor(detail.Id);
-        var running = _stash.Groups()
-            .Where(g => monitor == null || _stash.MonitorOfGroup(g.Id) == monitor)
+        var savedKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var window in detail.Windows)
+        {
+            string key = SceneEdit.Key(window.ExePath, window.Title);
+            if (key.Length > 0) savedKeys.Add(key);
+        }
+
+        var list = new List<AppendableWindowItem>();
+        foreach (var window in _workspace.EnumerateWindows())
+        {
+            if (monitor != null && window.MonitorDevice != null &&
+                !string.Equals(monitor, window.MonitorDevice, StringComparison.Ordinal))
+                continue;
+
+            int owner = _stash.GroupIdOf(window.Handle);
+            bool inOtherScene = owner != 0 && owner != runningGroupId;
+            bool inScene = !inOtherScene &&
+                           (owner == runningGroupId && owner != 0 ||
+                            owner == 0 && runningGroupId == 0 &&
+                            savedKeys.Contains(SceneEdit.Key(window.ExePath, window.Title)));
+
+            list.Add(new AppendableWindowItem
+            {
+                Handle = window.Handle.ToInt64(),
+                Title = window.Title,
+                ProcessName = window.ProcessName,
+                Minimized = window.Minimized,
+                InScene = inScene,
+                InOtherScene = inOtherScene
+            });
+        }
+
+        return list
+            .OrderBy(item => item.CanAppend ? 0 : 1)
+            .ThenBy(item => item.ProcessName)
+            .ThenBy(item => item.Title)
             .ToArray();
-        editor.Reload(detail, running, _stash.GroupIdOfSaved(detail.Id));
+    }
+
+    /// <summary>从场景快照移除一个窗口；场景正在运行时同步从运行时组摘掉。</summary>
+    private void RemoveSceneWindow(string savedId, int index)
+    {
+        if (string.IsNullOrEmpty(savedId)) return;
+
+        var result = _scenes.RemoveWindow(savedId, index);
+        if (!result.Ok)
+        {
+            Feedback(result.Error);
+            RequestSurfaceUpdate();
+            return;
+        }
+
+        string message = $"已从场景移除「{result.Title}」· 还剩 {result.Count} 个窗口";
+        if (result.Detached) message += result.Restored ? " · 窗口已放回桌面" : " · 窗口留在桌面";
+        Feedback(message);
+        RequestSurfaceUpdate();
+    }
+
+    /// <summary>把一个窗口追加进场景；场景正在运行时立刻接入运行时组。</summary>
+    private void AppendWindowToScene(string savedId, long handle)
+    {
+        if (string.IsNullOrEmpty(savedId)) return;
+
+        var result = _scenes.AppendWindows(savedId, new[] { handle });
+        if (!result.Ok)
+        {
+            Feedback(result.Error);
+            RequestSurfaceUpdate();
+            return;
+        }
+
+        var parts = new List<string>();
+        if (result.Added > 0) parts.Add($"已追加 {result.Added} 个窗口");
+        if (result.Adopted > 0) parts.Add("已接入当前场景");
+        if (result.Added == 0 && result.Adopted == 0) parts.Add("窗口已经在场景里");
+        Feedback(string.Join(" · ", parts));
+        RequestSurfaceUpdate();
+    }
+
+    /// <summary>打开说明窗口（软件截图 + 标注）；已经开着就置前。</summary>
+    private void ShowHelp()
+    {
+        if (_disposed) return;
+        if (_helpWindow != null)
+        {
+            try { _helpWindow.Activate(); } catch { /* 窗口可能正在关闭 */ }
+            return;
+        }
+
+        var help = new HelpWindow();
+        help.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_helpWindow, help)) _helpWindow = null;
+        };
+        _helpWindow = help;
+
+        try
+        {
+            if (_panel != null && _panel.IsVisible) help.Owner = _panel;
+            help.Show();
+            help.UpdateLayout();
+            if (_panel != null) help.PlaceOnMonitorOf(_panel);
+        }
+        catch (Exception ex)
+        {
+            Diagnostics.Write("help", ex);
+            if (ReferenceEquals(_helpWindow, help)) _helpWindow = null;
+            try { help.Close(); } catch { }
+        }
     }
 
     /// <summary>场景属于哪块屏幕：运行组优先用实测，已关闭的用快照记录。</summary>
@@ -899,48 +1036,6 @@ public sealed class AppShell : IDisposable
         if (saved == null) return null;
         int groupId = _stash.GroupIdOfSaved(savedId);
         return groupId != 0 ? _stash.MonitorOfGroup(groupId) : _workspace.MonitorOfSaved(saved);
-    }
-
-    /// <summary>从场景快照移除一个窗口（不关闭当前正在运行的窗口）。</summary>
-    private void RemoveSceneWindow(string savedId, int index)
-    {
-        var result = _workspace.RemoveWindow(savedId, index);
-        if (!result.Ok)
-        {
-            Feedback(result.Error);
-            UpdateSurface();
-            return;
-        }
-
-        Feedback($"已从场景移除「{result.Title}」· 还剩 {result.Count} 个窗口");
-        UpdateSurface();
-    }
-
-    /// <summary>把一个正在运行的其他场景追加进场景快照（下次打开场景生效）。</summary>
-    private void AppendRunningSceneToScene(string savedId, int groupId)
-    {
-        // 场景归属一块屏：把另一块屏的运行场景并进来，之后收起 / 展开就会跨屏。
-        string target = SceneMonitor(savedId);
-        string source = _stash.MonitorOfGroup(groupId);
-        if (target != null && source != null && target != source)
-        {
-            Feedback("不能把另一块屏幕上的场景加进来");
-            UpdateSurface();
-            return;
-        }
-
-        var result = _workspace.AppendRunningScene(savedId, _stash, groupId);
-        if (!result.Ok)
-        {
-            Feedback(result.Error);
-            UpdateSurface();
-            return;
-        }
-
-        string message = $"已追加 {result.Added} 个窗口到场景";
-        if (result.Skipped > 0) message += $"（{result.Skipped} 个已在场景里）";
-        Feedback(message);
-        UpdateSurface();
     }
 
     /// <summary>打开主面板（已经打开就置前）：托盘双击 / 胶囊「打开主面板」/ 二次启动都走这里。</summary>
@@ -986,12 +1081,10 @@ public sealed class AppShell : IDisposable
     private void SetSceneIconSizes(double? appIconScale, double? badgeScale)
     {
         double appIcon = appIconScale.HasValue
-            ? Math.Round(Math.Clamp(appIconScale.Value, SceneIconPainter.MinAppIconScale,
-                SceneIconPainter.MaxAppIconScale), 2)
+            ? Math.Round(SceneIconMetrics.ClampAppIconScale(appIconScale.Value), 2)
             : _settings.SceneAppIconSize;
         double badge = badgeScale.HasValue
-            ? Math.Round(Math.Clamp(badgeScale.Value, SceneIconPainter.MinBadgeScale,
-                SceneIconPainter.MaxBadgeScale), 2)
+            ? Math.Round(SceneIconMetrics.ClampBadgeScale(badgeScale.Value), 2)
             : _settings.SceneBadgeSize;
 
         // 滑块每一格都会回调：值没变就什么都不做，别跟着重画图标。
@@ -1004,6 +1097,29 @@ public sealed class AppShell : IDisposable
         _sceneIcons.AppIconScale = appIcon;
         _sceneIcons.BadgeScale = badge;
         _stash.RefreshSceneIcons();
+    }
+
+    /// <summary>
+    /// 请求刷新界面：一次操作里 Changed 事件和方法末尾的刷新可能各触发一次，
+    /// 合并到下一轮 Dispatcher，只重建一次面板 / 托盘 / 胶囊。
+    /// </summary>
+    private void RequestSurfaceUpdate()
+    {
+        if (_disposed || _surfaceUpdateScheduled) return;
+        _surfaceUpdateScheduled = true;
+        try
+        {
+            _dispatcher.BeginInvoke(new Action(() =>
+            {
+                _surfaceUpdateScheduled = false;
+                if (!_disposed) Safe("surface", UpdateSurface);
+            }), DispatcherPriority.Background);
+        }
+        catch
+        {
+            // 退出过程中 Dispatcher 可能已经关闭：放弃这次刷新即可。
+            _surfaceUpdateScheduled = false;
+        }
     }
 
     private void UpdateSurface()
@@ -1019,7 +1135,7 @@ public sealed class AppShell : IDisposable
         // 面板 / 托盘只列场景：dormant 是只剩快照、没有窗口的那些。
         var dormant = ChipProjection.Dormant(groups, _workspace.Summaries());
         _chips.Sync(ChipProjection.Chips(groups, dormant));
-        _tray.SetScenes(groups, _stash.Count);
+        _tray.SetScenes(groups);
         _tray.SetHotkeys(_stashHotkey.Gesture);
         _panel.SetScenes(groups, dormant, _stash.Count);
         _panel.SetHotkeyText(_stashHotkey.Gesture);
@@ -1124,8 +1240,9 @@ public sealed class AppShell : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        // 场景编辑是模态窗口：不先关掉，后面的关闭流程会卡在它的消息循环里。
+        // 场景详情 / 说明是独立窗口：不先关掉，后面的关闭流程会卡在它们的消息循环里。
         try { _sceneEditor?.Close(); } catch { /* 退出路径不再抛 */ }
+        try { _helpWindow?.Close(); } catch { /* 退出路径不再抛 */ }
 
         _pruneTimer?.Stop();
         try { _signalStop?.Set(); } catch { }
