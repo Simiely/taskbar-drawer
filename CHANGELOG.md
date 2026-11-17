@@ -1,5 +1,14 @@
 # CHANGELOG.md · 版本历史
 
+## 文档维护 · 2026-11-17
+
+升级到 **repo-kit 2.6.0 / 单项目规范 2.1.2**，不改产品代码，不产生版本号。
+
+- 重装 kit，`schema/kit.lock.json` 写入 `v2.6.0 / spec 2.1.2`
+- `schema/taxonomy.json` 首次把 `DEVELOPMENT.md` 与 `CHANGELOG.md` 纳入扫描
+  （此前不在 `include`，等于四件套里这两份从未被检查）
+- 验收：`REPO CHECK: PASS`（ERROR=0、WARN=0、pages=2）、`GENERATE CHECK: PASS`
+
 ## 1.7.0 — 2026-11-17
 
 主面板与场景详情这一轮：顶部整块可拖、说明窗口独立、详情改到面板旁并支持窗内滚动 / 手动拉高；同时修复场景移除不生效，追加改为列出这块屏幕上的全部窗口。
