@@ -71,7 +71,7 @@ python tools/repo-kit/generate.py --root . --check
 
 - 页面：2（critical=0）
 - 按 type：reference=2
-- 词表版本：2.6.0
+- 词表版本：2.7.0
 
 ## 详细规则
 
