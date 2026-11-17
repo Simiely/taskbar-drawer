@@ -29,11 +29,8 @@ def load_pages(root: Path) -> tuple[dict, dict[str, dict]]:
     ignored = tax.get("ignore", [])
     included = tax.get("include") or []
     generated = set(tax.get("generated_files", []))
-    entry_files = set(tax.get("entry_files", []))
-    context_files = tax.get("context_files") or []
-    exempt_basenames = tax.get("exempt_basenames") or []
+    exempt_names, exempt_paths = cr.resolve_exempt(tax)
     skills_glob = (tax.get("skills") or {}).get("glob")
-    link_only_files = tax.get("link_only_files") or []
     pages: dict[str, dict] = {}
     for p in sorted(root.rglob("*.md")):
         rel = p.relative_to(root).as_posix()
@@ -41,13 +38,13 @@ def load_pages(root: Path) -> tuple[dict, dict[str, dict]]:
             continue
         if cr.is_ignored(rel, ignored) or p.name.startswith("_") or p.name.endswith(".template.md"):
             continue
-        if cr.is_generated(rel, generated) or rel in entry_files:
+        if cr.is_generated(rel, generated):
             continue
         if skills_glob and cr.fnmatch.fnmatch(rel, str(skills_glob)):
             continue
-        if any(cr.fnmatch.fnmatch(rel, pat) for pat in link_only_files):
-            continue
-        if cr.matches_basename(rel, context_files) or cr.matches_basename(rel, exempt_basenames):
+        if cr.matches_basename(rel, exempt_names) or any(
+            cr.fnmatch.fnmatch(rel, pat) for pat in exempt_paths
+        ):
             continue
         text = p.read_text(encoding="utf-8", errors="replace")
         fm, _body, err = cr.split_frontmatter(text)
