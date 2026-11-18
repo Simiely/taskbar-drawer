@@ -14,3 +14,14 @@
 
 - [交接：进度、待办与发布路径](./docs/handoff.md) — 接手必读：当前版本与提交、十项架构优化待办、残留圆点的根因与未落地方案、发布与验收流程。
 - [文档索引](./docs/index.md) — 项目入口：用户说明、项目规则、开发文档与版本历史的导航。
+- [走查能力清单](./docs/walkthrough/capabilities.md) — 按 scenario-walkthrough 步骤 1 盘点 taskbar-drawer 的真实能力（C-01…C-22）与入口，作为素材生成的唯一依据。
+- [走查素材与覆盖矩阵](./docs/walkthrough/scenarios.md) — 第 1 轮走查的 18 条操作链素材（S-01…S-18）与覆盖矩阵，含用户实报的单窗口模式两条失效链。
+
+### explanation
+
+- [剩余待办的调研与实施建议](./docs/design/backlog-plan.md) — 对 9 项未完成待办逐项检索验证后给出结论：做 5 项、暂缓 1 项、不做 2 项，并给出依赖顺序与验收方式。
+- [窗口识别与弹窗归属（终版方案）](./docs/design/window-identity.md) — 调研修正了 AUMID 的可用性假设：exe 仍是主键，AUMID 只作打包应用增强。最终方案是「窗口簇」模型 + 三层过滤 + 位次配对。三步已在 1.9.0 / 1.10.0 全部落地。
+
+## Reports
+
+- [第 1 轮走查报告](./docs/walkthrough/report-1.md) — 18 条素材链走查结果：13 个问题（5 个用户可见功能缺陷，其中 2 个为用户实报），12 条已修，1 条记录在案。

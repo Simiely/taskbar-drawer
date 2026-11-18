@@ -25,7 +25,7 @@ public static class WindowRecovery
     private static string _lastSignature;
 
     /// <summary>
-    /// 记录当前仍被隐藏的窗口。隐藏集合没变化就不写盘，避免每 2.5 s 一次无意义 IO。
+    /// 记录当前仍被隐藏的窗口。隐藏集合没变化就不写盘，避免定时兜底产生无意义 IO。
     /// </summary>
     public static void Save(IReadOnlyCollection<StashedWindow> items)
     {
@@ -89,6 +89,10 @@ public static class WindowRecovery
                 NativeMethods.ShowWindow(hwnd, NativeMethods.SW_SHOWMINNOACTIVE);
                 if (NativeMethods.IsWindowVisible(hwnd)) recovered++;
                 else remaining.Add(entry);
+
+                // 收纳时同簇弹窗是跟着一起藏起来的；强杀之后主窗口救回来了，弹窗还停在隐形状态，
+                // 应用会看起来「卡在对话框上」。这里把它放回来。
+                RestoreOwnedPopup(hwnd);
             }
         }
         catch
@@ -102,6 +106,19 @@ public static class WindowRecovery
         if (remaining.Count == 0) Clear();
         else WriteEntries(remaining);
         return recovered;
+    }
+
+    /// <summary>
+    /// 把「被我们一起藏起来」的同簇弹窗放回来。只动最后激活的那一层，
+    /// 且必须仍存在、仍有 owner、当前不可见——避免误显示应用自己故意藏起来的窗口。
+    /// </summary>
+    private static void RestoreOwnedPopup(IntPtr owner)
+    {
+        IntPtr popup = NativeMethods.GetLastActivePopup(owner);
+        if (popup == IntPtr.Zero || popup == owner) return;
+        if (NativeMethods.Owner(popup) == IntPtr.Zero) return;
+        if (NativeMethods.IsWindowVisible(popup)) return;
+        NativeMethods.ShowWindow(popup, NativeMethods.SW_SHOWNA);
     }
 
     /// <summary>

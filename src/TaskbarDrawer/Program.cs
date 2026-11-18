@@ -124,7 +124,7 @@ public static class Program
     private static int RunProbe()
     {
         var list = WindowEnumerator.Enumerate(includeMinimized: false);
-        Console.WriteLine($"候选窗口 {list.Count} 个（可见 / 有标题 / 非工具窗 / 非 cloaked / 非本程序 / 非 shell）");
+        Console.WriteLine($"候选窗口 {list.Count} 个（可见 / 有标题 / 非工具窗 / 非 cloaked / 非本程序 / 非 shell / 非弹窗）");
         Console.WriteLine("句柄        PID     类名                          矩形(屏幕坐标)             标题");
         foreach (var item in list.OrderBy(w => w.Rect.Left).ThenBy(w => w.Rect.Top))
         {
@@ -133,6 +133,33 @@ public static class Program
                 $"0x{item.Handle.ToInt64():X8}  {item.ProcessId,-6}  {item.ClassName,-28}  " +
                 $"{item.Rect.Left},{item.Rect.Top} {item.Rect.Width}x{item.Rect.Height,-10}  {title}");
         }
+
+        // 「为什么这个窗口没被收进去」以前只能猜，这里按规则分组列出来。
+        var excluded = new List<(IntPtr Handle, string Reason, string Title, string ClassName)>();
+        NativeMethods.EnumWindows((hwnd, _) =>
+        {
+            if (!NativeMethods.IsWindowVisible(hwnd)) return true;
+            string reason = WindowEnumerator.ExclusionReason(hwnd);
+            if (reason == null) return true;   // 候选窗口，上面已经列过
+            excluded.Add((hwnd, reason, NativeMethods.Title(hwnd), NativeMethods.ClassName(hwnd)));
+            return true;
+        }, IntPtr.Zero);
+
+        Console.WriteLine();
+        Console.WriteLine($"被排除的可见窗口 {excluded.Count} 个（按规则分组，只列前 6 个）：");
+        foreach (var group in excluded.GroupBy(e => e.Reason).OrderByDescending(g => g.Count()))
+        {
+            Console.WriteLine($"  [{group.Key}] {group.Count()} 个");
+            foreach (var item in group.Take(6))
+            {
+                Console.WriteLine($"    0x{item.Handle.ToInt64():X8}  {item.ClassName,-28}  {Brief(item.Title)}");
+            }
+            if (group.Count() > 6) Console.WriteLine($"    …还有 {group.Count() - 6} 个");
+        }
+
         return 0;
     }
+
+    private static string Brief(string title)
+        => string.IsNullOrEmpty(title) ? "(无标题)" : title.Length <= 40 ? title : title[..40] + "…";
 }

@@ -172,4 +172,64 @@ public class SceneEditTests
         Assert.Equal(@"C:\app.exe", item.ExePath);
         Assert.True(item.Maximized);
     }
+
+    [Fact]
+    public void IdentityKey_用两层身份_旧快照退回exe加标题()
+    {
+        var modern = new SavedWindow
+        {
+            ExePath = @"C://A.exe",
+            Title = "切过标签页的标题",
+            AppId = "exe:c:/a.exe",
+            ClassName = "Chrome_WidgetWin_1",
+            Ordinal = 1
+        };
+        var legacy = new SavedWindow { ExePath = @"C://A.exe", Title = "旧快照" };
+
+        // 新快照：键里带位次，标题变了也不影响。
+        Assert.Equal("exe:c:/a.exe\nChrome_WidgetWin_1\n1", SceneEdit.IdentityKey(modern));
+        // 旧快照：没有身份字段，退回 exe + 标题，行为与改造前一致。
+        Assert.Equal(SceneEdit.Key(legacy), SceneEdit.IdentityKey(legacy));
+    }
+
+    [Fact]
+    public void Visible_身份键命中时过滤掉该窗口()
+    {
+        var window = new SavedWindow
+        {
+            ExePath = @"C://A.exe",
+            Title = "标题已经变了",
+            AppId = "exe:c:/a.exe",
+            ClassName = "Chrome_WidgetWin_1",
+            Ordinal = 0
+        };
+        var suppressed = new List<string> { SceneEdit.IdentityKey(window) };
+
+        Assert.Empty(SceneEdit.Visible(new[] { window }, suppressed));
+    }
+
+    [Fact]
+    public void Visible_旧抑制键仍能挡住旧快照窗口()
+    {
+        // 旧数据：抑制集合里是 exe + 标题键，快照项也没有身份字段。
+        var window = Window(@"C://A.exe", "旧窗口");
+        var suppressed = new List<string> { SceneEdit.Key(window) };
+
+        Assert.Empty(SceneEdit.Visible(new[] { window }, suppressed));
+    }
+
+    [Theory]
+    [InlineData("scene-a", "scene-a", true)]
+    [InlineData("scene-a", "scene-b", false)]
+    [InlineData("", "scene-a", false)]
+    public void ShouldCloseEditor_只有同一场景再次点击才收起(string openId, string clickedId, bool expected)
+    {
+        Assert.Equal(expected, SceneEdit.ShouldCloseEditor(openId, clickedId));
+    }
+
+    [Fact]
+    public void ShouldCloseEditor_详情窗未打开时不收起()
+    {
+        Assert.False(SceneEdit.ShouldCloseEditor(null!, "scene-a"));
+    }
 }

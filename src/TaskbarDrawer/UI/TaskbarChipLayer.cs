@@ -65,6 +65,7 @@ public sealed class TaskbarChipLayer : IDisposable
 
     private readonly List<ChipSlot> _slots = new();
     private readonly DispatcherTimer _timer;
+    private readonly DispatcherTimer _guard;
     private bool _disposed;
 
     // 上一次布局的输入：任务栏句柄 / 任务栏与托盘矩形、全屏状态。
@@ -85,6 +86,28 @@ public sealed class TaskbarChipLayer : IDisposable
     /// <summary>静止状态下每 15 个计时周期（约 30 s）仍完整重贴一次，兜底其它置顶窗口。</summary>
     private const int KeepAliveTicks = 15;
 
+    /// <summary>守卫体检间隔：被盖住后最坏等这么久复位（原来要等满一个 2 s 周期）。</summary>
+    private static readonly TimeSpan GuardInterval = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>一次前台切换后连续守卫多少轮（约 2 s），之后退回 2 s 保活。</summary>
+    private const int GuardTicks = 8;
+
+    /// <summary>守卫剩余轮数；0 = 守卫没在跑。</summary>
+    private int _guardTicks;
+
+    /// <summary>触发这次体检的事件时刻，用来在日志里量「被盖 → 复位」的真实耗时。</summary>
+    private DateTime _triggerAt;
+
+    /// <summary>位置监听当前订阅的进程（Explorer）；它重启后 PID 会变，需要重新挂。</summary>
+    private uint _locationHookProcess;
+
+    private IntPtr _foregroundHook;
+    private IntPtr _locationHook;
+
+    // 必须存成字段：委托被回收后原生回调会踩到野桩，直接终止进程。
+    private NativeMethods.WinEventProc _foregroundProc;
+    private NativeMethods.WinEventProc _locationProc;
+
     public TaskbarChipLayer()
     {
         _timer = new DispatcherTimer(DispatcherPriority.Background)
@@ -93,6 +116,183 @@ public sealed class TaskbarChipLayer : IDisposable
         };
         _timer.Tick += (_, _) => RepositionAll();
         _timer.Start();
+
+        // 守卫只干一件轻活（一次 WindowFromPoint 命中测试 + 必要时的纯 z 序复位），不做布局。
+        // 平时不跑，只有前台切换 / 任务栏移动之后高频跑 2 s。
+        _guard = new DispatcherTimer(DispatcherPriority.Background) { Interval = GuardInterval };
+        _guard.Tick += (_, _) => GuardTick();
+
+        InstallHooks();
+    }
+
+    /// <summary>
+    /// 挂「前台切换」监听：点任务栏、点任务栏按钮切窗口、开始菜单收起都落在这一刻，
+    /// 任务栏抬自己也发生在这里。只读监听，不注入 DLL、不装全局钩子。
+    /// 挂不上时只是回到原来的 2 s 轮询，不影响主流程。
+    /// </summary>
+    private void InstallHooks()
+    {
+        try
+        {
+            _locationProc = OnTaskbarMoved;
+            _foregroundProc = OnForegroundChanged;
+            _foregroundHook = NativeMethods.SetWinEventHook(
+                NativeMethods.EVENT_SYSTEM_FOREGROUND, NativeMethods.EVENT_SYSTEM_FOREGROUND,
+                IntPtr.Zero, _foregroundProc, 0, 0,
+                NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
+
+            if (_foregroundHook == IntPtr.Zero)
+                Diagnostics.Info("chip", "前台事件监听未就绪，退回 2 s 轮询");
+        }
+        catch (Exception ex)
+        {
+            Diagnostics.Write("chip hook", ex);
+        }
+    }
+
+    /// <summary>
+    /// 「任务栏几何变化」监听只在拿到任务栏之后按 **Explorer 进程**订阅。
+    /// 全局订阅 LOCATIONCHANGE 会在拖动窗口 / 动画时收到成百上千次回调（每个子对象都算一次），
+    /// 按进程过滤后只剩任务栏自己的移动：自动隐藏滑动、改边、换分辨率、通知图标增减。
+    /// Explorer 重启后 PID 会变，所以每次全量体检都拿当前任务栏的 PID 比一次。
+    /// </summary>
+    private void EnsureLocationHook(IntPtr taskbar)
+    {
+        if (_locationProc == null) return;
+
+        NativeMethods.GetWindowThreadProcessId(taskbar, out uint pid);
+        if (pid == 0 || pid == _locationHookProcess) return;
+
+        if (_locationHook != IntPtr.Zero)
+        {
+            NativeMethods.UnhookWinEvent(_locationHook);
+            _locationHook = IntPtr.Zero;
+        }
+
+        _locationHook = NativeMethods.SetWinEventHook(
+            NativeMethods.EVENT_OBJECT_LOCATIONCHANGE, NativeMethods.EVENT_OBJECT_LOCATIONCHANGE,
+            IntPtr.Zero, _locationProc, pid, 0, NativeMethods.WINEVENT_OUTOFCONTEXT);
+        _locationHookProcess = _locationHook == IntPtr.Zero ? 0 : pid;
+    }
+
+    /// <summary>
+    /// 前台切换 = 最可能「任务栏把自己抬到胶囊上面」的时刻，先就地面检一次，
+    /// 再开一小段守卫跟上（有些场景会在激活之后才抬任务栏）。
+    /// </summary>
+    private void OnForegroundChanged(
+        IntPtr hook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
+    {
+        // 这是交给 Win32 的回调：异常逃回原生栈会直接终止进程，只能就地隔离。
+        try
+        {
+            if (_disposed || hwnd == IntPtr.Zero) return;
+            if (idObject != 0) return;                              // 只认 OBJID_WINDOW
+            if (WindowEnumerator.IsOwnProcessWindow(hwnd)) return;   // 自己弹面板 / 提示不算被压
+
+            _triggerAt = DateTime.UtcNow;
+            TryRaiseIfBuried("前台切换");
+            KickGuard();
+        }
+        catch (Exception ex)
+        {
+            Diagnostics.Write("chip foreground", ex);
+        }
+    }
+
+    /// <summary>任务栏 / 托盘区几何变了：置脏，让下一次守卫走完整重排（位置真的变了，抬 z 序不够）。</summary>
+    private void OnTaskbarMoved(
+        IntPtr hook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
+    {
+        try
+        {
+            if (_disposed || hwnd == IntPtr.Zero) return;
+
+            // 订阅已按 Explorer 进程收窄，但桌面 / 开始菜单等也在同一个进程里：
+            // 只认「根窗口就是任务栏」的对象（任务栏自身 + 托盘区等子窗口）。
+            IntPtr taskbar = _lastTaskbar;
+            if (taskbar == IntPtr.Zero) return;
+            if (hwnd != taskbar && NativeMethods.GetAncestor(hwnd, NativeMethods.GA_ROOT) != taskbar) return;
+
+            _dirty = true;
+            KickGuard();
+        }
+        catch (Exception ex)
+        {
+            Diagnostics.Write("chip taskbar move", ex);
+        }
+    }
+
+    /// <summary>开一小段高频守卫；已经在跑就只续命，不重复启动。</summary>
+    private void KickGuard()
+    {
+        if (_disposed) return;
+        _guardTicks = GuardTicks;
+        if (!_guard.IsEnabled) _guard.Start();
+    }
+
+    private void GuardTick()
+    {
+        if (_disposed)
+        {
+            _guard.Stop();
+            return;
+        }
+
+        if (_dirty) RepositionAll();
+        else TryRaiseIfBuried("守卫");
+
+        // 守卫到期才清触发时间：别让它跨到下一个 2 s 周期里算出一个离谱的耗时。
+        if (--_guardTicks <= 0)
+        {
+            _guard.Stop();
+            _triggerAt = default;
+        }
+    }
+
+    /// <summary>
+    /// 体检 + 最小复位：只把胶囊抬回 topmost 波段最上面，不动位置尺寸、不重排。
+    /// 任务栏句柄已失效（Explorer 重启）时什么都不做，交给 2 s 全量体检重建。
+    /// 返回 true 表示这次确实有胶囊被压住并已复位。
+    /// </summary>
+    private bool TryRaiseIfBuried(string source)
+    {
+        if (_disposed) return false;
+
+        try
+        {
+            IntPtr taskbar = _lastTaskbar;
+            if (taskbar == IntPtr.Zero || !NativeMethods.IsWindow(taskbar)) return false;
+
+            int buried = CountBuriedChips(taskbar);
+            if (buried == 0) return false;
+
+            foreach (var slot in _slots)
+            {
+                if (!slot.Active || !slot.Window.Shown) continue;
+                slot.Window.Raise();
+            }
+
+            // 刚复位过：30 s 保活重新计时，别紧接着再白跑一次全量重排。
+            _idleTicks = 0;
+
+            double elapsed = -1;
+            if (_triggerAt != default)
+            {
+                elapsed = (DateTime.UtcNow - _triggerAt).TotalMilliseconds;
+                _triggerAt = default;
+            }
+
+            // 这一行是这次修复的验收依据：实机点任务栏后看耗时是否稳定在几十毫秒内。
+            Diagnostics.Info("chip",
+                $"被任务栏压住 {buried} 枚 → 已复位 来源={source} " +
+                $"耗时={(elapsed >= 0 ? $"{elapsed:0}ms" : "(非事件触发)")}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Diagnostics.Write("chip raise", ex);
+            return false;
+        }
     }
 
     /// <summary>左键点胶囊：运行中的场景切换收起 / 展开，已关闭的场景打开。</summary>
@@ -160,6 +360,8 @@ public sealed class TaskbarChipLayer : IDisposable
         }
 
         RepositionAll();
+        // 刚摆好的一瞬间最容易被任务栏盖住（它常在胶囊出现的同时重排自己）：开 2 s 守卫盯着。
+        KickGuard();
     }
 
     /// <summary>胶囊内容的稳定签名：只比较会影响画面的字段，避免每次刷新都全量重排。</summary>
@@ -307,6 +509,9 @@ public sealed class TaskbarChipLayer : IDisposable
         if (taskbar == IntPtr.Zero) return;
         if (!NativeMethods.GetWindowRect(taskbar, out var bar) || bar.IsEmpty) return;
 
+        // Explorer 重启后任务栏是新的句柄 / 新的 PID：位置监听要跟着换。
+        EnsureLocationHook(taskbar);
+
         // 只有全屏窗口和任务栏在同一块屏时才让位：副屏全屏游戏不该把主屏胶囊也藏起来。
         string fullscreenDevice = FullscreenForegroundDevice();
         bool hideAll = fullscreenDevice != null &&
@@ -321,13 +526,17 @@ public sealed class TaskbarChipLayer : IDisposable
         // 循环里会改写 anchor（逐枚往上 / 往左叠），先留一份起始锚点用于比对。
         NativeMethods.RECT startAnchor = anchor;
 
-        // 输入没变就跳过整轮 SetWindowPos；但每轮都要查一次「是不是被任务栏压住了」——
-        // 用户点一下任务栏，系统就会把 Shell_TrayWnd 抬到最顶层，胶囊被它盖住后
-        // 看得见（半透明透出来）却点不到，只能等下一轮重贴自愈。
+        // 输入没变就不重排：先只做「是不是被任务栏压住了」的轻量体检，
+        // 真被压住时抬一次 z 序就够，不必重算整轮布局（省掉每枚胶囊一次带位置尺寸的 SetWindowPos）。
         bool unchanged = _laidOut && !_dirty && _lastHideAll == hideAll && _lastTaskbar == taskbar &&
                          Same(bar, _lastBar) && Same(startAnchor, _lastAnchor);
-        if (unchanged && ++_idleTicks < KeepAliveTicks && !AnyChipBuriedByTaskbar(taskbar)) return;
+        if (unchanged)
+        {
+            if (TryRaiseIfBuried("定时器")) return;
+            if (++_idleTicks < KeepAliveTicks) return;
+        }
         _idleTicks = 0;
+        _triggerAt = default;
 
         bool vertical = bar.Height > bar.Width;
         bool first = true;
@@ -404,12 +613,15 @@ public sealed class TaskbarChipLayer : IDisposable
     }
 
     /// <summary>
-    /// 是否有胶囊被任务栏压住。胶囊就画在任务栏矩形里，用户一碰任务栏，
+    /// 有多少枚胶囊被任务栏压住。胶囊就画在任务栏矩形里，用户一碰任务栏，
     /// Explorer 就把 Shell_TrayWnd 抬到 topmost 波段最上面，胶囊仍然 WS_VISIBLE，
     /// 但从半透明任务栏里透出来、点不到。命中测试落在任务栏自身或其子窗口上就是被压住了。
+    /// 只认任务栏：被开始菜单 / 通知中心盖住是正常的（它们盖上去时用户也不需要胶囊），
+    /// 硬抢反而会让胶囊浮在这些浮层上面；那些浮层收起时前台事件会把我们叫醒。
     /// </summary>
-    private bool AnyChipBuriedByTaskbar(IntPtr taskbar)
+    private int CountBuriedChips(IntPtr taskbar)
     {
+        int buried = 0;
         foreach (var slot in _slots)
         {
             if (!slot.Active || !slot.Window.Shown) continue;
@@ -426,11 +638,10 @@ public sealed class TaskbarChipLayer : IDisposable
 
             IntPtr hit = NativeMethods.WindowFromPoint(center);
             if (hit == IntPtr.Zero || hit == hwnd) continue;
-            if (hit == taskbar || NativeMethods.GetAncestor(hit, NativeMethods.GA_ROOT) == taskbar)
-                return true;
+            if (hit == taskbar || NativeMethods.GetAncestor(hit, NativeMethods.GA_ROOT) == taskbar) buried++;
         }
 
-        return false;
+        return buried;
     }
 
     /// <summary>任务栏是否挂在屏幕左半边（决定竖排时提示框弹右还是弹左）。</summary>
@@ -476,6 +687,15 @@ public sealed class TaskbarChipLayer : IDisposable
         if (_disposed) return;
         _disposed = true;
         _timer.Stop();
+        _guard.Stop();
+
+        // 先摘监听再关窗口：回调可能已经在消息队列里，_disposed 会在入口处直接返回。
+        if (_foregroundHook != IntPtr.Zero) NativeMethods.UnhookWinEvent(_foregroundHook);
+        if (_locationHook != IntPtr.Zero) NativeMethods.UnhookWinEvent(_locationHook);
+        _foregroundHook = _locationHook = IntPtr.Zero;
+        _foregroundProc = null;
+        _locationProc = null;
+
         foreach (var slot in _slots)
         {
             try { slot.Window.Close(); } catch { /* 退出路径不再抛 */ }

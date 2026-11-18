@@ -9,6 +9,25 @@ namespace TaskbarDrawer.Interop;
 public static partial class NativeMethods
 {
     public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+
+    /// <summary>对象位置 / 大小变化：任务栏自动隐藏滑动、改边、换分辨率都会触发。</summary>
+    public const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
+
+    /// <summary>
+    /// 窗口对象被销毁：这是唯一可靠的「窗口真的关掉了」信号——
+    /// 销毁、最小化、切虚拟桌面都不发同一个事件，只有它代表句柄失效。
+    /// </summary>
+    public const uint EVENT_OBJECT_DESTROY = 0x8001;
+
+    /// <summary>对象由不可见变可见（窗口被还原、被程序重新 Show）。</summary>
+    public const uint EVENT_OBJECT_SHOW = 0x8002;
+
+    /// <summary>对象由可见变不可见（被最小化、被外部 SW_HIDE）。</summary>
+    public const uint EVENT_OBJECT_HIDE = 0x8003;
+
+    /// <summary>idObject = OBJID_WINDOW：事件针对窗口本身，而不是菜单项 / 光标 / 滚动条等子对象。</summary>
+    public const int OBJID_WINDOW = 0;
+
     public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     public const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
 
@@ -20,6 +39,18 @@ public static partial class NativeMethods
 
     /// <summary>GetAncestor 的 GA_ROOT：取顶层祖先，用来判断命中窗口是不是任务栏的子窗口。</summary>
     public const uint GA_ROOT = 2;
+
+    /// <summary>GetAncestor 的 GA_ROOTOWNER：沿 owner 链一直往上，用于判断「这个窗口是不是被拥有的弹窗」。</summary>
+    public const uint GA_ROOTOWNER = 3;
+
+    /// <summary>GetWindow 的 GW_OWNER：直接取一层 owner（对话框 / 弹出层的典型标志）。</summary>
+    public const uint GW_OWNER = 4;
+
+    /// <summary>WS_EX_APPWINDOW：显式要求出现在任务栏，等价于「当作没有 owner」。</summary>
+    public const long WS_EX_APPWINDOW = 0x00040000;
+
+    /// <summary>SW_SHOWNA：显示但不激活（把被一起收起的弹窗放回来时用）。</summary>
+    public const int SW_SHOWNA = 8;
 
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lParam);
     [DllImport("user32.dll")] public static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr clip, MonitorEnumProc cb, IntPtr data);
@@ -48,6 +79,43 @@ public static partial class NativeMethods
     [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint msg, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
     [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint flags);
+
+    /// <summary>取一层 owner：非 0 说明这是一个被拥有的窗口（对话框、弹出层、扩展弹窗）。</summary>
+    [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
+
+    /// <summary>取「最后激活的弹出层」：没有弹出层时返回传入的窗口自身。</summary>
+    [DllImport("user32.dll")] public static extern IntPtr GetLastActivePopup(IntPtr h);
+
+    /// <summary>这个窗口的 owner（0 = 无 owner，即「簇主」）。</summary>
+    public static IntPtr Owner(IntPtr hwnd) => hwnd == IntPtr.Zero ? IntPtr.Zero : GetWindow(hwnd, GW_OWNER);
+
+    /// <summary>
+    /// 沿 owner 链找到最顶层的 owner（窗口簇的簇主）；没有 owner 时返回窗口自身。
+    ///
+    /// **不要用 <c>GetAncestor(hwnd, GA_ROOTOWNER)</c>**：文档说它会走「GetParent 返回的父 /
+    /// owner 链」，但 <c>GetParent</c> 对非 <c>WS_CHILD</c> 的窗口返回 0——一个 owned 的
+    /// <c>WS_POPUP</c> 弹窗（浏览器扩展气泡、工具窗、对话框都是这种）因此链是空的，
+    /// 实测直接返回弹窗自身，看起来「没有 owner」。这里自己沿 <c>GW_OWNER</c> 逐层往上走。
+    /// 深度上限 8 只是防御 owner 链成环（正常链最多两三层）。
+    /// </summary>
+    public static IntPtr RootOwner(IntPtr hwnd)
+        => hwnd == IntPtr.Zero ? IntPtr.Zero : WalkOwners(hwnd, Owner);
+
+    /// <summary>
+    /// owner 链的行走规则。抽成纯函数是给单测用的——真钩子在测试进程里装不了。
+    /// 走到 0 / 自环就停；深度上限防御异常链成环（正常两三层）。
+    /// </summary>
+    public static IntPtr WalkOwners(IntPtr hwnd, Func<IntPtr, IntPtr> owner, int maxDepth = 8)
+    {
+        IntPtr current = hwnd;
+        for (int depth = 0; depth < maxDepth; depth++)
+        {
+            IntPtr next = owner(current);
+            if (next == IntPtr.Zero || next == current) return current;
+            current = next;
+        }
+        return current;
+    }
 
     private const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
     private const uint TOKEN_QUERY = 0x0008;

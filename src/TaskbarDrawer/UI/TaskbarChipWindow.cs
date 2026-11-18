@@ -189,6 +189,19 @@ public sealed class TaskbarChipWindow : Window
         if (IsVisible) Hide();
     }
 
+    /// <summary>
+    /// 只把窗口抬回 topmost 波段的最上面，不动位置和尺寸。
+    /// 任务栏和胶囊同属一个波段，谁最后被抬起谁在上面；被任务栏压住后
+    /// 走完整重排（SetWindowPos 带位置尺寸 + WPF 重新布局）代价太大，
+    /// 这条最小复位动作只改 z 序，每次被盖都能立刻用。
+    /// </summary>
+    public void Raise()
+    {
+        if (_hwnd == IntPtr.Zero || !IsVisible) return;
+        NativeMethods.SetWindowPos(_hwnd, NativeMethods.HWND_TOPMOST, 0, 0, 0, 0,
+            NativeMethods.SWP_NOMOVE | NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE);
+    }
+
     private void ApplyVisual()
     {
         if (_expanded)

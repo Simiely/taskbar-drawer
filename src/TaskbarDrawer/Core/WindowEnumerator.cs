@@ -36,39 +36,27 @@ public static class WindowEnumerator
     public static List<WindowCandidate> Enumerate(bool includeMinimized)
     {
         var list = new List<WindowCandidate>();
-        uint self = (uint)Environment.ProcessId;
 
         NativeMethods.EnumWindows((hwnd, state) =>
         {
-            if (!NativeMethods.IsWindowVisible(hwnd)) return true;
+            // 先用「不读标题」的快速判据过滤：读标题是跨进程 SendMessageTimeout，
+            // 必然被排除的窗口不值得为它等一次超时。
+            if (ExclusionReason(hwnd, checkTitle: false) != null) return true;
 
-            // 挂起 / 正在退出的窗口不再往下走：标题查询虽然带超时，但没必要为它等 120 ms。
-            if (NativeMethods.IsHungAppWindow(hwnd)) return true;
-
-            bool cloaked = NativeMethods.IsCloaked(hwnd, out int _);
-            bool tool = (NativeMethods.ExStyle(hwnd) & NativeMethods.WS_EX_TOOLWINDOW) != 0;
-            NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
-            bool own = pid == self;
-            NativeMethods.GetWindowRect(hwnd, out var rect);
-
-            // 先把不耗时的过滤全部算完；标题查询是跨线程 SendMessageTimeout（最长 120ms），
-            // 能一票否决的窗口不要为它等。
-            if (cloaked || tool || own || rect.IsEmpty) return true;
+            bool minimized = NativeMethods.IsIconic(hwnd);
+            if (minimized && !includeMinimized) return true;
 
             string title = NativeMethods.Title(hwnd);
             if (title.Length == 0) return true;
 
-            string cls = NativeMethods.ClassName(hwnd);
-            if (ShellClasses.Contains(cls)) return true;
-
-            bool minimized = NativeMethods.IsIconic(hwnd);
-            if (minimized && !includeMinimized) return true;
+            NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
+            NativeMethods.GetWindowRect(hwnd, out var rect);
 
             list.Add(new WindowCandidate
             {
                 Handle = hwnd,
                 Title = title,
-                ClassName = cls,
+                ClassName = NativeMethods.ClassName(hwnd),
                 ProcessId = pid,
                 Rect = rect
             });
@@ -76,6 +64,38 @@ public static class WindowEnumerator
         }, IntPtr.Zero);
 
         return list;
+    }
+
+    /// <summary>
+    /// 这个窗口为什么不能当场景成员（null = 可以）。
+    /// 判定顺序即成本顺序：便宜的样式 / 矩形判断在前，跨进程读标题放在最后，
+    /// 由 <paramref name="checkTitle"/> 控制是否执行（枚举热路径先不查）。
+    ///
+    /// 关键一条是「被拥有的窗口」：对话框、弹出层、浏览器扩展弹窗都有 owner
+    /// （Chromium 的扩展弹窗就是用 GW_OWNER 挂到浏览器窗口上的）。
+    /// 它们不该成为场景成员——否则会占用条目、污染配对，关场景时把主窗口一起关掉。
+    /// </summary>
+    public static string ExclusionReason(IntPtr hwnd, bool checkTitle = true)
+    {
+        if (hwnd == IntPtr.Zero || !NativeMethods.IsWindow(hwnd)) return "无效句柄";
+        if (!NativeMethods.IsWindowVisible(hwnd)) return "不可见";
+        if (NativeMethods.IsHungAppWindow(hwnd)) return "挂起";
+        if (NativeMethods.IsCloaked(hwnd, out _)) return "已 cloaked（其它虚拟桌面 / 后台）";
+
+        long ex = NativeMethods.ExStyle(hwnd);
+        if ((ex & NativeMethods.WS_EX_TOOLWINDOW) != 0) return "工具窗（不进 Alt+Tab）";
+        if ((ex & NativeMethods.WS_EX_NOACTIVATE) != 0) return "不抢焦点窗口";
+        if (IsOwnProcessWindow(hwnd)) return "本程序窗口";
+        if (!NativeMethods.GetWindowRect(hwnd, out var rect) || rect.IsEmpty) return "矩形为空";
+
+        // WS_EX_APPWINDOW 表示「当作没有 owner」，显式要求出现在任务栏，
+        // 少数应用把主窗口错误设成 owned 时靠它豁免。
+        if ((ex & NativeMethods.WS_EX_APPWINDOW) == 0 && NativeMethods.Owner(hwnd) != IntPtr.Zero)
+            return "被拥有的弹窗 / 对话框";
+
+        if (checkTitle && NativeMethods.Title(hwnd).Length == 0) return "无标题";
+        if (ShellClasses.Contains(NativeMethods.ClassName(hwnd))) return "shell 窗口";
+        return null;
     }
 
     public static bool IsShellWindow(IntPtr hwnd)

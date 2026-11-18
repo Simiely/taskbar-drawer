@@ -20,6 +20,7 @@ namespace TaskbarDrawer.UI;
 public sealed class SceneEditorWindow : Window
 {
     private readonly TextBlock _name;
+    private readonly TextBlock _windowSummary;
     private readonly WrapPanel _positionRow = new();
     private readonly WrapPanel _numberRow = new();
     private readonly WrapPanel _colorRow = new();
@@ -36,7 +37,7 @@ public sealed class SceneEditorWindow : Window
     /// <summary>可选的 8 个颜色：由 AppShell 从设置里推过来，右键任意色块可以改。</summary>
     private IReadOnlyList<string> _palette = SceneBadge.DefaultPalette;
 
-    /// <summary>上一次渲染的数据签名：2.5 s 的 Prune 刷新不能把滚动位置打回顶部。</summary>
+    /// <summary>上一次渲染的数据签名：剪枝刷新不能把滚动位置打回顶部。</summary>
     private string _signature = "";
 
     /// <summary>上一次展示的场景 Id：切换场景时回到顶部，同一场景刷新时保留滚动位置。</summary>
@@ -61,6 +62,8 @@ public sealed class SceneEditorWindow : Window
 
         _name = Ui.Text("", 10.5, FontWeights.Normal, Theme.TextMuted);
         _name.Margin = new Thickness(0, 3, 0, 0);
+
+        _windowSummary = Ui.Text("", 10.5, FontWeights.Normal, Theme.TextMuted);
 
         _runningHint = new Border
         {
@@ -147,10 +150,17 @@ public sealed class SceneEditorWindow : Window
             _windowList.Children.Add(BuildWindowRow(window, detail.Windows.Count));
         _windowEmpty.Visibility = detail.Windows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
+        // 「未打开」的成员只能靠移除清理，所以把两种状态的数量直接写在标题旁。
+        int openCount = detail.Windows.Count(w => w.IsOpen);
+        _windowSummary.Text = detail.Windows.Count == 0
+            ? ""
+            : $"{openCount} 个已打开 · {detail.Windows.Count - openCount} 个未打开";
+        _windowSummary.Visibility = detail.Windows.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+
         var windows = appendable ?? Array.Empty<AppendableWindowItem>();
         _appendList.Children.Clear();
-        foreach (var item in windows)
-            _appendList.Children.Add(BuildAppendRow(item));
+        for (int i = 0; i < windows.Count; i++)
+            _appendList.Children.Add(BuildAppendRow(windows[i], i));
         _appendEmpty.Visibility = windows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
 
         // 追加 / 移除后整块重建：同一场景保留用户刚才的滚动位置，切换场景才回到顶部。
@@ -192,6 +202,12 @@ public sealed class SceneEditorWindow : Window
         if (left + width > workRight - 8) left = anchor.Left - width - gap;
         Left = Math.Min(Math.Max(left, workLeft + 8), Math.Max(workLeft + 8, workRight - width - 8));
         Top = Math.Min(Math.Max(top, workTop + 8), Math.Max(workTop + 8, workBottom - height - 8));
+
+        // 高度上限必须在这里按「详情窗将要落到的那块屏」算：
+        // OnSourceInitialized 执行时窗口还在主屏，主屏 4K + 副屏 1080p 会按主屏算出上限，
+        // 右下角一拖就把窗口拉出副屏底部，底部的删除 / 重命名点不到。
+        MaxHeight = Math.Max(MinHeight, workBottom - workTop - 40);
+        if (Height > MaxHeight) Height = MaxHeight;
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -199,16 +215,6 @@ public sealed class SceneEditorWindow : Window
         base.OnSourceInitialized(e);
         IntPtr hwnd = new WindowInteropHelper(this).Handle;
         NativeMethods.ApplyToolWindowStyle(hwnd);
-
-        // 高度上限按编辑器实际所在的显示器算：SystemParameters.WorkArea 永远是主屏，
-        // 主屏 4K + 副屏 1080p 时编辑器会比副屏还高，底部按钮点不到。
-        if (NativeMethods.GetWindowRect(hwnd, out var rect) &&
-            NativeMethods.TryGetMonitorOfRect(rect, out var monitor))
-        {
-            double workHeight = monitor.rcWork.Height / (NativeMethods.DpiOfDevice(monitor.szDevice) / 96.0);
-            MaxHeight = Math.Max(MinHeight, workHeight - 40);
-            if (Height > MaxHeight) Height = MaxHeight;
-        }
     }
 
     // ---------- 布局 ----------
@@ -405,7 +411,8 @@ public sealed class SceneEditorWindow : Window
                 () => EditPaletteColor(slot, picked)));
         }
 
-        var reset = Ui.ActionButton("恢复默认", () => PaletteResetRequested?.Invoke());
+        var reset = Ui.Id(
+            Ui.ActionButton("恢复默认", () => PaletteResetRequested?.Invoke()), "editor.paletteReset");
         reset.Margin = new Thickness(4, 2, 0, 2);
         reset.ToolTip = "把这 8 个颜色恢复成默认配色；用了这些颜色的场景会按色块位置跟着换回来";
         _colorRow.Children.Add(reset);
@@ -543,7 +550,17 @@ public sealed class SceneEditorWindow : Window
     private FrameworkElement BuildWindowSection()
     {
         var panel = new StackPanel { Margin = new Thickness(0, 16, 0, 0) };
-        panel.Children.Add(SectionTitle("场景里的窗口"));
+
+        var head = new Grid();
+        head.ColumnDefinitions.Add(new ColumnDefinition());
+        head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        head.Children.Add(SectionTitle("场景里的窗口"));
+        _windowSummary.HorizontalAlignment = HorizontalAlignment.Right;
+        _windowSummary.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(_windowSummary, 1);
+        head.Children.Add(_windowSummary);
+        panel.Children.Add(head);
+
         _windowList.Margin = new Thickness(0, 6, 0, 0);
         panel.Children.Add(_windowList);
         panel.Children.Add(_windowEmpty);
@@ -560,7 +577,7 @@ public sealed class SceneEditorWindow : Window
         head.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         head.Children.Add(SectionTitle("追加窗口（这块屏幕上的全部窗口）"));
 
-        var refresh = Ui.ActionButton("刷新", () => RefreshListRequested?.Invoke());
+        var refresh = Ui.Id(Ui.ActionButton("刷新", () => RefreshListRequested?.Invoke()), "editor.refresh");
         refresh.VerticalAlignment = VerticalAlignment.Center;
         refresh.ToolTip = "重新扫描这块屏幕上的窗口";
         Grid.SetColumn(refresh, 1);
@@ -578,11 +595,11 @@ public sealed class SceneEditorWindow : Window
         var panel = new StackPanel { Margin = new Thickness(0, 14, 0, 0) };
         var actions = new WrapPanel();
 
-        var rename = Ui.ActionButton("重命名场景", () => RenameRequested?.Invoke());
+        var rename = Ui.Id(Ui.ActionButton("重命名场景", () => RenameRequested?.Invoke()), "editor.rename");
         rename.Margin = new Thickness(0, 0, 8, 6);
         actions.Children.Add(rename);
 
-        var delete = MakeDanger("删除场景", () => DeleteRequested?.Invoke());
+        var delete = Ui.Id(Ui.DangerButton("删除场景", () => DeleteRequested?.Invoke()), "editor.delete");
         delete.Margin = new Thickness(0, 0, 8, 6);
         actions.Children.Add(delete);
         panel.Children.Add(actions);
@@ -591,7 +608,7 @@ public sealed class SceneEditorWindow : Window
 
     private FrameworkElement BuildFooter()
     {
-        var done = Ui.ActionButton("完成", Close, accent: true);
+        var done = Ui.Id(Ui.ActionButton("完成", Close, accent: true), "editor.done");
         done.HorizontalAlignment = HorizontalAlignment.Right;
         done.Margin = new Thickness(0, 14, 0, 0);
         return done;
@@ -604,11 +621,22 @@ public sealed class SceneEditorWindow : Window
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
         var texts = new StackPanel();
+
+        var titleLine = new StackPanel { Orientation = Orientation.Horizontal };
+        // 先给状态再给标题：「未打开」是决定要不要移除的主要依据。
+        var status = Ui.Id(Ui.Text(item.IsOpen ? "已打开" : "未打开", 10, FontWeights.SemiBold,
+            item.IsOpen ? Theme.SuccessBrush : Theme.TextMuted), $"editor.status.{item.Index}");
+        status.VerticalAlignment = VerticalAlignment.Center;
+        status.Margin = new Thickness(0, 1, 6, 0);
+        titleLine.Children.Add(status);
+
         var title = Ui.Text(
             string.IsNullOrWhiteSpace(item.Title) ? FallbackTitle(item) : item.Title,
             12, FontWeights.SemiBold, Theme.TextPrimary);
         title.TextTrimming = TextTrimming.CharacterEllipsis;
-        texts.Children.Add(title);
+        title.VerticalAlignment = VerticalAlignment.Center;
+        titleLine.Children.Add(title);
+        texts.Children.Add(titleLine);
 
         var sub = Ui.Text(WindowMeta(item), 10.5, FontWeights.Normal, Theme.TextMuted);
         sub.Margin = new Thickness(0, 2, 0, 0);
@@ -619,7 +647,9 @@ public sealed class SceneEditorWindow : Window
         grid.Children.Add(texts);
 
         int index = item.Index;
-        var remove = Ui.ActionButton("移除", () => RemoveWindowRequested?.Invoke(index), enabled: total > 1);
+        var remove = Ui.Id(
+            Ui.ActionButton("移除", () => RemoveWindowRequested?.Invoke(index), enabled: total > 1),
+            $"editor.remove.{index}");
         if (total <= 1) remove.ToolTip = "场景至少保留一个窗口；整个场景不要了请用「删除场景」";
         remove.Margin = new Thickness(8, 0, 0, 0);
         Grid.SetColumn(remove, 1);
@@ -631,12 +661,14 @@ public sealed class SceneEditorWindow : Window
             CornerRadius = new CornerRadius(8),
             Padding = new Thickness(10, 7, 8, 7),
             Margin = new Thickness(0, 5, 0, 0),
+            // 未打开的整行降饱和度：扫一眼就能看出这一项现在不在桌面上。
+            Opacity = item.IsOpen ? 1 : 0.66,
             Child = grid
         };
     }
 
     /// <summary>一个可追加 / 已在场景 / 属于其它场景的窗口行。</summary>
-    private Border BuildAppendRow(AppendableWindowItem item)
+    private Border BuildAppendRow(AppendableWindowItem item, int index)
     {
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition());
@@ -667,7 +699,9 @@ public sealed class SceneEditorWindow : Window
         bool enabled;
         if (item.InScene)
         {
-            label = "已在场景";
+            // 这个列表只列当前可见的窗口，所以「已在场景」的项一定是打开着的；
+            // 场景里没打开的那些不在这个列表里，状态由上面的成员列表标「未打开」。
+            label = "已在场景（已打开）";
             enabled = false;
         }
         else if (item.InOtherScene)
@@ -682,8 +716,9 @@ public sealed class SceneEditorWindow : Window
         }
 
         long handle = item.Handle;
-        var append = Ui.ActionButton(label,
-            () => AppendWindowRequested?.Invoke(handle), accent: enabled, enabled: enabled);
+        var append = Ui.Id(Ui.ActionButton(label,
+            () => AppendWindowRequested?.Invoke(handle), accent: enabled, enabled: enabled),
+            $"editor.append.{index}");
         if (!item.CanAppend)
             append.ToolTip = item.InScene
                 ? "这个窗口已经在当前场景里"
@@ -761,27 +796,4 @@ public sealed class SceneEditorWindow : Window
         return title;
     }
 
-    private static Border MakeDanger(string text, Action onClick)
-    {
-        var border = new Border
-        {
-            Background = Brushes.Transparent,
-            BorderBrush = Theme.DangerBrush,
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(11, 4, 11, 4),
-            Child = Ui.Text(text, 11.5, FontWeights.Normal, Theme.DangerBrush),
-            Cursor = Cursors.Hand,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        border.MouseEnter += (_, _) => border.Background = Theme.PanelCardHover;
-        border.MouseLeave += (_, _) => border.Background = Brushes.Transparent;
-        border.MouseLeftButtonDown += (_, e) => e.Handled = true;
-        border.MouseLeftButtonUp += (_, e) =>
-        {
-            e.Handled = true;
-            onClick();
-        };
-        return border;
-    }
 }

@@ -27,6 +27,22 @@ public sealed class SavedWindow
     public string MonitorDevice { get; set; }
 
     public bool Maximized { get; set; }
+
+    /// <summary>
+    /// L1 应用身份：<c>aumid:…</c> 或 <c>exe:…</c>（见 <see cref="WindowIdentity"/>）。
+    /// 旧快照没有该字段 → 配对退回「exe + 标题 + 矩形」的旧行为，<b>不做一次性迁移</b>：
+    /// 旧数据里没有类名和位次，补算都是猜测，猜错会把窗口摆到别处。
+    /// </summary>
+    public string AppId { get; set; }
+
+    /// <summary>窗口类名（L2 的一部分）：浏览器主窗口 / 开发者工具 / 子框架靠它分开。</summary>
+    public string ClassName { get; set; }
+
+    /// <summary>
+    /// 簇内位次：同 (AppId, 类名) 的窗口按保存时的 (Top, Left) 升序排名，从 0 开始。
+    /// 这是「切过标签页还能认回同一个窗口」的关键——标题会变，位次不会。
+    /// </summary>
+    public int Ordinal { get; set; }
 }
 
 /// <summary>
@@ -64,6 +80,19 @@ public sealed class SavedWindowItem
     public string ProcessName { get; init; }
     public string ExePath { get; init; }
     public bool Maximized { get; init; }
+
+    /// <summary>
+    /// 这一项此刻是否对应着运行中的窗口。
+    /// 详情窗用它区分「已打开 / 未打开」——未打开的成员只能靠移除来清理，
+    /// 没有这个标记用户根本判断不出该不该删。
+    /// </summary>
+    public bool IsOpen { get; init; }
+
+    /// <summary>L1 应用身份；旧快照为空。追加列表用它判断「这个窗口是不是已经在场景里」。</summary>
+    public string AppId { get; init; }
+
+    /// <summary>窗口类名；旧快照为空。</summary>
+    public string ClassName { get; init; }
 }
 
 /// <summary>场景详情里「追加窗口」的一项：这块屏幕上的一个窗口及它的归属状态。</summary>
@@ -88,6 +117,9 @@ public sealed class WindowSnapshot
 {
     public IntPtr Handle { get; init; }
     public string Title { get; init; }
+
+    /// <summary>窗口类名：判定「是否已在场景里」时用来区分同程序的不同窗口类型。</summary>
+    public string ClassName { get; init; }
     public string ProcessName { get; init; }
     public string ExePath { get; init; }
     public string MonitorDevice { get; init; }

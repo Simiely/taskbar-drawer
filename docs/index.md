@@ -23,4 +23,15 @@ related: []
 - [交接](handoff.md) — 接手入口：当前状态、优化待办、未落地方案、发布与验收
 - [CHANGELOG](../CHANGELOG.md) — 版本历史
 
+走查（scenario-walkthrough 方法）：
+
+- [能力清单](walkthrough/capabilities.md) — 真实能力 C-01…C-22 与入口，素材生成的唯一依据
+- [素材与覆盖矩阵](walkthrough/scenarios.md) — 18 条操作链 S-01…S-18 + 矩阵对账
+- [第 1 轮报告](walkthrough/report-1.md) — 13 个问题、已修 11、实机回归步骤
+
+设计决策：
+
+- [窗口识别模型改造建议](design/window-identity.md) — 两层身份（AUMID + 类名 + 序号）、弹窗准入三道闸、详情窗状态标识
+- [剩余待办的调研与实施建议](design/backlog-plan.md) — 9 项待办逐项检索后的取舍：做 5 项、暂缓 1 项、不做 2 项，含顺序与验收
+
 新增跨模块文档时放在 `docs/` 并带 frontmatter，格式见 `_template.md`。

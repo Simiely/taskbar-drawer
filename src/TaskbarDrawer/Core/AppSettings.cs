@@ -34,8 +34,22 @@ public sealed class AppSettings
 
     private const int CurrentVersion = 4;
 
-    public static string Folder => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TaskbarDrawer");
+    /// <summary>
+    /// 数据目录，默认 <c>%LOCALAPPDATA%\TaskbarDrawer</c>。
+    /// 可用环境变量 <c>TASKBAR_DRAWER_HOME</c> 覆盖：自动化夹具靠它把配置与场景隔离到临时目录——
+    /// 否则跑一次就会把测试场景写进用户真实的 <c>saved-groups.json</c>。
+    /// （不能靠改 <c>LOCALAPPDATA</c> 实现：<see cref="Environment.GetFolderPath"/> 走 shell API，不认这个环境变量。）
+    /// </summary>
+    public static string Folder
+    {
+        get
+        {
+            string custom = Environment.GetEnvironmentVariable("TASKBAR_DRAWER_HOME");
+            if (!string.IsNullOrWhiteSpace(custom)) return custom;
+            return Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TaskbarDrawer");
+        }
+    }
 
     public static string FilePath => Path.Combine(Folder, "settings.json");
 

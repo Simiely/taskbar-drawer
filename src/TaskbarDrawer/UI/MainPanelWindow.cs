@@ -67,16 +67,18 @@ public sealed class MainPanelWindow : Window
         _emptyHint.Margin = new Thickness(2, 8, 0, 0);
 
         _singleRow = new ToggleRow("单窗口模式", null,
-            value => SingleWindowRequested?.Invoke(value));
+            value => SingleWindowRequested?.Invoke(value), "panel.singleWindow");
         _autoStartRow = new ToggleRow("开机自启", null,
-            value => AutoStartRequested?.Invoke(value));
+            value => AutoStartRequested?.Invoke(value), "panel.autoStart");
 
         _stashHotkeyValue = Text("Ctrl+Alt+Shift+D", 11, FontWeights.SemiBold, Theme.TextPrimary);
         _status = Text("", 11, FontWeights.Normal, Theme.TextMuted);
         _status.Margin = new Thickness(2, 10, 0, 0);
         _status.TextWrapping = TextWrapping.Wrap;
 
-        var stashEdit = Ui.ActionButton("修改", () => StartRecording(), accent: false, enabled: true, out _stashEditLabel);
+        var stashEdit = Ui.Id(
+            Ui.ActionButton("修改", () => StartRecording(), accent: false, enabled: true, out _stashEditLabel),
+            "panel.hotkey");
 
         Content = BuildRoot(stashEdit);
 
@@ -445,7 +447,7 @@ public sealed class MainPanelWindow : Window
 
     // ---------- 布局 ----------
 
-    private FrameworkElement BuildRoot(Border stashEdit)
+    private FrameworkElement BuildRoot(Button stashEdit)
     {
         var root = new Border
         {
@@ -500,7 +502,7 @@ public sealed class MainPanelWindow : Window
         Grid.SetColumn(title, 0);
         grid.Children.Add(title);
 
-        var help = Ui.ActionButton("说明", () => HelpRequested?.Invoke());
+        var help = Ui.Id(Ui.ActionButton("说明", () => HelpRequested?.Invoke()), "panel.help");
         help.Background = Brushes.Transparent;
         help.Margin = new Thickness(0, 0, 4, 0);
         help.ToolTip = "打开使用说明：软件截图 + 操作标注";
@@ -509,7 +511,7 @@ public sealed class MainPanelWindow : Window
         Grid.SetColumn(help, 1);
         grid.Children.Add(help);
 
-        var close = Ui.ActionButton("✕", Hide);
+        var close = Ui.Id(Ui.ActionButton("✕", Hide), "panel.close");
         close.Background = Brushes.Transparent;
         close.VerticalAlignment = VerticalAlignment.Top;
         close.MouseEnter += (_, _) => close.Background = Theme.PanelCardHover;
@@ -551,14 +553,17 @@ public sealed class MainPanelWindow : Window
 
         // 三个动作会自动换行，窄屏 / 大字号下也不会挤出面板。
         var actions = new WrapPanel { Margin = new Thickness(0, 12, 0, 0) };
-        var stashAction = Ui.ActionButton("＋ 新建场景", () => StashRequested?.Invoke(), accent: true);
+        var stashAction = Ui.Id(
+            Ui.ActionButton("＋ 新建场景", () => StashRequested?.Invoke(), accent: true), "panel.newScene");
         stashAction.Margin = new Thickness(0, 0, 8, 6);
-        stashAction.ToolTip = "把当前显示器上可见的窗口收成一个新场景并保存，任务栏留一枚 ⭐ 胶囊";
+        stashAction.ToolTip = "把当前显示器上可见的窗口收成一个新场景并保存，任务栏留一枚带彩色圆点的胶囊";
         actions.Children.Add(stashAction);
-        var latestAction = Ui.ActionButton("展开最近的场景", () => ExpandLatestRequested?.Invoke());
+        var latestAction = Ui.Id(
+            Ui.ActionButton("展开最近的场景", () => ExpandLatestRequested?.Invoke()), "panel.expandLatest");
         latestAction.Margin = new Thickness(0, 0, 8, 6);
         actions.Children.Add(latestAction);
-        var allAction = Ui.ActionButton("全部展开", () => ExpandAllRequested?.Invoke());
+        var allAction = Ui.Id(
+            Ui.ActionButton("全部展开", () => ExpandAllRequested?.Invoke()), "panel.expandAll");
         allAction.Margin = new Thickness(0, 0, 8, 6);
         actions.Children.Add(allAction);
         panel.Children.Add(actions);
@@ -594,6 +599,9 @@ public sealed class MainPanelWindow : Window
             "标识大小", SceneIconMetrics.DefaultBadgeScale * 100,
             SceneIconMetrics.MinBadgeScale * 100, SceneIconMetrics.MaxBadgeScale * 100,
             v => SceneBadgeScaleRequested?.Invoke(v), out _badgeSlider, out _badgeValue));
+
+        Ui.Id(_appIconSlider, "panel.appIconScale");
+        Ui.Id(_badgeSlider, "panel.badgeScale");
         return panel;
     }
 
@@ -666,7 +674,7 @@ public sealed class MainPanelWindow : Window
         return stack;
     }
 
-    private FrameworkElement BuildHotkeys(Border stashEdit)
+    private FrameworkElement BuildHotkeys(Button stashEdit)
     {
         var panel = new StackPanel { Margin = new Thickness(0, 16, 0, 0) };
         var title = Text("快捷键", 11, FontWeights.SemiBold, Theme.TextSecondary);
@@ -677,7 +685,7 @@ public sealed class MainPanelWindow : Window
         return panel;
     }
 
-    private static FrameworkElement BuildHotkeyRow(string title, TextBlock value, Border edit)
+    private static FrameworkElement BuildHotkeyRow(string title, TextBlock value, Button edit)
     {
         var grid = new Grid { Margin = new Thickness(0, 8, 0, 0) };
         grid.ColumnDefinitions.Add(new ColumnDefinition());
@@ -717,7 +725,7 @@ public sealed class MainPanelWindow : Window
         return dot;
     }
 
-    private Border BuildSceneRow(StashGroupSummary group)
+    private Button BuildSceneRow(StashGroupSummary group)
     {
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition());
@@ -760,7 +768,9 @@ public sealed class MainPanelWindow : Window
         string savedId = group.SavedId;
 
         // 收起 / 展开点这一行；「关闭窗口」是真的关，「编辑」只改保存的快照。
-        var close = Ui.ActionButton("关闭窗口", () => SceneCloseRequested?.Invoke(id));
+        var close = Ui.Id(
+            Ui.ActionButton("关闭窗口", () => SceneCloseRequested?.Invoke(id)),
+            $"panel.scene.{id}.close");
         close.Margin = new Thickness(0, 0, 6, 0);
         close.VerticalAlignment = VerticalAlignment.Center;
         close.ToolTip = "关闭这个场景自己的窗口（等于逐个点 ×）；场景胶囊保留，之后还能打开";
@@ -769,18 +779,21 @@ public sealed class MainPanelWindow : Window
 
         if (!string.IsNullOrEmpty(savedId))
         {
-            var edit = Ui.ActionButton("详情", () => SavedEditRequested?.Invoke(savedId), accent: true);
+            var edit = Ui.Id(
+                Ui.ActionButton("详情", () => SavedEditRequested?.Invoke(savedId), accent: true),
+                $"panel.scene.{id}.detail");
             edit.VerticalAlignment = VerticalAlignment.Center;
-            edit.ToolTip = "在面板旁边打开场景详情：移除 / 追加窗口、换标识、重命名或删除";
+            edit.ToolTip = "在面板旁边打开场景详情：移除 / 追加窗口、换标识、重命名或删除；再次点击同一场景的详情可收起";
             Grid.SetColumn(edit, 2);
             grid.Children.Add(edit);
         }
 
         return SceneCard(grid, () => SceneToggleRequested?.Invoke(id),
-            $"{group.CreatedAt:HH:mm} 新建场景 · 现在是{group.State}\n点这一行收起 / 展开");
+            $"{group.CreatedAt:HH:mm} 新建场景 · 现在是{group.State}\n点这一行收起 / 展开",
+            $"panel.scene.{id}", group.Name);
     }
 
-    private Border BuildClosedSceneRow(SavedGroupSummary group)
+    private Button BuildClosedSceneRow(SavedGroupSummary group)
     {
         var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition());
@@ -811,46 +824,37 @@ public sealed class MainPanelWindow : Window
         grid.Children.Add(texts);
 
         string id = group.Id;
-        var toggle = Ui.ActionButton("打开", () => SavedToggleRequested?.Invoke(id), accent: true);
+        var toggle = Ui.Id(
+            Ui.ActionButton("打开", () => SavedToggleRequested?.Invoke(id), accent: true),
+            $"panel.saved.{id}.open");
         toggle.Margin = new Thickness(0, 0, 6, 0);
         toggle.VerticalAlignment = VerticalAlignment.Center;
         toggle.ToolTip = "启动这个场景的软件，并摆回保存时的窗口位置";
         Grid.SetColumn(toggle, 1);
         grid.Children.Add(toggle);
 
-        var edit = Ui.ActionButton("详情", () => SavedEditRequested?.Invoke(id));
+        var edit = Ui.Id(
+            Ui.ActionButton("详情", () => SavedEditRequested?.Invoke(id)),
+            $"panel.saved.{id}.detail");
         edit.VerticalAlignment = VerticalAlignment.Center;
-        edit.ToolTip = "在面板旁边打开场景详情：移除 / 追加窗口、换标识、重命名或删除";
+        edit.ToolTip = "在面板旁边打开场景详情：移除 / 追加窗口、换标识、重命名或删除；再次点击同一场景的详情可收起";
         Grid.SetColumn(edit, 2);
         grid.Children.Add(edit);
 
         return SceneCard(grid, () => SavedToggleRequested?.Invoke(id),
             group.Titles.Count == 0
                 ? "场景保存的窗口记录\n点这一行打开"
-                : string.Join("\n", group.Titles.Take(6)) + "\n点这一行打开");
+                : string.Join("\n", group.Titles.Take(6)) + "\n点这一行打开",
+            $"panel.saved.{id}", group.Name);
     }
 
     /// <summary>场景列表卡片的共同外壳：圆角底色 + 悬停高亮 + 点整行触发。</summary>
-    private static Border SceneCard(Grid content, Action onClick, string tooltip)
+    private static Button SceneCard(
+        Grid content, Action onClick, string tooltip, string automationId, string name)
     {
-        var row = new Border
-        {
-            Background = Theme.PanelCard,
-            CornerRadius = new CornerRadius(10),
-            Padding = new Thickness(12, 9, 10, 9),
-            Margin = new Thickness(0, 6, 0, 0),
-            Child = content,
-            Cursor = Cursors.Hand,
-            ToolTip = tooltip
-        };
-        row.MouseEnter += (_, _) => row.Background = Theme.PanelCardHover;
-        row.MouseLeave += (_, _) => row.Background = Theme.PanelCard;
-        row.MouseLeftButtonUp += (_, e) =>
-        {
-            e.Handled = true;
-            onClick();
-        };
-        return row;
+        var row = Ui.CardButton(content, onClick, tooltip, new Thickness(12, 9, 10, 9), name);
+        row.Margin = new Thickness(0, 6, 0, 0);
+        return Ui.Id(row, automationId);
     }
 
     /// <summary>一行带 iOS 风格开关的条目：左侧标题 + 说明，右侧 40×24 滑动开关。</summary>
@@ -864,7 +868,7 @@ public sealed class MainPanelWindow : Window
         private readonly Ellipse _knob;
         private readonly Action<bool> _changed;
 
-        public ToggleRow(string title, string hint, Action<bool> changed)
+        public ToggleRow(string title, string hint, Action<bool> changed, string automationId)
         {
             _changed = changed;
 
@@ -904,26 +908,15 @@ public sealed class MainPanelWindow : Window
             Grid.SetColumn(_track, 1);
             grid.Children.Add(_track);
 
-            Root = new Border
+            Root = Ui.Id(Ui.CardButton(grid, () =>
             {
-                Background = Theme.PanelCard,
-                CornerRadius = new CornerRadius(10),
-                Padding = new Thickness(12, 9, 12, 9),
-                Child = grid,
-                Cursor = Cursors.Hand
-            };
-            Root.MouseEnter += (_, _) => Root.Background = Theme.PanelCardHover;
-            Root.MouseLeave += (_, _) => Root.Background = Theme.PanelCard;
-            Root.MouseLeftButtonUp += (_, e) =>
-            {
-                e.Handled = true;
                 Value = !Value;
                 Apply();
                 _changed(Value);
-            };
+            }, null, new Thickness(12, 9, 12, 9), title), automationId);
         }
 
-        public Border Root { get; }
+        public Button Root { get; }
 
         public bool Value { get; private set; }
 

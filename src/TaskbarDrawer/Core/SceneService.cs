@@ -83,7 +83,7 @@ public sealed class SceneService
             // 关之前按当前位置再存一次，下次打开才是用户最后摆放的样子。
             _workspace.UpdateSnapshot(saved, _stash, groupId);
             string monitor = _stash.MonitorOfGroup(groupId) ?? _workspace.MonitorOfSaved(saved);
-            int closed = _workspace.Close(_stash, groupId);
+            var closeHandles = _workspace.Close(_stash, groupId);
             return new SceneDissolveResult
             {
                 Found = true,
@@ -91,7 +91,7 @@ public sealed class SceneService
                 Badge = badge,
                 MonitorDevice = monitor,
                 GroupId = groupId,
-                Closed = closed
+                ClosedHandles = closeHandles
             };
         }
 
@@ -107,6 +107,43 @@ public sealed class SceneService
             Released = released,
             SnapshotDeleted = deleted
         };
+    }
+
+    /// <summary>
+    /// 场景详情：快照 + 「每一项此刻是否打开」。
+    /// 打开状态只有运行时组知道，所以要在这层把两边对起来再交给界面——
+    /// 详情窗靠它区分「已打开 / 未打开」，用户才判断得出该不该移除。
+    /// </summary>
+    public SavedGroupDetail Detail(string savedId)
+    {
+        if (_workspace.Find(savedId) == null) return null;
+
+        int groupId = _stash.GroupIdOfSaved(savedId);
+        var open = new HashSet<string>(StringComparer.Ordinal);
+        if (groupId != 0)
+        {
+            var members = _stash.Items.Where(i => i.GroupId == groupId).ToArray();
+            // 位次必须对整组成员一起算（含收起中的），只算展开的会让序号前移、认错窗口。
+            var ordinals = WindowIdentity.AssignOrdinals(members.Select(WindowIdentity.Candidate).ToArray());
+
+            foreach (var item in members)
+            {
+                if (item.Hidden) continue;   // 收起中的成员不算「已打开」
+
+                // 旧键（exe + 标题）照旧放进去：旧快照只有这一种键。
+                string legacy = SceneEdit.Key(item.ProcessPath, item.Title);
+                if (legacy.Length > 0) open.Add(legacy);
+
+                // 新键：AppId + 窗口类名 + 位次。标题变了也能认出来。
+                string appId = WindowIdentity.AppId(null, item.ProcessPath);
+                string className = NativeMethods.ClassName(item.Handle);
+                if (!ordinals.TryGetValue(item.Handle.ToInt64(), out int ordinal)) continue;
+                string identity = WindowIdentity.WindowKey(appId, className, ordinal);
+                if (identity.Length > 0) open.Add(identity);
+            }
+        }
+
+        return _workspace.Detail(savedId, open);
     }
 
     /// <summary>重命名场景：快照与运行中的胶囊同时改。</summary>
@@ -134,7 +171,7 @@ public sealed class SceneService
     }
 
     /// <summary>关闭没有关联快照的旧运行时组（正常路径走 Dissolve）；保留 SceneService 唯一写入口。</summary>
-    public int CloseLegacy(int groupId) => _workspace.Close(_stash, groupId);
+    public IReadOnlyList<IntPtr> CloseLegacy(int groupId) => _workspace.Close(_stash, groupId);
 
     /// <summary>
     /// 从场景移除一个窗口：快照删一项；场景正在运行时同时从运行时组摘掉，
@@ -214,13 +251,23 @@ public sealed class SceneService
 
         var merge = _workspace.AppendWindows(savedId, incoming.Select(i => i.Window).ToArray());
 
+        // 追加前先记住场景是不是收着的：接入第一个窗口之后整组就会变成「已展开」，
+        // 那时再判断已经晚了（见下面 StashSingle 的原因）。
+        bool collapsed = targetGroup != 0 &&
+                         _stash.Groups().FirstOrDefault(g => g.Id == targetGroup)?.Expanded == false;
+
         int adopted = 0;
         if (targetGroup != 0)
         {
             foreach (var item in incoming)
             {
                 if (_stash.GroupIdOf(item.Handle) != 0) continue;
-                if (_stash.Adopt(item.Handle, savedId, saved.Name, saved.Badge)) adopted++;
+                if (!_stash.Adopt(item.Handle, savedId, saved.Name, saved.Badge)) continue;
+
+                adopted++;
+                // 场景本来收着：新成员也收进收纳区。否则胶囊会翻成「已展开」，
+                // 而其它成员还在收纳区，此时点胶囊是「收起」而不是「展开」，语义就乱了。
+                if (collapsed) _stash.StashSingle(item.Handle);
             }
         }
 
@@ -249,8 +296,11 @@ public sealed class SceneDissolveResult
     /// <summary>关联的运行时组号；0 = 没有打开的窗口。</summary>
     public int GroupId { get; init; }
 
-    /// <summary>关闭窗口模式里实际发出 WM_CLOSE 的数量。</summary>
-    public int Closed { get; init; }
+    /// <summary>
+    /// 关闭窗口模式里真正投出 WM_CLOSE 的句柄。异步关闭要过一会儿才知道结果，
+    /// 所以这里交句柄、由界面层延时复核实际关掉了几个（见 <see cref="CloseReport"/>）。
+    /// </summary>
+    public IReadOnlyList<IntPtr> ClosedHandles { get; init; } = Array.Empty<IntPtr>();
 
     /// <summary>删除场景模式里交回桌面的窗口数。</summary>
     public int Released { get; init; }

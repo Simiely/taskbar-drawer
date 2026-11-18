@@ -100,6 +100,8 @@ public static class DisplayRules
 
     /// <summary>
     /// 还原时的候选窗口（同程序、可见、未被其它场景占用）。只带匹配所需字段。
+    /// <see cref="AppId"/> / <see cref="ClassName"/> 是两层身份的原料，喂给
+    /// <see cref="WindowIdentity.Pair"/> 做「同位次优先」的配对；旧快照用不到它们。
     /// </summary>
     public sealed class RestoreCandidate
     {
@@ -107,59 +109,27 @@ public static class DisplayRules
         public string Title { get; init; }
         public string MonitorDevice { get; init; }
         public NativeMethods.RECT Rect { get; init; }
+
+        /// <summary>L1 应用身份（<see cref="WindowIdentity.AppId"/>）。</summary>
+        public string AppId { get; init; }
+
+        /// <summary>窗口类名（L2 的一部分）：同程序的不同窗口类型靠它分开。</summary>
+        public string ClassName { get; init; }
     }
 
     /// <summary>
     /// 从同程序的候选窗口里挑出「最像保存项」的那个，返回下标（-1 = 没有候选）。
-    /// 优先级：同屏 + 同名 → 同名（标题相同就是那个窗口，即使开在别的屏也要挪回去）
-    /// → 同屏最近 → 任意屏最近。旧实现按枚举顺序取第一个，同程序多窗口会互相换位。
+    /// 规则本体在 <see cref="WindowIdentity.Pair"/>：位次 → 标题 → 最近。
+    /// 这里保留入口是为了让调用方不必同时引两个类型；<paramref name="ordinals"/> 为 null
+    /// 或保存项没有身份字段时，行为与改造前完全一致（旧快照路径）。
     /// </summary>
-    public static int PickRestoreCandidate(IReadOnlyList<RestoreCandidate> candidates, SavedWindow saved)
-    {
-        if (candidates == null || candidates.Count == 0 || saved == null) return -1;
+    public static int PickRestoreCandidate(
+        IReadOnlyList<RestoreCandidate> candidates, SavedWindow saved,
+        IReadOnlyDictionary<long, int> ordinals = null)
+        => WindowIdentity.Pair(candidates, saved, ordinals);
 
-        string device = MonitorOf(saved);
-        string title = saved.Title?.Trim();
-        var savedRect = NativeMethods.RECT.FromLTRB(
-            saved.Left, saved.Top, saved.Left + saved.Width, saved.Top + saved.Height);
-
-        int best = -1;
-        long bestDistance = long.MaxValue;
-
-        // 1) 同屏 + 同名；2) 同名（跨屏也算：程序重启后系统常把它开在主屏）。
-        for (int pass = 0; pass < 2; pass++)
-        {
-            if (string.IsNullOrEmpty(title)) break;
-            for (int i = 0; i < candidates.Count; i++)
-            {
-                var candidate = candidates[i];
-                if (!string.Equals(candidate.Title?.Trim(), title, StringComparison.OrdinalIgnoreCase)) continue;
-                if (pass == 0 && !BelongsTo(device, candidate.MonitorDevice)) continue;
-                return i;
-            }
-        }
-
-        // 3) 同屏最近；4) 任意屏最近。
-        for (int pass = 0; pass < 2; pass++)
-        {
-            best = -1;
-            bestDistance = long.MaxValue;
-            for (int i = 0; i < candidates.Count; i++)
-            {
-                var candidate = candidates[i];
-                if (pass == 0 && !BelongsTo(device, candidate.MonitorDevice)) continue;
-                long distance = RectDistance(candidate.Rect, savedRect);
-                if (distance >= bestDistance) continue;
-                best = i;
-                bestDistance = distance;
-            }
-            if (best >= 0) return best;
-        }
-
-        return -1;
-    }
-
-    private static long RectDistance(NativeMethods.RECT a, NativeMethods.RECT b)
+    /// <summary>两个矩形的距离（四条边 + 尺寸差）：配对第 3 / 4 级用它挑「位置最像」的窗口。</summary>
+    public static long RectDistance(NativeMethods.RECT a, NativeMethods.RECT b)
         => Math.Abs((long)a.Left - b.Left) + Math.Abs((long)a.Top - b.Top) +
            Math.Abs((long)a.Width - b.Width) + Math.Abs((long)a.Height - b.Height);
 

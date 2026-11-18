@@ -56,9 +56,14 @@ public sealed class StashAllService
     private readonly List<StashGroup> _groups = new();
     private int _nextGroupId = 1;
 
-    public StashAllService(ISceneIconPainter icons = null)
+    /// <summary>窗口操作端口：状态机只通过它碰真实窗口，单测注入假实现。</summary>
+    private readonly IWindowGateway _gateway;
+
+    public StashAllService(ISceneIconPainter icons = null, IWindowGateway gateway = null)
     {
-        _stash = new WindowStash(icons);
+        _gateway = gateway ?? Win32WindowGateway.Instance;
+        // 同一个网关实例要交给 WindowStash：假实现里窗口状态是一份内存，两边必须看到同一份。
+        _stash = new WindowStash(icons, _gateway);
     }
 
     /// <summary>下一次 ExpandNewest 从比它更旧的组开始选，实现多组轮转；按显示器各自独立。</summary>
@@ -71,6 +76,12 @@ public sealed class StashAllService
     public IReadOnlyCollection<StashedWindow> Items => _stash.Items;
 
     public event Action Changed;
+
+    /// <summary>这个句柄此刻是否在记录里（窗口事件回调用它快速丢掉无关窗口）。</summary>
+    public bool Contains(IntPtr hwnd) => hwnd != IntPtr.Zero && _stash.Contains(hwnd.ToInt64());
+
+    /// <summary>重贴场景图标（应用改图标不会产生任何事件，只能定期补）。返回真正重画过的条数。</summary>
+    public int ReapplyIcons() => _stash.ReapplyIcons();
 
     /// <summary>最新的组在前。</summary>
     public IReadOnlyList<StashGroupSummary> Groups()
@@ -110,22 +121,23 @@ public sealed class StashAllService
         _stash.Prune();
         SyncGroups();
 
-        IntPtr foreground = NativeMethods.GetForegroundWindow();
+        IntPtr foreground = _gateway.Foreground();
         int newGroupId = _nextGroupId;
         LastBlockedByElevation = 0;
 
         int hidden = 0;
-        foreach (var candidate in WindowEnumerator.Enumerate(includeMinimized: false))
+        foreach (var candidate in _gateway.Enumerate(includeMinimized: false))
         {
             // 已属于某组（正展开）的窗口不再重复收，否则会把上一组拆散。
             if (_stash.Contains(candidate.Handle.ToInt64())) continue;
 
             // 只看当前这块屏幕：在显示器 1 操作时不要动显示器 2 的窗口。
-            if (!DisplayRules.BelongsTo(monitorDevice, NativeMethods.MonitorDeviceOf(candidate.Handle))) continue;
+            if (!DisplayRules.BelongsTo(monitorDevice, _gateway.MonitorOf(candidate.Handle))) continue;
 
             // 管理员窗口：本程序不是管理员时 SW_HIDE 会被 UIPI 拒绝（ShowWindow 返回 false），
             // 硬收只会留下一个点不开的空胶囊，所以跳过并计数，由界面提示原因。
-            if (!NativeMethods.IsCurrentProcessElevated && NativeMethods.IsProcessElevated(candidate.ProcessId))
+            // 提权判断在网关里（只有普通权限实例才需要跨进程查令牌）。
+            if (_gateway.Describe(candidate.Handle)?.Elevated == true)
             {
                 LastBlockedByElevation++;
                 continue;
@@ -144,7 +156,7 @@ public sealed class StashAllService
             Id = newGroupId,
             CreatedAt = DateTime.Now,
             ForegroundBefore = IsEligibleActivationTarget(foreground) &&
-                               DisplayRules.BelongsTo(monitorDevice, NativeMethods.MonitorDeviceOf(foreground))
+                               DisplayRules.BelongsTo(monitorDevice, _gateway.MonitorOf(foreground))
                 ? foreground
                 : IntPtr.Zero
         });
@@ -174,8 +186,11 @@ public sealed class StashAllService
     public StashedWindow CaptureSnapshot(IntPtr hwnd) => _stash.Capture(hwnd, 0);
 
     /// <summary>
-    /// 从运行中的场景摘掉一个窗口：先按快照里的 exe + 标题匹配运行时记录，
-    /// 匹配不到时退回同程序的第一个窗口。收起中的窗口会放回桌面，展开中的保持原位。
+    /// 从运行中的场景摘掉一个窗口：按两层身份配对（位次 → 标题 → 最近），收起中的放回桌面。
+    ///
+    /// 早先这里用 exe + 标题匹配旧快照，同程序多窗口且标题早就变了时直接匹配不到、
+    /// 放弃摘除——运行中的成员还挂在组里，关闭场景时又被写回快照，用户看到的就是
+    /// 「移除的窗口下次打开还在」。这和还原走的是同一个判断，必须共用 <see cref="WindowIdentity.Pair"/>。
     /// </summary>
     public bool Detach(string savedId, SavedWindow target, out bool restored)
     {
@@ -184,16 +199,14 @@ public sealed class StashAllService
         if (groupId == 0 || target == null) return false;
 
         var items = _stash.Items.Where(i => i.GroupId == groupId).ToArray();
-        string exe = NormalizePath(target.ExePath);
-        var sameExe = items.Where(i => NormalizePath(i.ProcessPath) == exe).ToArray();
-        var match = sameExe.FirstOrDefault(i =>
-            string.Equals(SceneTitle.Strip(i.Title).Trim(), (target.Title ?? "").Trim(),
-                StringComparison.OrdinalIgnoreCase));
-        // 标题匹配不上时只在同程序只有一个窗口时兜底；多个同名程序里不能猜，
-        // 宁可只改快照，也不能把另一个窗口从场景里摘错。
-        if (match == null && sameExe.Length == 1) match = sameExe[0];
-        if (match == null) return false;
+        if (items.Length == 0) return false;
 
+        var candidates = items.Select(WindowIdentity.Candidate).ToArray();
+        var ordinals = WindowIdentity.AssignOrdinals(candidates);
+        int index = WindowIdentity.Pair(candidates, target, ordinals);
+        if (index < 0) return false;
+
+        var match = items[index];
         if (!_stash.Untrack(match.Handle, out restored)) return false;
         SyncGroups();
         Diagnostics.Info("scene",
@@ -201,9 +214,6 @@ public sealed class StashAllService
         Changed?.Invoke();
         return true;
     }
-
-    private static string NormalizePath(string path)
-        => string.IsNullOrWhiteSpace(path) ? "" : path.Replace('\\', '/').ToLowerInvariant();
 
     /// <summary>这个场景现在有没有对应的运行时组（0 = 已关闭，只有存下来的快照）。</summary>
     public int GroupIdOfSaved(string savedId)
@@ -331,7 +341,7 @@ public sealed class StashAllService
         var items = _stash.Items.Where(i => i.GroupId == groupId).ToArray();
         foreach (var item in items.Where(i => !i.Hidden))
         {
-            string device = NativeMethods.MonitorDeviceOf(item.Handle);
+            string device = _gateway.MonitorOf(item.Handle);
             if (device != null) return device;
         }
         return items.FirstOrDefault(i => !string.IsNullOrEmpty(i.MonitorDevice))?.MonitorDevice;
@@ -368,21 +378,35 @@ public sealed class StashAllService
         if (group == null) return 0;
 
         int shown = 0;
+        var restored = new List<IntPtr>();
         foreach (var item in _stash.Items.Where(i => i.GroupId == groupId && i.Hidden).ToArray())
         {
             // 收起期间标识可能改过：展开前把当前标识记到成员上，Restore 会据此换窗口图标。
             _stash.SetSceneIcon(item, group.Badge);
-            if (_stash.Restore(item.Handle.ToInt64())) shown++;
+            if (!_stash.Restore(item.Handle.ToInt64())) continue;
+            shown++;
+            restored.Add(item.Handle);
         }
 
-        if (shown > 0 && IsEligibleActivationTarget(group.ForegroundBefore))
-            WindowActivator.Activate(group.ForegroundBefore);
+        // 置前：优先收纳前的前台窗口；从快照拉起的组没有记录前台窗口，
+        // 退回第一个刚还原的窗口——否则整组会停在 z 序最下面（看着像「没打开」）。
+        if (shown > 0)
+        {
+            IntPtr focus = SceneFocusRules.Pick(group.ForegroundBefore, restored, IsEligibleActivationTarget);
+            if (focus != IntPtr.Zero) _gateway.Activate(focus);
+        }
 
         if (shown > 0) Changed?.Invoke();
-        Diagnostics.Info("scene",
-            $"展开 group={groupId}「{group.Name}」 screen={NativeMethods.MonitorDeviceOfCursor()} 个数={shown}");
+        Diagnostics.Info("scene", $"展开 group={groupId}「{group.Name}」 个数={shown}");
         return shown;
     }
+
+    /// <summary>
+    /// 把单个已接入的窗口重新收进收纳区。
+    /// 往「收起中」的场景追加窗口时用：新窗口本来是可见的，直接接入会让整组状态翻成「已展开」，
+    /// 而其它成员还留在收纳区，胶囊语义就乱了。
+    /// </summary>
+    public bool StashSingle(IntPtr hwnd) => _stash.HideAgain(hwnd.ToInt64());
 
     /// <summary>
     /// 把某一组重新收起（保留组记录，位置按当前状态刷新）。
@@ -399,7 +423,7 @@ public sealed class StashAllService
         {
             // 按屏隔离：收紧时再问一次窗口当前在哪块屏，跨屏成员留在原屏幕。
             if (!string.IsNullOrEmpty(monitorDevice) &&
-                !DisplayRules.BelongsTo(monitorDevice, NativeMethods.MonitorDeviceOf(item.Handle))) continue;
+                !DisplayRules.BelongsTo(monitorDevice, _gateway.MonitorOf(item.Handle))) continue;
             if (_stash.HideAgain(item.Handle.ToInt64())) hidden++;
         }
 
@@ -458,9 +482,10 @@ public sealed class StashAllService
         return released;
     }
 
-    public int Prune()
+    /// <param name="nowUtc">只给单测用：宽限期需要把时间推快，生产路径传 null。</param>
+    public int Prune(DateTime? nowUtc = null)
     {
-        int changed = _stash.Prune();
+        int changed = _stash.Prune(nowUtc);
         int before = _groups.Count;
         SyncGroups();
         // changed 包含「被外部还原」的窗口：组还在，但展开状态和计数都变了，界面必须刷新。
@@ -477,9 +502,9 @@ public sealed class StashAllService
     {
         if (string.IsNullOrEmpty(monitorDevice)) return false;
 
-        foreach (var candidate in WindowEnumerator.Enumerate(includeMinimized: false))
+        foreach (var candidate in _gateway.Enumerate(includeMinimized: false))
         {
-            if (!DisplayRules.BelongsTo(monitorDevice, NativeMethods.MonitorDeviceOf(candidate.Handle))) continue;
+            if (!DisplayRules.BelongsTo(monitorDevice, _gateway.MonitorOf(candidate.Handle))) continue;
             if (!_stash.Contains(candidate.Handle.ToInt64())) return true;
         }
         return false;
@@ -493,7 +518,7 @@ public sealed class StashAllService
         _groups.RemoveAll(g => !alive.Contains(g.Id));
     }
 
-    private static bool IsEligibleActivationTarget(IntPtr hwnd)
-        => hwnd != IntPtr.Zero && NativeMethods.IsWindow(hwnd) &&
+    private bool IsEligibleActivationTarget(IntPtr hwnd)
+        => hwnd != IntPtr.Zero && _gateway.IsWindow(hwnd) &&
            !WindowEnumerator.IsOwnProcessWindow(hwnd) && !WindowEnumerator.IsShellWindow(hwnd);
 }

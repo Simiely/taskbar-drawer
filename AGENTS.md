@@ -1,6 +1,6 @@
 # AGENTS.md · 项目规则
 
-> 📌 **文档基线**：2026-11-17 · `0877b09`（文档维护：升级 repo-kit 2.6.0 / 规范 2.1.2）　← 前序：1561390
+> 📌 **文档基线**：2026-11-18 · `22cb813`（1.13.7–1.13.8：移除回归 / 详情按钮开关）　← 前序：b2cb4e3
 > **更新文档 / 代码后，请更新此行**（日期 + 新 commit hash），并在 CHANGELOG 追加版本。
 
 > 生成文件，勿手改。改规则请改 `schema/agents.template.md`，再运行 `python tools/repo-kit/generate.py --root . --write`。
@@ -16,7 +16,7 @@
 
 ## 关键坑
 
-1. **Win11 塞不进任务栏**：胶囊是贴 `Shell_TrayWnd` 的 topmost 小窗，每 2 s 重贴一次。任务栏会把它抬到上面（看得见但点不到），靠 `WindowFromPoint` 体检判定被盖后强制复位。
+1. **Win11 塞不进任务栏**：胶囊是贴 `Shell_TrayWnd` 的 topmost 小窗，与任务栏同属一个 topmost 波段——谁最后被抬起谁在上面。任务栏在「点它 / 切窗口 / 改几何」时会抬自己，所以胶囊会短暂被压住（看得见但点不到）。判定靠 `WindowFromPoint` 命中测试；**复位要走两条路**：只是被压住时用 `SetWindowPos(HWND_TOPMOST, SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE)` 纯抬 z 序，几何真变了才做全量重排（1.7.1）。**驱动必须是事件**（`EVENT_SYSTEM_FOREGROUND` + 按 Explorer 进程订阅的 `EVENT_OBJECT_LOCATIONCHANGE`）+ 250 ms 自适应守卫（8 轮后停），只留 2 s 全量体检兜底；纯轮询会让遮挡窗口长达一个周期，且点击事件被任务栏吃掉。
 2. **关闭窗口只按句柄**：`PostMessageW(WM_CLOSE)` 只发给该组自己记录的 hwnd。曾按 exe 路径关同类窗口，把同一程序里不在组内的下载窗口一起关了（弹「这将取消所有传输」）。
 3. **「收起」是 `SW_HIDE` 不是最小化**：要同时记录 `WINDOWPLACEMENT`（换算成屏幕坐标），还原后尺寸偏差 > 2 px 用 `SetWindowPos` 校正。
 4. **运行时组只是场景的运行态**：`StashAllService` 持句柄，`saved-groups.json` 存快照，二者靠 `SavedId` 一一对应。收纳 = `StashAll` + `SaveFrom` + `LinkSaved`，正常路径下不允许出现没有 `SavedId` 的组；保存失败要 `Release` 回桌面，不能留孤儿组。
@@ -25,6 +25,17 @@
 7. **窗口落点必须兜底**：还原 / 摆位统一过 `DisplayRules.EnsureVisible`（`MonitorFromRect(MONITOR_DEFAULTTONEAREST)` 的工作区，交集 < 30% 就夹回），拔掉副屏或换分辨率后窗口不会停在桌面外。`WINDOWPLACEMENT.rcNormalPosition` 的「工作区坐标」只扣本屏任务栏偏移（`rcWork - rcMonitor`），**不是**绝对工作区原点——按绝对原点换算会给副屏矩形多加一整块屏宽，展开 / 恢复时窗口贴边或被夹到错误位置（1.6.5 修复）。旧场景由 `DisplayRules.TryRepairLegacyRect` 在启动时自动换算回来（主屏原点是 0，旧数据本来就对，不能误改）。纯几何规则放在 `Core/DisplayRules.cs`，不碰句柄，由 `DisplayRulesTests` 覆盖。
 8. **恢复按「同程序里最像的那个窗口」配对（1.6.5）**：`DisplayRules.PickRestoreCandidate` 的顺序固定为「同屏 + 同标题 → 同标题（跨屏也要挪回保存屏）→ 同屏最近矩形 → 任意屏最近矩形」。旧实现按枚举顺序取第一个，资源管理器 / 浏览器同程序多窗口会互相换位。只有被其它场景接管的窗口（`excluded`）不能挪、也不能重复启动；已运行但开错屏的窗口会被摆回保存位置。`PositionLater` 等新窗口时同样按标题优先配对，系统把它开在主屏也能接管。
 9. **诊断日志**：`Diagnostics` 默认写程序目录 `logs\app-yyyyMMdd.log`（按天分文件，启动与跨天时删除超过 1 天的旧日志），程序目录不可写时退回 `%LOCALAPPDATA%\TaskbarDrawer\logs`。启动记录版本 / 显示器布局 / 提权状态；场景保存与还原（每个窗口的标题 / 屏 / 矩形 / 匹配结果 / 摆位前后实际矩形）、收纳、展开、单窗口决策、异常都要留一行。写日志失败必须静默，不能反过来影响主流程；改跨屏 / 摆位逻辑时先想「只看日志能不能判断是谁把窗口放错了」。
+10. **场景「回到屏幕」是一个必须收尾的动作（1.8.1）**：恢复 / 展开期间 `SingleWindowMode.SuspendTemporarily()` 会压掉所有前台事件，而系统之后**不会**再补一次——「避免误最小化同伴」和「该最小化其它窗口」被同一段抑制一起取消。所以任何新增的批量恢复入口，收尾都必须调 `AppShell.FinishSceneOpen(groupId)`（置前 + `SingleWindowMode.ApplyNow`）。置前目标不能只看 `StashGroup.ForegroundBefore`：`Adopt` 现场建的组该值为 0，会表现为「打开的场景永远在最下面」，必须走 `SceneFocusRules.Pick` 退回第一个还原窗口。最小化别的窗口要用 `SW_SHOWMINNOACTIVE`，`SW_MINIMIZE` 会激活 Z 序下一个窗口、把焦点抢走。
+11. **弹窗不是窗口：按「窗口簇」处理（1.9.0）**：对话框、弹出层、浏览器扩展弹窗都有 owner（`GetWindow(hwnd, GW_OWNER) != 0`，Chromium 扩展弹窗就是用 owner 挂到浏览器窗口上的），它们不能成为场景成员，否则会占条目、污染配对、关场景时连坐主窗口。判定只在 `WindowEnumerator.ExclusionReason()` 一处，注意两条容易搞反的语义：`WS_EX_APPWINDOW` 表示「当作没有 owner」（要有豁免），`WS_EX_TOOLWINDOW` 表示「当作不可见」。**准入只看 `GA_ROOTOWNER`，绝不能用 Alt+Tab 那套 `GetLastActivePopup` 循环**——有对话框时它会把对话框当簇代表、把主窗口排除，与收纳语义相反。另外 `SW_HIDE` 主窗口**不会**连带隐藏 owned 弹窗（系统只在最小化 / 销毁时联动），所以收纳必须显式把同簇弹窗一起藏（记在 `StashedWindow.OwnedHidden`，不进快照），否则会留下孤儿对话框。
+12. **UI 里可点的东西必须是真 `Button`（1.9.1）**：`Border` 没有 automation peer，在 UIA 树里**不存在**——挂 `AutomationId` / `Name` 都读不到（ControlView、RawView 实测都查不到），这个控件对自动化与读屏永久隐身。所以只用 `Ui.ActionButton` / `Ui.CardButton` / `Ui.DangerButton`，不要手搓 `Border` + `MouseLeftButtonUp`。补 ID 用 `Ui.Id(element, "panel.newScene")`，命名按「窗口.控件」用点分小写（`panel.scene.{id}.close`、`editor.remove.{index}`、`editor.status.{index}`）；内容不是纯文本的卡片行要额外给 `Name`，否则 UIA 里是一串空白。验证方式：离屏夹具里同进程查自己（`AutomationElement.FromHandle` + `TreeWalker`），别靠肉眼看检查器截图。
+**嵌套按钮必须按「点击源」判定，不能靠 `e.Handled`**（1.13.6）：`ButtonBase` 的类处理器是 `handledEventsToo=true`，内层按钮标 Handled 后外层 Button 照样触发 Click——点场景卡片的「详情」会把整行 toggle 也触发，场景收起/展开交替。用 `PreviewMouseLeftButtonDown` 记录是否按在某个 `ButtonBase` 内（`Ui.PressedInsideButton`），外层 `Click` 据此跳过。这是 1.9.1 把 Border 换成 Button 时踩出来的。**同一场景再次点详情要收起详情窗**（1.13.8）：判定走 `SceneEdit.ShouldCloseEditor(openSavedId, clickedSavedId)`，只有同一个 `savedId` 才关；点另一个场景仍是切换内容 + 置前。别把「详情窗开关」和「外层卡片 toggle」混成一套逻辑。
+13. **状态要事件驱动，但「本来就没有事件的活儿」不能硬塞进去（1.10.0）**：窗口销毁 / 显示 / 隐藏有 `EVENT_OBJECT_DESTROY / SHOW / HIDE`，装钩子要按**被跟踪进程**逐个装（`SetWinEventHook` 的 `idProcess` 是注册期过滤，装全局钩子等于把所有菜单 / 提示框的显示隐藏都收进回调）。事件必须在**有消息循环的线程**（UI 线程）上装，回调里只做「句柄在不在记录里 → 重启 150 ms 合并定时器」，真正的对账放到定时器里做。**但图标重贴没有事件**——应用换 favicon 走 `WM_SETICON`，不发任何 WinEvent，所以 `Prune()`（状态对账）与 `ReapplyIcons()`（图标重贴）是分开的，后者 5 s 定时跑，别为了「全事件化」把没事件的活儿塞进钩子。另外「关闭窗口」的 `WM_CLOSE` 是投递，返回成功不等于关了：用 `CloseReport.Measure` 过 250 ms 复核（还有活着的再等 800 ms），按实际数字报，别报投递数。
+14. **窗口身份不能用标题（1.11.0）**：`exe + 标题` 曾同时充当去重键与配对键，而标题是窗口上最易变的属性——浏览器切个标签页就变，配对随即退回「矩形最近」，两个窗口互换位置。现在用两层身份：L1 `WindowIdentity.AppId`（`aumid:` / `exe:`），L2 `(L1, 类名, 位次)`，位次 = 同 (L1, 类名) 的窗口按保存位置排序。**排序必须先按显示器分组再比坐标**：保存侧是 `rcNormalPosition`（工作区坐标）、还原侧是 `GetWindowRect`（屏幕坐标），跨屏直接比会排出相反次序。位次是相对量，只能基于「固定的候选集合」一次算好，不能一边配对一边去掉已用的。旧快照没有身份字段 → 跳过同位次这一级、退回标题 + 矩形，**不要写补算迁移**。
+15. **状态机不要直接调 Win32（1.12.0）**：`StashAllService` 的收起 / 展开 / 接入 / 摘除是纯状态迁移，但每一步都要碰窗口，导致「有没有把记录搞乱」只能靠实机点。现在统一走 `IWindowGateway`（`StashAllService` 与 `WindowStash` 共用同一个实例），单测用 `FakeWindowGateway` 在内存里跑迁移矩阵。**关键约束**：端口只收状态机真会调的动作（约 12 个），不要把 `NativeMethods` 每个函数都建接口；`SW_HIDE` / `SW_SHOWNA` / `SW_RESTORE` / `SW_SHOWMINNOACTIVE` 行为不同，别用一个 bool 表达。时间规则（`Prune` 的宽限期）要能注入时钟，否则测不了。抽完端口必须用**真实网关 + 真实窗口**再验一遍——假实现永远无法证明你没把隐藏 / 还原改坏。
+16. **版本号只能有一个源（1.13.2）**：`csproj` 的 `<InformationalVersion>` 曾是手写常量，与 `<Version>` 各走一套，结果界面上的版本从 1.9.0 起就没更新过（二进制是新的，显示是旧的）。现在它由 `$(Version)` 派生，时间只到「月-日 时:分」，且关掉了 SDK 自动追加的 commit sha（`IncludeSourceRevisionInInformationalVersion=false`）——托盘一行要放得下。**改版本时只改 `<Version>`**，界面显示由 `VersionTests` 锁住（含长度上限），别再加第二个字面量。
+17. **弹窗成为前台时，单窗口模式不能把它的场景收掉（1.13.4）**：点浏览器扩展弹窗、工具窗、对话框，系统是让**弹窗**成为前台（MS「Window Features」：用户点击即设置前台窗口；catch22 的停靠工具栏教程写明「工具窗显示为活动、owner 变非活动」），而弹窗不是场景成员，`groupOf(popup)=0`，于是「别的场景整组收回胶囊」会把弹窗所属的场景整个收走。两道兜底：① `SingleWindowMode.ResolveGroup` 按**簇主**归组（沿 owner 链）；② 簇主也对不上（Chromium 气泡由中间一层无 owner 的 border 窗口拥有）时，按 `WindowEnumerator.ExclusionReason()` 判断它连窗口都不算，直接忽略这次前台变化。**另一个坑**：`GetAncestor(hwnd, GA_ROOTOWNER)` 对 owned 的 `WS_POPUP` 实测返回窗口**自身**（`GetParent` 对非 `WS_CHILD` 返回 0，链是空的），所以簇主必须走 `NativeMethods.RootOwner()` 里手写的 `GW_OWNER` 循环；`GA_ROOTOWNER` 只能当资料引用，不能当实现依据。
+18. **本程序自己弹窗时别让单窗口模式动作（1.13.5）**：钩子用了 `WINEVENT_SKIPOWNPROCESS`，所以收不到本程序窗口自己的 `EVENT_SYSTEM_FOREGROUND`；但打开面板 / 详情 / 说明窗时 Windows 可能把前台给**另一个进程**的窗口，那个事件会被收到，于是「切到场景外 → 整组收回胶囊」把用户的场景全收了。打开 / 关闭 / 切换本程序 UI 时统一调 `SingleWindowMode.SuspendTemporarily(ms, 原因)` 暂停判定。日志位置是**程序目录** `logs\app-yyyyMMdd.log`（不是 `%LOCALAPPDATA%`），`应用 前台=` 行带 pid/class/owner，排查时先看它。
+19. **移除窗口要从运行时和快照两侧一起摘（1.13.7）**：`exe + 标题` 不能当移除键——浏览器切标签页 / 资源管理器改路径后标题就变了，同 exe 多窗口更难分。`StashAllService.Detach` 必须复用 `WindowIdentity.Candidate` → `AssignOrdinals` → `Pair`（与还原、详情窗「已打开」同一套规则），摘掉的是**配对结果对应的 hwnd**，不是标题相同的那个。更关键的是 `WorkspaceService.UpdateSnapshot` 关场景时**只刷新位置，不碰 `group.Windows` 成员集合**：曾因它整份重抓快照，把刚从详情窗移除、但因旧 `Suppressed` 键失配仍在运行时组里的窗口又写回磁盘，下次开场景就复活。旧快照没有身份字段时保持双键 / 矩形回退，不要写迁移猜身份。
 
 ## 约定
 
@@ -33,6 +44,7 @@
 - 版本号在 `TaskbarDrawer.csproj` 手动 bump，`InformationalVersion` 自动拼构建时间；托盘菜单与启动 toast 都要显示它
 - 所有用户入口（托盘 / 面板 / 胶囊 / 热键）都过 `AppShell.Safe()` 做局部异常隔离；只有退出路径不包
 - 新增文件按 `Core`（不引用 WPF 控件）/ `UI`（WPF）/ `Interop`（P/Invoke）分层，命名空间与目录一致
+- `AppShell` 是同一个 `partial class` 的三片，按「谁改什么」切：`AppShell.cs` 组合根与生命周期（**装配顺序即依赖**，见 DEVELOPMENT 2.1b）、`AppShell.Commands.cs` 命令实现（只走 `SceneService` / `StashAllService` / `WorkspaceService`，不碰控件）、`AppShell.Wiring.cs` 入口接线与窗口管理。新增一个入口 = Wiring 里接一条线 + Commands 里写命令，不要把命令写回组合根
 - 界面颜色只从 `UI/Theme` 取，通用控件工厂用 `UI/Ui`；窗口里不再各自定义画刷或 `Frozen`
 - 跨层事件订阅一律在订阅处包 `Safe(scope, ...)`：`Changed` 是同步广播，UI 异常不能冒进业务调用栈
 - 主面板隐藏时不建 UI：`SetScenes` 只记数据，`ShowPanel` 里 `FlushSurface()` 一次补齐
@@ -69,8 +81,8 @@ python tools/repo-kit/generate.py --root . --check
 
 ## 当前规模
 
-- 页面：2（critical=0）
-- 按 type：reference=2
+- 页面：7（critical=0）
+- 按 type：explanation=2, reference=5
 - 词表版本：2.7.0
 
 ## 详细规则

@@ -53,14 +53,14 @@ public sealed class TextPromptWindow : Window
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(0, 14, 0, 0)
         };
-        var cancel = Ui.ActionButton("取消", () => { DialogResult = false; });
+        var cancel = Ui.Id(Ui.ActionButton("取消", () => { DialogResult = false; }), "prompt.cancel");
         cancel.Margin = new Thickness(0, 0, 8, 0);
         buttons.Children.Add(cancel);
-        buttons.Children.Add(Ui.ActionButton("确定", () =>
+        buttons.Children.Add(Ui.Id(Ui.ActionButton("确定", () =>
         {
             if (string.IsNullOrWhiteSpace(_input.Text)) return;
             DialogResult = true;
-        }, accent: true));
+        }, accent: true), "prompt.ok"));
         stack.Children.Add(buttons);
 
         var root = new Border

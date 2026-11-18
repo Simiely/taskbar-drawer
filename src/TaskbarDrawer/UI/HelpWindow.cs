@@ -70,6 +70,13 @@ public sealed class HelpWindow : Window
         if (candidate < workLeft + margin)
             candidate = workLeft + (workRight - workLeft - width) / 2;
 
+        // 高度上限必须按「本窗将要落到的那块屏」算：
+        // OnSourceInitialized 执行时窗口还在主屏，主屏 4K + 副屏 1080p 会按主屏算出上限，
+        // 结果窗口比副屏工作区还高，底部的「关闭」按钮落到屏幕外。
+        MaxHeight = Math.Max(MinHeight, workBottom - workTop - 64);
+        if (Height > MaxHeight) Height = MaxHeight;
+        height = Math.Min(height, MaxHeight);
+
         Left = Math.Min(Math.Max(candidate, workLeft + 8), Math.Max(workLeft + 8, workRight - width - 8));
         Top = Math.Min(Math.Max(workTop + margin, workTop + 8), Math.Max(workTop + 8, workBottom - height - 8));
     }
@@ -79,14 +86,6 @@ public sealed class HelpWindow : Window
         base.OnSourceInitialized(e);
         IntPtr hwnd = new WindowInteropHelper(this).Handle;
         NativeMethods.ApplyToolWindowStyle(hwnd);
-
-        if (NativeMethods.GetWindowRect(hwnd, out var rect) &&
-            NativeMethods.TryGetMonitorOfRect(rect, out var monitor))
-        {
-            double workHeight = monitor.rcWork.Height / (NativeMethods.DpiOfDevice(monitor.szDevice) / 96.0);
-            MaxHeight = Math.Max(MinHeight, workHeight - 64);
-            if (Height > MaxHeight) Height = MaxHeight;
-        }
     }
 
     // ---------- 布局 ----------
@@ -166,7 +165,7 @@ public sealed class HelpWindow : Window
         title.VerticalAlignment = VerticalAlignment.Center;
         grid.Children.Add(title);
 
-        var close = Ui.ActionButton("✕", Close);
+        var close = Ui.Id(Ui.ActionButton("✕", Close), "help.close");
         close.Background = Brushes.Transparent;
         close.VerticalAlignment = VerticalAlignment.Top;
         close.MouseEnter += (_, _) => close.Background = Theme.PanelCardHover;
@@ -238,7 +237,7 @@ public sealed class HelpWindow : Window
 
     private FrameworkElement BuildFooter()
     {
-        var done = Ui.ActionButton("关闭", Close, accent: true);
+        var done = Ui.Id(Ui.ActionButton("关闭", Close, accent: true), "help.done");
         done.HorizontalAlignment = HorizontalAlignment.Right;
         done.Margin = new Thickness(0, 16, 0, 0);
         return done;

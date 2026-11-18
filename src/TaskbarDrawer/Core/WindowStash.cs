@@ -24,6 +24,13 @@ public sealed class StashedWindow
     /// <summary>展开期间挂在窗口图标上的场景标识；null = 不挂。</summary>
     public SceneBadge Badge { get; set; }
 
+    /// <summary>
+    /// 收纳时被一起藏起来的同簇弹窗（对话框 / 弹出层）。
+    /// 它们不是场景成员，只是簇主的附属：不写快照、不参与配对、不单独计入窗口数。
+    /// 只存在于运行时——弹窗是临时窗口，重启后由应用自己重建。
+    /// </summary>
+    public List<IntPtr> OwnedHidden { get; set; } = new();
+
     /// <summary>窗口自己的原图标（换成场景图标前记下，摘的时候原样放回）。</summary>
     public IntPtr OriginalIconBig { get; set; }
 
@@ -59,9 +66,16 @@ public sealed class WindowStash
     /// <summary>合成场景图标；为 null 时退化为「只收窗口、不换图标」。</summary>
     private readonly ISceneIconPainter _icons;
 
-    public WindowStash(ISceneIconPainter icons = null)
+    /// <summary>
+    /// 窗口操作端口。默认走 Win32；单测注入假实现，状态机就能在内存里跑完整迁移矩阵，
+    /// 不需要真实窗口（真实行为另由实机夹具验收）。
+    /// </summary>
+    private readonly IWindowGateway _gateway;
+
+    public WindowStash(ISceneIconPainter icons = null, IWindowGateway gateway = null)
     {
         _icons = icons;
+        _gateway = gateway ?? Win32WindowGateway.Instance;
     }
 
     public int Count => _items.Count;
@@ -77,34 +91,27 @@ public sealed class WindowStash
     /// <summary>记录隐藏前的位置（不隐藏）；不合格的窗口返回 null。</summary>
     public StashedWindow Capture(IntPtr hwnd, int groupId)
     {
-        if (hwnd == IntPtr.Zero || !NativeMethods.IsWindow(hwnd)) return null;
-        if (!NativeMethods.IsWindowVisible(hwnd)) return null;
+        if (hwnd == IntPtr.Zero) return null;
 
-        long exStyle = NativeMethods.ExStyle(hwnd);
-        if ((exStyle & NativeMethods.WS_EX_TOOLWINDOW) != 0) return null;
+        var facts = _gateway.Describe(hwnd);
+        if (facts == null || !facts.Visible) return null;
+        if (facts.ToolWindow) return null;
+        if (facts.Title.Length == 0) return null;
+        if (facts.ProcessId == (uint)Environment.ProcessId) return null;
+        if (facts.Cloaked) return null;
+        if (facts.Rect.IsEmpty) return null;
 
-        string title = NativeMethods.Title(hwnd);
-        if (title.Length == 0) return null;
-
-        NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
-        if (pid == (uint)Environment.ProcessId) return null;
-        if (NativeMethods.IsCloaked(hwnd, out _)) return null;
-
-        NativeMethods.GetWindowRect(hwnd, out var rect);
-        if (rect.IsEmpty) return null;
-
-        var meta = ReadProcess(pid);
         var item = new StashedWindow
         {
             Handle = hwnd,
             GroupId = groupId,
             // 记录干净标题：旧版 emoji 前缀是我们临时挂的，不属于窗口自己的名字。
             // 两端空白也去掉：它不影响显示，却会让场景移除 / 去重时认不出同一个窗口。
-            Title = SceneTitle.Strip(title).Trim(),
-            ProcessId = pid,
-            ProcessName = meta.Name,
-            ProcessPath = meta.Path,
-            ProcessStartTime = meta.StartTime,
+            Title = SceneTitle.Strip(facts.Title).Trim(),
+            ProcessId = facts.ProcessId,
+            ProcessName = facts.ProcessName,
+            ProcessPath = facts.ProcessPath,
+            ProcessStartTime = facts.ProcessStartTime,
             Hidden = false,
             StashedAt = DateTime.UtcNow
         };
@@ -120,10 +127,16 @@ public sealed class WindowStash
     /// </summary>
     public bool Hide(StashedWindow item)
     {
-        if (item == null || !NativeMethods.IsWindow(item.Handle)) return false;
+        if (item == null || !_gateway.IsWindow(item.Handle)) return false;
 
         ClearSceneDecoration(item);
-        NativeMethods.ShowWindow(item.Handle, NativeMethods.SW_HIDE);
+
+        // 同簇弹窗必须跟着一起藏：SW_HIDE 主窗口不会联动 owned 窗口
+        //（系统只在「最小化」和「销毁」时联动），只藏主窗口会留下一个对话框孤零零浮在桌面上。
+        item.OwnedHidden = _gateway.OwnedPopups(item.Handle).ToList();
+
+        _gateway.SetVisibility(item.Handle, WindowVisibility.Hidden);
+        HideOwnedPopups(item);
 
         item.Hidden = true;
         item.RestoreRequestedAt = default;
@@ -131,7 +144,7 @@ public sealed class WindowStash
         _items[item.Handle.ToInt64()] = item;
         Diagnostics.Info("stash",
             $"收起 hwnd=0x{item.Handle.ToInt64():X} 「{Brief(item.Title)}」 device={item.MonitorDevice} " +
-            $"rect={item.Placement.rcNormalPosition} max={item.Maximized}");
+            $"rect={item.Placement.rcNormalPosition} max={item.Maximized} 附带弹窗={item.OwnedHidden.Count}");
         return true;
     }
 
@@ -139,13 +152,15 @@ public sealed class WindowStash
     public bool HideAgain(long hwnd)
     {
         if (!_items.TryGetValue(hwnd, out var item)) return false;
-        if (!NativeMethods.IsWindow(item.Handle)) return false;
+        if (!_gateway.IsWindow(item.Handle)) return false;
 
         // 展开期间用户可能挪过窗口 / 换过显示器，收起前重新记一次。
         RefreshPlacement(item);
 
         ClearSceneDecoration(item);
-        NativeMethods.ShowWindow(item.Handle, NativeMethods.SW_HIDE);
+        item.OwnedHidden = _gateway.OwnedPopups(item.Handle).ToList();
+        _gateway.SetVisibility(item.Handle, WindowVisibility.Hidden);
+        HideOwnedPopups(item);
 
         item.Hidden = true;
         item.RestoreRequestedAt = default;
@@ -161,13 +176,13 @@ public sealed class WindowStash
     {
         if (!_items.TryGetValue(hwnd, out var item)) return false;
 
-        if (!NativeMethods.IsWindow(item.Handle))
+        if (!_gateway.IsWindow(item.Handle))
         {
             _items.Remove(hwnd);
             return false;
         }
 
-        NativeMethods.ShowWindow(item.Handle, NativeMethods.SW_RESTORE);
+        _gateway.SetVisibility(item.Handle, WindowVisibility.Restored);
 
         // 目标屏可能已经拔掉 / 分辨率变了：先把保存的矩形夹回最近的工作区，
         // 否则窗口会「可见但落在桌面外」——任务栏有按钮，屏幕上却找不到。
@@ -175,44 +190,31 @@ public sealed class WindowStash
         if (!target.IsEmpty)
         {
             var placement = item.Placement;
-            placement.length = Marshal.SizeOf<NativeMethods.WINDOWPLACEMENT>();
-            placement.flags = 0;
-            placement.showCmd = item.Maximized
-                ? NativeMethods.SW_SHOWMAXIMIZED
-                : NativeMethods.SW_SHOWNORMAL;
-            // 保存的是屏幕坐标，SetWindowPlacement 要的是工作区坐标：按目标矩形所在显示器的
-            // 任务栏偏移量换算（不是绝对工作区原点，否则副屏会整体平移一整块屏宽）。
-            placement.rcNormalPosition = NativeMethods.ToWorkspaceCoordinates(
-                target, NativeMethods.WorkspaceOffsetOfDevice(item.MonitorDevice, target));
-            NativeMethods.SetWindowPlacement(item.Handle, ref placement);
+            placement.rcNormalPosition = target;
+            // 工作区坐标换算、SetWindowPlacement、以及个别应用重排后的矩形校正都在网关里
+            // （那些是纯 Win32 细节）；这里只负责「夹回可见工作区」这条规则。
+            _gateway.ApplyPlacement(item.Handle, new WindowPlacement
+            {
+                Value = placement,
+                Maximized = item.Maximized,
+                MonitorDevice = item.MonitorDevice
+            });
         }
 
         // SW_RESTORE 同样是跨线程投递：此刻 IsWindowVisible 可能还是 false，不能当场判定失败。
         // 先乐观标记为已展开，由 Prune 在宽限期后确认；真没起来再退回任务栏（记录保留）。
         item.RestoreRequestedAt = DateTime.UtcNow;
 
-        // 个别应用会在 ShowWindow 后重排布局；再按保存的窗口矩形校正一次，确保「原位回去」。
-        bool corrected = false;
-        if (!item.Maximized && !target.IsEmpty)
-        {
-            NativeMethods.GetWindowRect(item.Handle, out var now);
-            if (Math.Abs(now.Left - target.Left) > 2 || Math.Abs(now.Top - target.Top) > 2 ||
-                Math.Abs(now.Width - target.Width) > 2 || Math.Abs(now.Height - target.Height) > 2)
-            {
-                NativeMethods.SetWindowPos(item.Handle, IntPtr.Zero, target.Left, target.Top,
-                    target.Width, target.Height, NativeMethods.SWP_NOZORDER | NativeMethods.SWP_NOACTIVATE);
-                corrected = true;
-            }
-        }
-
-        NativeMethods.GetWindowRect(item.Handle, out var actual);
+        var actual = _gateway.Describe(item.Handle)?.Rect ?? default;
         Diagnostics.Info("stash",
             $"展开 hwnd=0x{item.Handle.ToInt64():X} 「{Brief(item.Title)}」 device={item.MonitorDevice} " +
-            $"target={target} actual={actual} max={item.Maximized} corrected={corrected}");
+            $"target={target} actual={actual} max={item.Maximized}");
 
         item.Hidden = false;
         // 回到屏幕后才换窗口图标：任务栏按钮会显示「场景标识 + 程序图标」。
         ApplySceneIcon(item);
+        // 收纳时被一起藏起来的同簇弹窗放回来（不激活，别抢走主窗口的前台）。
+        ShowOwnedPopups(item);
         return true;
     }
 
@@ -271,7 +273,7 @@ public sealed class WindowStash
         foreach (var item in _items.Values)
         {
             if (item.Badge == null || item.Hidden) continue;
-            if (!NativeMethods.IsWindow(item.Handle)) continue;
+            if (!_gateway.IsWindow(item.Handle)) continue;
             // 先放回应用自己的图标，下次 Apply 会按新参数重新取原图标、重新合成。
             RemoveSceneIcon(item);
             ApplySceneIcon(item);
@@ -281,13 +283,13 @@ public sealed class WindowStash
     /// <summary>按窗口此刻的实际位置刷新记录（保存场景前调用）。</summary>
     public void Refresh(StashedWindow item)
     {
-        if (item != null && NativeMethods.IsWindow(item.Handle)) RefreshPlacement(item);
+        if (item != null && _gateway.IsWindow(item.Handle)) RefreshPlacement(item);
     }
 
     /// <summary>记录一个仍然可见的窗口（不隐藏）：从场景拉起的窗口接着按普通组管理。</summary>
     public bool Track(StashedWindow item)
     {
-        if (item == null || !NativeMethods.IsWindow(item.Handle)) return false;
+        if (item == null || !_gateway.IsWindow(item.Handle)) return false;
         item.Hidden = false;
         item.RestoreRequestedAt = default;
         item.StashedAt = DateTime.UtcNow;
@@ -310,37 +312,48 @@ public sealed class WindowStash
             item.Badge = null;
             if (!item.Hidden) continue;
             if (ReleaseFallback(item.Handle)) released++;
+            // 被一起藏起来的同簇弹窗也放回来，免得留在「不可见且无任务栏按钮」的状态。
+            ShowOwnedPopups(item);
         }
         _items.Clear();
         return released;
     }
 
     /// <summary>
-    /// 清理已经销毁的记录。被外部还原（任务栏 / 应用自己 ShowWindow）的窗口不删除记录，
-    /// 只把状态改成「已展开」，组仍然保留，随时可以再收起。
+    /// 状态对账：删掉已销毁的记录、把被外部还原的改回「已展开」、把还原失败的兜底交回任务栏。
+    /// 被外部还原（任务栏 / 应用自己 ShowWindow）的窗口不删除记录，组仍然保留，随时可以再收起。
     /// 返回状态变化的条数（删除 + 被外部还原），调用方据此决定要不要刷新界面。
+    ///
+    /// <b>不含图标重贴</b>：这一步要跨进程读写图标（<c>WM_GETICON</c> / <c>WM_SETICON</c>），
+    /// 遇到半死不活的程序会被拖住。它由 <see cref="ReapplyIcons"/> 单独走 5 s 定时器。
     /// </summary>
-    public int Prune()
+    /// <param name="nowUtc">
+    /// 当前时间，只给单测用（宽限期是时间规则，不注入就没法验证）。
+    /// 生产路径一律传 null，取 <see cref="DateTime.UtcNow"/>。
+    /// </param>
+    public int Prune(DateTime? nowUtc = null)
     {
         // ShowWindow(SW_HIDE) 是「投递到目标线程」的异步调用：刚收进的那一瞬间窗口往往还是
         // 可见的。给一个短暂的宽限期，避免把刚收起的窗口误判成「已展开」。
-        long now = DateTime.UtcNow.Ticks;
+        long now = (nowUtc ?? DateTime.UtcNow).Ticks;
         int changed = 0;
         foreach (long key in _items.Keys.ToArray())
         {
-            var item = _items[key];
-            if (!NativeMethods.IsWindow(item.Handle))
+            if (!_items.TryGetValue(key, out var item)) continue;
+
+            if (!_gateway.IsWindow(item.Handle))
             {
                 // 窗口已经销毁：合成的图标是本进程持有的 USER 对象，不释放会泄漏；
                 // 没有窗口可还原，直接销毁句柄即可。
                 RemoveSceneIcon(item);
                 _items.Remove(key);
+                Diagnostics.Info("stash", $"窗口已销毁，移出记录 hwnd=0x{item.Handle.ToInt64():X} 「{Brief(item.Title)}」");
                 changed++;
                 continue;
             }
             if (item.Hidden)
             {
-                if (NativeMethods.IsWindowVisible(item.Handle) && now - item.StashedAt.Ticks > PruneGraceTicks)
+                if (_gateway.IsVisible(item.Handle) && now - item.StashedAt.Ticks > PruneGraceTicks)
                 {
                     item.Hidden = false;
                     changed++;
@@ -351,23 +364,36 @@ public sealed class WindowStash
             // 发出过还原请求却一直没真的回到屏幕：强制交回任务栏，避免卡在「不可见且无任务栏按钮」。
             if (item.RestoreRequestedAt != default &&
                 now - item.RestoreRequestedAt.Ticks > PruneGraceTicks &&
-                !NativeMethods.IsWindowVisible(item.Handle))
+                !_gateway.IsVisible(item.Handle))
             {
                 ReleaseFallback(item.Handle);
                 item.RestoreRequestedAt = default;
             }
-
-            // 应用会自己改图标（浏览器切页面换 favicon 等）：图标丢了就补回来，
-            // 保证展开期间任务栏按钮上一直带着场景标识。
-            // 挂起的窗口跳过：读写图标要跨进程发消息，别让一个卡死的程序拖慢定时器。
-            if (item.Badge != null &&
-                NativeMethods.IsWindowVisible(item.Handle) &&
-                !NativeMethods.IsHungAppWindow(item.Handle))
-            {
-                ApplySceneIcon(item);
-            }
         }
         return changed;
+    }
+
+    /// <summary>
+    /// 图标重贴：应用会自己改图标（浏览器切页面换 favicon 等），窗口图标一变，
+    /// 我们叠上去的场景标识就没了。而 <c>WM_SETICON</c> <b>不产生任何 WinEvent</b>，
+    /// 没法订阅，只能定期补一次。
+    /// 挂起的窗口跳过：跨进程发消息遇到卡死的程序会把调用方一起拖住。
+    /// 返回真正重画过的条数（已经是我们的图标时 <see cref="ApplySceneIcon"/> 会自己跳过）。
+    /// </summary>
+    public int ReapplyIcons()
+    {
+        if (_icons == null) return 0;
+
+        int applied = 0;
+        foreach (var item in _items.Values)
+        {
+            if (item.Badge == null || item.Hidden) continue;
+            if (!_gateway.IsWindow(item.Handle)) continue;
+            if (!_gateway.IsVisible(item.Handle)) continue;
+            if (_gateway.IsHung(item.Handle)) continue;
+            if (ApplySceneIcon(item)) applied++;
+        }
+        return applied;
     }
 
     /// <summary>收进之后多久才承认「窗口又回到屏幕上了」（留给异步 ShowWindow 落地）。</summary>
@@ -381,16 +407,16 @@ public sealed class WindowStash
     /// 给窗口换上「场景标识 + 程序图标」的合成图标（标识叠在程序图标角上）。
     /// 图标句柄是系统级 USER 对象，可以跨进程设置；本进程负责在换图 / 摘图时销毁旧句柄。
     /// </summary>
-    private void ApplySceneIcon(StashedWindow item)
+    private bool ApplySceneIcon(StashedWindow item)
     {
-        if (_icons == null || item.Badge == null) return;
-        if (!NativeMethods.IsWindow(item.Handle) || item.Hidden) return;
+        if (_icons == null || item.Badge == null) return false;
+        if (!_gateway.IsWindow(item.Handle) || item.Hidden) return false;
 
         IntPtr currentBig = NativeMethods.WindowIcon(item.Handle, big: true);
         IntPtr currentSmall = NativeMethods.WindowIcon(item.Handle, big: false);
         if (item.SceneIconBig != IntPtr.Zero &&
             currentBig == item.SceneIconBig && currentSmall == item.SceneIconSmall)
-            return; // 已经是我们的图标：Prune 每 2.5 s 走到这里时直接跳过，不重画。
+            return false; // 已经是我们的图标：定时器走到这里时直接跳过，不重画。
 
         if (item.SceneIconBig == IntPtr.Zero)
         {
@@ -430,6 +456,7 @@ public sealed class WindowStash
             if (ownedBig) NativeMethods.DestroyIcon(paintBig);
             if (ownedSmall) NativeMethods.DestroyIcon(paintSmall);
         }
+        return created;
     }
 
     /// <summary>
@@ -532,62 +559,43 @@ public sealed class WindowStash
             NativeMethods.SetTitle(item.Handle, stripped);
     }
 
-    private static void RefreshPlacement(StashedWindow item)
+    private void RefreshPlacement(StashedWindow item)
     {
-        var placement = new NativeMethods.WINDOWPLACEMENT
+        // 换算规则在网关里（工作区坐标 ↔ 屏幕坐标），这里只要结果。
+        var placement = _gateway.CapturePlacement(item.Handle);
+        item.Placement = placement.Value;
+        item.Maximized = placement.Maximized;
+        item.MonitorDevice = placement.MonitorDevice;
+    }
+
+    /// <summary>
+    /// 同簇的可见弹窗：沿 <c>GetLastActivePopup</c> 链往下走，最多 4 层。
+    /// 只收「有 owner 且可见」的——没有 owner 的顶层窗口是独立窗口，不是附属弹窗，不能动。
+    /// </summary>
+    private void HideOwnedPopups(StashedWindow item)
+    {
+        foreach (var popup in item.OwnedHidden)
         {
-            length = Marshal.SizeOf<NativeMethods.WINDOWPLACEMENT>()
-        };
-        bool hasPlacement = NativeMethods.GetWindowPlacement(item.Handle, ref placement);
-        // rcNormalPosition 用的是「工作区坐标」，窗口矩形是屏幕坐标。任务栏位置 / DPI 变化后
-        // 工作区原点会变，直接把 rcNormal 存下来再写回去会整体平移，所以统一转成屏幕坐标保存。
-        // 换算只扣任务栏偏移量（rcWork - rcMonitor），不能加显示器在虚拟桌面里的原点。
-        if (hasPlacement)
-            placement.rcNormalPosition = NativeMethods.ToScreenCoordinates(
-                placement.rcNormalPosition, NativeMethods.WorkspaceOffsetOfWindow(item.Handle));
-
-        item.Placement = placement;
-        item.Maximized = NativeMethods.IsZoomed(item.Handle) ||
-                         (hasPlacement && placement.showCmd == NativeMethods.SW_SHOWMAXIMIZED);
-        item.MonitorDevice = NativeMethods.MonitorDeviceOf(item.Handle);
-    }
-
-    private static bool ReleaseFallback(IntPtr hwnd)
-    {
-        if (hwnd == IntPtr.Zero || !NativeMethods.IsWindow(hwnd)) return false;
-        // 最小化但不激活：窗口回到任务栏，用户可以照常点任务栏找回。
-        NativeMethods.ShowWindow(hwnd, NativeMethods.SW_SHOWMINNOACTIVE);
-        return NativeMethods.IsWindowVisible(hwnd);
-    }
-
-    private sealed class ProcessMeta
-    {
-        public string Name;
-        public string Path;
-        public DateTime? StartTime;
-    }
-
-    // 同一批收纳里同一 pid 往往有多个窗口（浏览器、IDE）：进程元数据一次运行内不会变，按 pid 缓存。
-    private readonly Dictionary<uint, ProcessMeta> _processCache = new();
-
-    private ProcessMeta ReadProcess(uint pid)
-    {
-        if (_processCache.TryGetValue(pid, out var cached)) return cached;
-
-        var meta = new ProcessMeta();
-        try
-        {
-            using var process = Process.GetProcessById((int)pid);
-            meta.Name = process.ProcessName;
-            // 被保护 / 已退出的进程读不到 MainModule 与启动时间：元数据缺省即可。
-            try { meta.Path = process.MainModule?.FileName; } catch { }
-            try { meta.StartTime = process.StartTime.ToUniversalTime(); } catch { }
+            if (_gateway.IsWindow(popup)) _gateway.SetVisibility(popup, WindowVisibility.Hidden);
         }
-        catch { /* 进程已退出（句柄可能已失效），返回空元数据 */ }
-
-        // 长时间运行时进程会不断变化：给缓存一个上限，避免按 PID 无限增长。
-        if (_processCache.Count >= 256) _processCache.Clear();
-        _processCache[pid] = meta;
-        return meta;
     }
+
+    /// <summary>把收纳时一起藏起来的弹窗放回来；已经关掉的（应用自己销毁）直接跳过。</summary>
+    private void ShowOwnedPopups(StashedWindow item)
+    {
+        foreach (var popup in item.OwnedHidden)
+        {
+            _gateway.ShowOwnedPopup(popup);
+        }
+        item.OwnedHidden.Clear();
+    }
+
+    private bool ReleaseFallback(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero || !_gateway.IsWindow(hwnd)) return false;
+        // 最小化但不激活：窗口回到任务栏，用户可以照常点任务栏找回。
+        _gateway.SetVisibility(hwnd, WindowVisibility.Minimized);
+        return _gateway.IsVisible(hwnd);
+    }
+
 }

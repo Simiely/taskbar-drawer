@@ -35,6 +35,11 @@ public sealed class TrayService : IDisposable
     /// <summary>上一次场景菜单的内容签名：没变化就不重建菜单项。</summary>
     private string _sceneSignature;
 
+    /// <summary>菜单开着时收到的场景变化：等菜单关闭后再重建。</summary>
+    private IReadOnlyList<StashGroupSummary> _pendingScenes = Array.Empty<StashGroupSummary>();
+
+    private bool _sceneDirty;
+
     public TrayService()
     {
         // 深色渲染器必须同时挂到 ToolStripManager 上，否则「按场景切换」这类子菜单仍是白底。
@@ -152,6 +157,16 @@ public sealed class TrayService : IDisposable
             _singleClickPending = false;
             OpenPanelRequested?.Invoke();
         };
+
+        // 菜单关掉之后再把开着期间攒下的改动补上：从可见的下拉里删子项会把菜单收起来。
+        _menu.Closed += (_, _) =>
+        {
+            if (!_sceneDirty) return;
+            _sceneDirty = false;
+            var pending = _pendingScenes;
+            _sceneSignature = SignatureOf(pending);
+            RebuildSceneItems(pending);
+        };
     }
 
     public event Action OpenPanelRequested;
@@ -197,7 +212,6 @@ public sealed class TrayService : IDisposable
 
         string signature = SignatureOf(groups);
         if (signature == _sceneSignature) return;
-        _sceneSignature = signature;
 
         bool has = groups.Count > 0;
 
@@ -205,13 +219,28 @@ public sealed class TrayService : IDisposable
         _expandAll.Enabled = has;
         _sceneMenu.Enabled = has;
 
+        // 菜单正开着时绝不动 DropDownItems：从可见的下拉里移除子项会把菜单在鼠标底下收起来
+        // （剪枝只要让计数变一次就会触发，「按场景切换」会自己消失）。
+        // 只记脏，等菜单 Closed 再重建。
+        _pendingScenes = groups;
+        if (_menu.Visible)
+        {
+            _sceneDirty = true;
+            return;
+        }
+
+        RebuildSceneItems(groups);
+        _sceneSignature = signature;
+    }
+
+    /// <summary>重建「按场景切换」子菜单；只在菜单没打开时调用。</summary>
+    private void RebuildSceneItems(IReadOnlyList<StashGroupSummary> groups)
+    {
         // 逐项移除并释放：定时 Prune 会反复刷新。
-        // 菜单正开着时不能 Dispose（绘制路径还持有这些项），只摘掉引用交给 GC。
-        bool menuOpen = _menu.Visible;
         foreach (Forms.ToolStripItem item in _sceneMenu.DropDownItems.Cast<Forms.ToolStripItem>().ToArray())
         {
             _sceneMenu.DropDownItems.Remove(item);
-            if (!menuOpen) item.Dispose();
+            item.Dispose();
         }
 
         foreach (var group in groups)

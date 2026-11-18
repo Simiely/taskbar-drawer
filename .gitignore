@@ -9,6 +9,7 @@ dist/
 *.user
 .vs/
 .idea/
+.workbuddy/
 
 # 系统
 Thumbs.db

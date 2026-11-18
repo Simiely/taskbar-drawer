@@ -125,8 +125,33 @@ public sealed class SingleWindowMode : IDisposable
     /// 临时暂停一小段时间：程序自己批量还原一个场景的窗口时会连续切换前台，
     /// 不该在还原过程中把刚恢复的同伴又最小化掉。
     /// </summary>
-    public void SuspendTemporarily(int milliseconds = 800)
-        => _suppressUntil = DateTime.UtcNow.AddMilliseconds(milliseconds);
+    public void SuspendTemporarily(int milliseconds = 800, string reason = null)
+    {
+        _suppressUntil = DateTime.UtcNow.AddMilliseconds(milliseconds);
+        if (!string.IsNullOrEmpty(reason))
+            Diagnostics.Info("single", $"暂停 {milliseconds}ms：{reason}");
+    }
+
+    /// <summary>
+    /// 立刻按某个窗口应用一次，忽略上面那段抑制窗口。
+    /// 场景刚从收纳区 / 快照恢复到屏幕后必须补这一次：批量恢复期间的前台事件全被压掉了，
+    /// 之后系统不会再有事件，不补的话「其它窗口最小化」永远不会发生
+    /// ——单窗口模式看起来就像没生效。
+    /// </summary>
+    public void ApplyNow(IntPtr anchor)
+    {
+        if (_disposed || !_enabled || anchor == IntPtr.Zero) return;
+        _suppressUntil = default;
+        try
+        {
+            Apply(anchor);
+        }
+        catch (Exception ex)
+        {
+            // 这里由入口调用的收尾路径触发，失败只影响本次收尾。
+            Diagnostics.Write("single-window apply now", ex);
+        }
+    }
 
     private void OnForegroundEvent(
         IntPtr hook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
@@ -160,7 +185,28 @@ public sealed class SingleWindowMode : IDisposable
         try
         {
             var groupOf = GroupOf;
-            int group = groupOf != null ? groupOf(foreground) : 0;
+
+            // 前台可能是一个弹窗 / 浮层（浏览器扩展弹窗、应用的工具窗、场景成员自己弹的对话框）：
+            // 点它的时候系统把「弹窗」设为前台，而弹窗永远不是场景成员，于是下面那段
+            // 「别的场景整组收回胶囊」会把弹窗所属的场景整个收起来——用户只是点了插件。
+            //
+            // 两道兜底，顺序不能反：
+            // ① 按窗口簇归组：沿 owner 链走到簇主，簇主在场景里就当作「还是那个场景」；
+            // ② 簇主也对不上（Chromium 的气泡由中间一层无 owner 的 border 窗口拥有，
+            //    owner 链断在半路），那这次前台变化就不是「切换到另一个窗口」：
+            //    按准入规则它连窗口都算不上，直接不处理。
+            IntPtr head = NativeMethods.RootOwner(foreground);
+            int group = ResolveGroup(foreground, groupOf, _ => head);
+            string exclusion = group == 0 ? WindowEnumerator.ExclusionReason(foreground) : null;
+            if (ShouldIgnoreForeground(group, exclusion))
+            {
+                Diagnostics.Info("single",
+                    $"忽略前台 0x{foreground.ToInt64():X}（{exclusion}）" +
+                    $" class={NativeMethods.ClassName(foreground)}" +
+                    $" owner=0x{NativeMethods.Owner(foreground).ToInt64():X}" +
+                    $" rootOwner=0x{head.ToInt64():X}");
+                return;
+            }
 
             // 已经被用户还原 / 关掉的窗口从「自己最小化」集合里清出去，
             // 免得下次切回同伴时对已不在最小化状态的窗口发还原请求。
@@ -206,7 +252,9 @@ public sealed class SingleWindowMode : IDisposable
                     continue;
                 }
 
-                if (NativeMethods.ShowWindow(candidate.Handle, NativeMethods.SW_MINIMIZE))
+                // 必须用 SW_SHOWMINNOACTIVE 而不是 SW_MINIMIZE：后者会「激活 Z 序里的下一个顶层窗口」，
+                // 最小化一圈下来焦点会被抢走，用户看到的是场景窗口刚置前又被顶下去。
+                if (NativeMethods.ShowWindow(candidate.Handle, NativeMethods.SW_SHOWMINNOACTIVE))
                     _selfMinimized.Add(candidate.Handle.ToInt64());
                 minimized++;
             }
@@ -218,12 +266,43 @@ public sealed class SingleWindowMode : IDisposable
 
         if (minimized + collapsedCount > 0)
         {
+            uint foregroundPid = 0;
+            NativeMethods.GetWindowThreadProcessId(foreground, out foregroundPid);
             Diagnostics.Info("single",
-                $"应用 前台=0x{foreground.ToInt64():X} screen={monitorDevice ?? "(未知)"} " +
+                $"应用 前台=0x{foreground.ToInt64():X}({NativeMethods.ClassName(foreground)} pid={foregroundPid}) " +
+                $"owner=0x{NativeMethods.Owner(foreground).ToInt64():X} screen={monitorDevice ?? "(未知)"} " +
                 $"最小化={minimized} 收回场景={collapsedCount}");
         }
         if (minimized + collapsedCount > 0) Applied?.Invoke(minimized + collapsedCount);
     }
+
+    /// <summary>
+    /// 前台窗口该归到哪个场景组：自己就是成员就用自己，否则看窗口簇的簇主
+    /// （沿 owner 链走到第一个无 owner 的顶层窗口 = 用户真正在用的那个窗口）。
+    /// 簇是 1.9.0 引入的模型：弹窗随簇主一起隐藏 / 恢复，所以判断「用户切到了哪一组」
+    /// 也必须按簇主算，否则点一下弹窗就等于「切换到了场景外」。
+    /// </summary>
+    public static int ResolveGroup(
+        IntPtr foreground, Func<IntPtr, int> groupOf, Func<IntPtr, IntPtr> rootOwner)
+    {
+        if (groupOf == null) return 0;
+
+        int group = groupOf(foreground);
+        if (group != 0) return group;
+        if (rootOwner == null) return 0;
+
+        IntPtr head = rootOwner(foreground);
+        if (head == IntPtr.Zero || head == foreground) return 0;
+        return groupOf(head);
+    }
+
+    /// <summary>
+    /// 这次前台变化要不要当作「用户切换了窗口」。
+    /// 前台既不属于任何场景、又按准入规则连窗口都算不上（工具窗 / 被拥有的弹窗 / 无标题 /
+    /// cloaked），那它只是某个应用的临时 UI——不处理，绝不能因此把别的场景收起来。
+    /// </summary>
+    public static bool ShouldIgnoreForeground(int group, string exclusionReason)
+        => group == 0 && exclusionReason != null;
 
     private static bool IsEligibleForeground(IntPtr hwnd)
     {

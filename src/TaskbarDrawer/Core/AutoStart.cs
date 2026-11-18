@@ -19,16 +19,41 @@ public static class AutoStart
 
     public static bool IsSupported => !string.IsNullOrEmpty(Environment.ProcessPath);
 
+    /// <summary>
+    /// 是否已加入开机自启。
+    /// 只看「这个值存在」——命令里含 exe 绝对路径，程序换目录 / 升级到新版本目录后字符串就对不上，
+    /// 用全等比较会把「已自启」显示成「未开启」，而注册表里那条旧命令仍会在开机时拉起旧副本。
+    /// </summary>
     public static bool IsEnabled()
     {
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(RunKey);
-            return key?.GetValue(ValueName) is string value && value == Command;
+            return key?.GetValue(ValueName) is string value && value.Length > 0;
         }
         catch
         {
             return false;
+        }
+    }
+
+    /// <summary>
+    /// 把 Run 项刷新成当前 exe 路径：旧路径残留时开机拉起的是旧副本（用户升过级就会遇到）。
+    /// 只在已经有这个值时才动，不会替用户打开自启。
+    /// </summary>
+    public static void Repair()
+    {
+        if (!IsSupported) return;
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: true);
+            if (key?.GetValue(ValueName) is not string value) return;
+            string command = Command;
+            if (command != null && value != command) key.SetValue(ValueName, command);
+        }
+        catch
+        {
+            // 修不了不影响本次运行，下次启动再试。
         }
     }
 

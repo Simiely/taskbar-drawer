@@ -2,6 +2,7 @@
 
 using System.Globalization;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
@@ -85,6 +86,9 @@ internal static class Ui
     {
         for (var node = source; node != null; node = ParentOf(node))
         {
+            // 禁用按钮的 Cursor 是 Arrow：只认 Hand 会把「按下禁用按钮」当成空白处，
+            // 拖窗逻辑随即生效、整个窗口被拖走（详情窗的「移除」、追加列表大量处于禁用态）。
+            if (node is FrameworkElement tagged && Equals(tagged.Tag, NoDragTag)) return true;
             if (node is FrameworkElement element && element.Cursor == Cursors.Hand) return true;
             if (node is Slider or ScrollBar or TextBoxBase or ButtonBase) return true;
         }
@@ -92,7 +96,13 @@ internal static class Ui
     }
 
     private static DependencyObject? ParentOf(DependencyObject node)
-        => node is Visual or Visual3D ? VisualTreeHelper.GetParent(node) : LogicalTreeHelper.GetParent(node);
+    {
+        // 按钮还没加载完（模板没生成）时 VisualTreeHelper 可能取不到父级，退回逻辑树。
+        DependencyObject? parent = node is Visual or Visual3D
+            ? VisualTreeHelper.GetParent(node)
+            : null;
+        return parent ?? LogicalTreeHelper.GetParent(node);
+    }
 
     /// <summary>
     /// 把 ScrollViewer 的滚动条换成深色细条：透明轨道、圆角拇指、没有箭头按钮，
@@ -190,37 +200,167 @@ internal static class Ui
         return trigger;
     }
 
-    /// <summary>统一的操作按钮：深色底 / 强调色，悬停变亮；enabled=false 时只保留静态外观。</summary>
-    internal static Border ActionButton(string text, Action onClick, bool accent = false, bool enabled = true)
+    /// <summary>禁用按钮的标记：拖窗逻辑看到它就当作「按在控件上」，不拖窗口。</summary>
+    internal const string NoDragTag = "taskbar-drawer:no-drag";
+
+    /// <summary>
+    /// 给控件挂 UIA 自动化标识：检查器 / 自动化工具按 AutomationId 定位。
+    /// 内容不是纯文本的控件（卡片行）要额外给 name，否则读屏和检查器里是一串空白。
+    /// </summary>
+    internal static T Id<T>(T element, string id, string? name = null) where T : FrameworkElement
+    {
+        AutomationProperties.SetAutomationId(element, id);
+        if (!string.IsNullOrEmpty(name)) AutomationProperties.SetName(element, name);
+        return element;
+    }
+
+    /// <summary>
+    /// 统一的操作按钮：深色底 / 强调色，悬停变亮；enabled=false 时只保留静态外观。
+    /// 必须是真的 Button —— Border 在 WPF 里没有 automation peer，UIA 树里根本看不见，
+    /// 挂 AutomationId 也没用（实测 ControlView / RawView 都查不到）。
+    /// </summary>
+    internal static Button ActionButton(string text, Action onClick, bool accent = false, bool enabled = true)
         => ActionButton(text, onClick, accent, enabled, out _);
 
-    internal static Border ActionButton(
+    internal static Button ActionButton(
         string text, Action onClick, bool accent, bool enabled, out TextBlock label)
     {
         label = Text(text, 11.5, accent ? FontWeights.SemiBold : FontWeights.Normal,
             accent ? Brushes.White : Theme.TextPrimary);
-        var border = new Border
+        var button = new Button
         {
-            Background = accent ? Theme.AccentBrush : Theme.ControlBackground,
-            CornerRadius = new CornerRadius(8),
+            Content = label,
+            Style = accent ? AccentButtonStyle : PlainButtonStyle,
             Padding = new Thickness(11, 5, 11, 5),
-            Child = label,
             Cursor = enabled ? Cursors.Hand : Cursors.Arrow,
             Opacity = enabled ? 1 : 0.45,
+            IsEnabled = enabled,
             VerticalAlignment = VerticalAlignment.Center
         };
-        if (!enabled) return border;
+        // 禁用态的 Cursor 是 Arrow：拖窗判断只认 Cursor 会漏，这里补上显式标记。
+        if (!enabled) button.Tag = NoDragTag;
+        button.Click += (_, _) => onClick();
+        return button;
+    }
 
-        border.MouseEnter += (_, _) => border.Background = accent ? Theme.AccentBrush : Theme.ControlHover;
-        border.MouseLeave += (_, _) => border.Background = accent ? Theme.AccentBrush : Theme.ControlBackground;
-        border.MouseLeftButtonDown += (_, e) => e.Handled = true;
-        border.MouseLeftButtonUp += (_, e) =>
+    /// <summary>描边危险操作按钮（删除场景）：透明底 + 红边，悬停变亮。</summary>
+    internal static Button DangerButton(string text, Action onClick)
+    {
+        var button = new Button
         {
-            e.Handled = true;
+            Content = Text(text, 11.5, FontWeights.Normal, Theme.DangerBrush),
+            Style = DangerButtonStyle,
+            Padding = new Thickness(11, 4, 11, 4),
+            BorderBrush = Theme.DangerBrush,
+            Cursor = Cursors.Hand,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        button.Click += (_, _) => onClick();
+        return button;
+    }
+
+    /// <summary>整块可点的卡片（场景行 / 开关行）：圆角底色 + 悬停高亮。</summary>
+    internal static Button CardButton(
+        UIElement content, Action onClick, string? tooltip, Thickness padding, string? name)
+    {
+        var card = new Button
+        {
+            Content = content,
+            Style = CardButtonStyle,
+            Padding = padding,
+            Cursor = Cursors.Hand,
+            ToolTip = tooltip
+        };
+        if (!string.IsNullOrEmpty(name)) AutomationProperties.SetName(card, name);
+
+        // 场景卡片里还嵌着「详情 / 关闭窗口」按钮。WPF 的 ButtonBase 注册的是
+        // handledEventsToo=true 的类处理器——内层按钮把事件标成 Handled 也挡不住外层跟着 Click，
+        // 于是点一次「详情」会把整行的 toggle 也触发一次（场景收起 / 展开交替）。
+        // 所以改用点击源判定：PreviewMouseLeftButtonDown 是隧道事件，先于内层处理到达，
+        // 能准确看出这次按在不在某个 ButtonBase 上；Click 里据此决定要不要触发整行。
+        bool pressedInnerButton = false;
+        card.PreviewMouseLeftButtonDown += (_, e) =>
+        {
+            pressedInnerButton = e.OriginalSource is DependencyObject source && PressedInsideButton(source, card);
+        };
+        card.Click += (_, _) =>
+        {
+            if (pressedInnerButton) return;
             onClick();
         };
-        return border;
+        return card;
     }
+
+    /// <summary>
+    /// 这次按下是不是落在 <paramref name="root"/> 内部的某个 ButtonBase 上。
+    /// 抽成可测的纯规则：WPF 的 ButtonBase 类处理器带 handledEventsToo，
+    /// 靠 e.Handled 拦不住外层卡片，只能按「点在哪」判断。
+    /// </summary>
+    internal static bool PressedInsideButton(DependencyObject source, FrameworkElement root)
+    {
+        for (DependencyObject? node = source; node != null && node != root; node = ParentOf(node))
+        {
+            if (node is ButtonBase) return true;
+        }
+        return false;
+    }
+
+    private static readonly Style PlainButtonStyle =
+        CreateButtonStyle(Theme.ControlBackground, Theme.ControlHover, new CornerRadius(8), 0, false);
+
+    // 强调色按钮原本就没有悬停变色（进入时把背景重新设成同一个强调色），这里保持一致。
+    private static readonly Style AccentButtonStyle =
+        CreateButtonStyle(Theme.AccentBrush, null, new CornerRadius(8), 0, false);
+
+    private static readonly Style DangerButtonStyle =
+        CreateButtonStyle(Brushes.Transparent, Theme.PanelCardHover, new CornerRadius(8), 1, false);
+
+    private static readonly Style CardButtonStyle =
+        CreateButtonStyle(Theme.PanelCard, Theme.PanelCardHover, new CornerRadius(10), 0, true);
+
+    /// <summary>
+    /// 按钮模板：只有一个圆角底板 + 内容，颜色全部跟着 Background 走（调用方仍可局部覆盖）。
+    /// padding 走内容的 Margin，所以改 Button.Padding 依旧生效。
+    /// </summary>
+    private static Style CreateButtonStyle(
+        Brush background, Brush? hover, CornerRadius radius, double borderThickness,
+        bool stretchContent)
+    {
+        var border = new FrameworkElementFactory(typeof(Border));
+        border.SetValue(Border.CornerRadiusProperty, radius);
+        border.SetBinding(Border.BackgroundProperty, new Binding("Background")
+        {
+            RelativeSource = new RelativeSource(RelativeSourceMode.TemplatedParent)
+        });
+        if (borderThickness > 0)
+        {
+            border.SetValue(Border.BorderThicknessProperty, new Thickness(borderThickness));
+            border.SetBinding(Border.BorderBrushProperty, new Binding("BorderBrush")
+            {
+                RelativeSource = new RelativeSource(RelativeSourceMode.TemplatedParent)
+            });
+        }
+
+        var presenter = new FrameworkElementFactory(typeof(ContentPresenter));
+        presenter.SetValue(FrameworkElement.MarginProperty,
+            new TemplateBindingExtension(Control.PaddingProperty));
+        presenter.SetValue(FrameworkElement.HorizontalAlignmentProperty,
+            stretchContent ? HorizontalAlignment.Stretch : HorizontalAlignment.Center);
+        presenter.SetValue(FrameworkElement.VerticalAlignmentProperty,
+            stretchContent ? VerticalAlignment.Stretch : VerticalAlignment.Center);
+        border.AppendChild(presenter);
+
+        var style = new Style(typeof(Button));
+        style.Setters.Add(new Setter(Control.TemplateProperty,
+            new ControlTemplate(typeof(Button)) { VisualTree = border }));
+        style.Setters.Add(new Setter(Control.BackgroundProperty, background));
+        style.Setters.Add(new Setter(Control.BorderBrushProperty, Brushes.Transparent));
+        // 这些按钮改造前是 Border，不参与 Tab 焦点链；Focusable=false 也不影响 UIA 的 InvokePattern。
+        style.Setters.Add(new Setter(UIElement.FocusableProperty, false));
+        if (hover != null) style.Triggers.Add(BrushTrigger(UIElement.IsMouseOverProperty, true, hover));
+        return style;
+    }
+
 
     /// <summary>场景标识的圆形外观：有数字时白字居中，没有数字就是纯色圆点。</summary>
     internal static Border Badge(SceneBadge badge, double size)

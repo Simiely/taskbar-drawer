@@ -1,5 +1,232 @@
 # CHANGELOG.md · 版本历史
 
+## 1.13.8 — 2026-11-18
+
+把「详情」按钮做成同一场景的开关：再点一次就收起详情窗，不必去找弹窗右上角的 ✕。
+
+- **用户反馈**：点场景卡片的「详情」打开侧窗后，再次点同一个按钮应该能把弹窗收回去
+- **行为**：同一 `savedId` 再点详情 → 关闭当前详情窗；详情窗开着但点的是**另一个**场景 → 仍是切换内容并置前，不误关；详情窗没开 → 正常打开
+- 判定抽成纯规则 `SceneEdit.ShouldCloseEditor(openSavedId, clickedSavedId)`，`AppShell.Wiring.OpenSceneEditor` 只管执行；4 条单测锁住同场景 / 异场景 / 空串 / 未打开四种情况
+- 按钮 ToolTip 同步写明「再次点击同一场景的详情可收起」
+- 和 1.13.6 的关系：外层卡片整行 toggle 仍由 `Ui.CardButton` 按点击源挡住；本次只新增内层按钮自己的开关语义，不会把「点详情同时收起 / 展开场景」带回来
+- 验证：`dotnet build` 0 警告 0 错误、`dotnet test` **139/139**、`REPO CHECK: PASS`
+- 版本号 1.13.8
+
+## 1.13.7 — 2026-11-18
+
+修「从场景详情移除的窗口，关掉场景再开还会回来」——用户实报；旧快照里尤其容易复现。
+
+- **用户现场**：`saved-groups.json` 里两个窗口的 `AppId` / `ClassName` 都是 `null`，`Suppressed` 还是 `exe\n标题` 旧键；标题一变（浏览器切标签页、资源管理器改路径），旧键就认不回那个窗口
+- **根因一（运行时）**：`StashAllService.Detach` 仍按 exe + 标题找成员。标题失配时 `Detach` 返回 false，那个窗口还挂在运行时组里
+- **根因二（快照）**：`WorkspaceService.UpdateSnapshot` 从运行时组**整份重抓**成员写回快照。旧 `Suppressed` 失配后，刚移除的窗口被重新写进 `saved-groups.json`，下次开场景自然又出现
+- **修法**：
+  - `Detach` 改用 1.11.0 已有的两层身份：`WindowIdentity.Candidate` → `AssignOrdinals` → `Pair`，与「还原配对 / 详情窗已打开判定」共用同一套规则，不再另写一份匹配
+  - `UpdateSnapshot` 只刷新**位置**（矩形 / 最大化 / 显示器），彻底不再改 `group.Windows` 成员集合；移除是详情窗的显式动作，不能由关场景反向撤销
+  - 详情窗 `SceneService.Detail` 也换成同一个 `Candidate`，避免两条路径对「这一行开没开」判断不一致
+  - 删掉 `StashAllService.NormalizePath` 这处已无调用者的旧匹配残留
+- **防回归**：`StashAllServiceTests` 新增「旧快照标题失配时按位置找回成员」；真实窗口端到端夹具（隔离 `TASKBAR_DRAWER_HOME`）8 项全过：标题改掉后仍摘对成员、快照移除成功、模拟旧运行时组重新挂上后关场景不写回、磁盘快照最终只剩 1 项且 `Suppressed` 记的是身份键
+- 验证：`dotnet build` 0 警告 0 错误、`dotnet test` **135/135**、`REPO CHECK: PASS`
+- 版本号 1.13.7
+
+## 1.13.6 — 2026-11-18
+
+修「点场景详情按钮，场景被收起 / 展开交替」——用户实报，也是 1.9.1 埋下的回归。
+
+- **日志现场**：每点一次详情，`收起 group=1 → 展开 group=1 → 收起 → 展开` 严格交替，且 `screen=(整组)`（不是单窗口模式那条 `screen=\.\DISPLAY1` 路径）。说明点「详情」的同时把外层场景卡片的整行 toggle 也触发了
+- **根因**：1.9.1 把 `Ui.ActionButton` 从 `Border` 换成真 `Button` 时，我判断"内层 `ButtonBase` 会把 MouseLeftButtonDown 标 handled，外层不会跟着按"——**这个判断是错的**。WPF 的 `ButtonBase` 用 `handledEventsToo=true` 的**类处理器**，事件即使被标高 Handled，外层 Button 照样收到并触发 Click；旧 Border 自己在 `MouseLeftButtonUp` 里 `e.Handled=true` 才挡得住
+- **实机验证过两次**：真实鼠标消息打在内层按钮上 → `inner=1 outer=1`（复现）；内层标 `e.Handled=true` 后仍 `inner=1 outer=1`（无效）；改成按点击源判定后 `inner=1 outer=0`，点卡片空白 `inner=0 outer=1`（正确）
+- **修法**：`Ui.CardButton` 用 `PreviewMouseLeftButtonDown`（隧道事件，先于内层处理到达）记录这次是否按在内部某个 `ButtonBase` 上，`Click` 里据此跳过整行。判定抽成纯规则 `Ui.PressedInsideButton`，4 条单测锁住（点内层、点内层文本、点卡片空白、点卡片自身）
+- 顺带：`ParentOf` 在 `VisualTreeHelper` 取不到父级时退回逻辑树（按钮未加载完时模板还没生成）
+- **说明**：1.13.4（浏览器扩展弹窗）和 1.13.5（本程序 UI 打开时暂停单窗口模式）修的是另一条真实存在的路径，本版保留；只要浏览器弹窗已恢复正常就说明那条生效了
+- 验证：`dotnet build` 0 警告 0 错误、`dotnet test` **134/134**、`REPO CHECK: PASS`
+- 版本号 1.13.6
+
+## 1.13.5 — 2026-11-18
+
+修「打开本程序的场景详情窗（以及主面板 / 说明窗），其他场景也被收起来」。
+
+- **日志现场**：`app-20261118.log` 里 `13:58:36 前台切换 → [single] 应用 前台=0xC0674 最小化=0 收回场景=3`；枚举句柄确认同一天 `0xE050C` 是 `Chrome_WidgetWin_1` / pid 11080 /「Agent」——前台事件来自**别的进程**，本程序窗口本身被 `WINEVENT_SKIPOWNPROCESS` 挡住、看不到自己的事件。于是「用户切到场景外」照设计触发，把三个场景全收了
+- **修法**：本程序 UI 的打开 / 关闭 / 切换期间调用已有的 `SingleWindowMode.SuspendTemporarily(500–800ms, 原因)`，暂停单窗口判定：主面板、场景详情（含 Activate / 关闭）、说明窗都覆盖。用户点自己的界面不该被当成"切换到别的窗口"
+- **日志增强**：暂停时记原因；`应用 前台=` 行补 `pid`，下次再出现能直接判定前台属于哪个进程（无需再猜句柄）
+- `SuspendTemporarily` 加可选 `reason` 参数，原有调用点（批量还原）不受影响
+- 验证：`dotnet build` 0 警告 0 错误、`dotnet test` 130/130、`REPO CHECK: PASS`
+- 版本号 1.13.5
+
+## 1.13.4 — 2026-11-18
+
+修「点浏览器扩展弹窗，浏览器所在场景仍被收回」——用户实报，1.9.0 的窗口簇模型只挡住了"弹窗进场景"，没挡住"弹窗当前台"。
+
+**调研（先查证再动手）**：
+
+| 结论 | 来源 |
+| --- | --- |
+| 用户点击即设置前台窗口；owned 窗口永远在 owner 上方，对话框默认 owned | Microsoft Learn「Window Features」 |
+| 工具窗被激活时它显示为活动、owner 变非活动 → 前台确实是弹窗本身 | catch22《Docking Toolbars - Part 1》 |
+| `GA_ROOTOWNER` 文档上说走父 / owner 链 | Microsoft Learn `GetAncestor` |
+| Chromium 气泡是 `WS_POPUP` + `WS_EX_TOOLWINDOW` + `TYPE_POPUP`，且由一层 `BorderWidgetWin` 拥有（owner 链有中间层） | Chromium `chrome/browser/ui/views/bubble/bubble.cc`（OS_WIN 分支） |
+
+- **机理**：弹窗成为前台 → 它不是场景成员（`groupOf=0`）→ 单窗口模式的「别的场景整组收回胶囊」把弹窗所属场景整个收走；用户只是点了插件
+- **两道兜底**（`SingleWindowMode.ResolveGroup` / `ShouldIgnoreForeground`）：① 按**簇主**归组——沿 owner 链找到用户真正在用的那个窗口，簇主在场景里就当作还在那个场景；② 簇主也对不上时，按 `WindowEnumerator.ExclusionReason()` 判断它连窗口都不算（工具窗 / 被拥有的弹窗 / 无标题），直接忽略这次前台变化，绝不收场景
+- **顺带修了一个既存 bug**：`NativeMethods.RootOwner()` 原是 `GetAncestor(hwnd, GA_ROOTOWNER)`，实机上对 owned 的 `WS_POPUP` **返回窗口自身**——`GetParent` 对非 `WS_CHILD` 返回 0，owner 链是空的。改为自己沿 `GW_OWNER` 逐层走（`WalkOwners`，带深度上限防成环）。这同时修正了 1.9.0「关闭只关簇主」里那条一直没真正生效的判断
+- **日志可诊断**：「忽略前台」和「应用」两条日志现在都带 class / owner / rootOwner；如果还有弹窗被误判，日志能直接看出它的形态
+- **测试**：126 → **130**（`SingleWindowModeRulesTests` 7 条锁两道兜底，`OwnerChainTests` 4 条锁 owner 链 / 自环 / 深度上限）
+- **实机夹具**（owned 的 `WS_EX_TOOLWINDOW` 弹窗）：`GetParent(弹窗)=0` 证实断链原因；修复后 `owner=主窗口`、`rootOwner=主窗口`、`ResolveGroup=3`（原场景），修复前 `group=0` 会收场景
+- **未验证**：真实 Chrome / Edge 的扩展弹窗需要人点，我无法自动化；请用 1.13.4 再点一次插件确认
+- 验证：`dotnet build` 0 警告 0 错误、`dotnet test` **130/130**、`REPO CHECK: PASS`
+- 版本号 1.13.4
+
+## 1.13.3 — 2026-11-18
+
+把版本串收短（用户反馈托盘那一行太复杂）。
+
+- **改动前**：`1.13.2 · 2026-11-18 13:54+0b0e76544f2872f3877e8391a09b35b3a7a43162`（60 字符，托盘放不下也没人读 sha）
+- **改动后**：`1.13.3 · 11-18 13:59`（19 字符）
+- 三处调整：时间只到「月-日 时:分」；`IncludeSourceRevisionInInformationalVersion=false` 关掉 SDK 自动追加的 40 位 commit sha；`VersionTests` 增加上限断言（不带 `+`、长度 ≤ 24），防止以后再变长
+- 验证：`dotnet build` 0 警告 0 错误、`dotnet test` 119/119、`REPO CHECK: PASS`；产物 `ProductVersion = 1.13.3 · 11-18 13:59`
+- 版本号 1.13.3
+
+## 1.13.2 — 2026-11-18
+
+修一个「界面上的版本号从 1.9.0 起就没再变过」的缺陷（用户打开 1.13.1 的 exe，看到的仍是 1.9）。
+
+- **根因**：`csproj` 里 `<InformationalVersion>` 是**手写常量** `1.9.0 · {时间}`，与 `<Version>` 是两套值。此后每次升版只改了 `<Version>`，程序集版本是对的（`FileVersion 1.13.1.0`），但托盘、启动提示、日志头读的是 `InformationalVersion`，所以一直显示 1.9
+- **修法**：改成 `$(Version) · {构建时间}`，版本号只留一个源；SDK 还会自动追加 `+<commit sha>`，托盘里能同时看到构建时间与提交前缀
+- **防回归**：新增 `VersionTests`（2 条）——把「界面显示的版本」与 `Assembly.GetName().Version` 对齐、并要求带构建时间。这条测试在修之前会失败
+- 说明：二进制一直是新的（程序集版本、日志时间戳都正常），只有显示串错了；现在产物自报 `1.13.2 · 2026-11-18 13:53+a003022`
+- 验证：`dotnet build` 0 警告 0 错误、`dotnet test` **119/119**、`REPO CHECK: PASS`
+- 版本号 1.13.2
+
+## 1.13.1 — 2026-11-18
+
+验收 S3 时发现的测试隔离问题：`WorkspaceService.SaveFrom` 会写用户真实的 `saved-groups.json`，自动化夹具没法安全跑真实抓取路径。
+
+- **`AppSettings.Folder` 支持 `TASKBAR_DRAWER_HOME` 覆盖**：默认仍是 `%LOCALAPPDATA%\TaskbarDrawer`，设了环境变量就落在那。夹具靠它把配置与场景隔离到临时目录
+- **为什么不改 `LOCALAPPDATA`**：`Environment.GetFolderPath(LocalApplicationData)` 走 shell API，不认这个环境变量（实测改了照样返回真实路径）。夹具因此带 fail-closed 守卫：数据目录没隔离成功就直接退出，一个字都不写
+- 验证：`dotnet build` 0 警告 0 错误、`dotnet test` 117/117、`REPO CHECK: PASS`
+- 版本号 1.13.1
+
+## 1.13.0 — 2026-11-18
+
+计划 S5（最后一项）：拆 `WorkspaceService`。829 行、四类职责挤在一个类里，改「还原」要翻「存快照」的代码。纯机械搬迁，一行逻辑没动。
+
+- **四片**：`WorkspaceService.cs`（组合与生命周期：字段 / 构造 / 启动迁移 / 持久化 / 查询，261 行）、`.Snapshot.cs`（抓窗口写成快照 + 枚举候选，253 行）、`.Restore.cs`（还原编排 + 关闭窗口 + 12 s 等待窗口期，290 行）、`.Editing.cs`（只改快照数据：移除 / 追加 / 改名 / 标识 / 删除，131 行）
+- **切分依据是「谁改什么」**：改数据（编辑）不碰窗口；改窗口（快照 / 还原）不碰 UI。`TopWindow` / `TopLevelWindows` / `OrdinalCandidates` / `ProcessPathOf` 跟着「枚举窗口」进 `.Snapshot.cs`，还原侧直接复用
+- **为什么现在才拆**：计划里它的前置条件是 S3 + S4——配对逻辑抽到 `WindowIdentity`、窗口操作压到 `IWindowGateway` 之后，这一片才只剩「先摆位还是先启动」的编排。早拆会把行为变更和结构变更混在一起
+- **验收**：拆分前后逐项核对 42 个成员全部在位、四个文件括号配平；`dotnet build` 0 警告 0 错误、`dotnet test` **117/117**（一行测试没改，说明边界抽对了）
+- 计划 S1–S5 至此全部完成
+- 版本号 1.13.0
+
+## 1.12.0 — 2026-11-18
+
+计划 S4：把「状态机碰真实窗口」这件事收进一个最小端口，`StashAllService` 的收起 / 展开 / 接入 / 摘除终于能单测。纯结构改造，行为不变——但改动面覆盖隐藏与还原，所以两项验证都做了（假网关单测 + 真实网关实机夹具）。
+
+- **`Core/WindowGateway`**：`IWindowGateway` 只收状态机真的会调的动作。读操作折进一次 `Describe`（标题 / 类名 / 进程元数据 / 样式位 / 矩形 / 是否提权），四种显示语义合成 `SetVisibility`（`SW_HIDE` / `SW_SHOWNA` / `SW_RESTORE` / `SW_SHOWMINNOACTIVE` 行为不同，不能用一个 bool 表达）
+- **`Interop/Win32WindowGateway`**：所有平台调用收到这一层，包括原本散在 `WindowStash` 里的坐标换算（`rcNormalPosition` 工作区坐标 ↔ 屏幕坐标）、还原后的矩形校正、同簇弹窗链、进程元数据缓存。`Core` 里只剩规则
+- **`StashAllService` / `WindowStash` 改为注入**：构造函数接 `IWindowGateway`，缺省仍是 Win32 实现；同一个实例交给两边，假实现里窗口状态是一份内存，两边必须看到同一份
+- **`StashAllServiceTests`（13 条）**：铺满迁移矩阵——`StashAll` 按屏隔离 / 跳过提权窗口 / 连带隐藏同簇弹窗 / 无可收窗口不建组；`ExpandGroup` 恢复并置前且**组仍保留**；`StashGroup` 再收起；`ExpandNewest` 在多组间轮转；`Adopt` 接入可见窗口不隐藏、重复接入被拒；`Release` 交回桌面并删组；`Detach` 把收起中的成员放回桌面；`Prune` 清理销毁记录 / 不删被外部还原的记录
+- **宽限期可注入时钟**：`Prune(DateTime? nowUtc)` 只为单测存在——「刚收起的那一瞬间窗口往往还可见」这条时间规则不注入就没法验证，生产路径一律传 null
+- **实机验收（真实网关，临时夹具不入库）**：子进程主窗口 + 一个它拥有的对话框，20 项断言全过——`Capture` 读到标题 / 路径 / 显示器 / 位置；`OwnedPopups` 识别到 1 个弹窗；`Hide` 后主窗口与弹窗都不可见；`Restore` 后两者都回来且**矩形与保存值完全一致**（`220,160,740,480`）；`HideAgain` + `ReleaseAll` 放回；强杀进程后 `Prune` 清掉记录
+- 验证：`dotnet build` 0 警告 0 错误、`dotnet test` **117/117**（新增 `StashAllServiceTests` 13 条 + `FakeWindowGateway`）、`REPO CHECK: PASS`
+- 版本号 1.12.0
+
+## 1.11.0 — 2026-11-18
+
+计划 S3：窗口身份从「exe + 标题」换成两层身份，配对优先级从「标题优先」换成「位次优先」。方案见 [docs/design/window-identity.md](docs/design/window-identity.md)（P3 收官，三步全部落地）。
+
+- **两层身份**：`SavedWindow` 新增 `AppId`（L1：`aumid:…` / `exe:…`）、`ClassName`、`Ordinal`。标题从此只是显示名 + 配对时的弱信号——它是窗口上最易变的属性，浏览器切一个标签页就变，旧键「exe + 标题」认不回来，于是场景重开时窗口互相换位
+- **位次**：同 (L1, 类名) 的窗口按保存位置排序，从 0 开始编号。不按 `EnumWindows` 顺序（不稳定），按**显示器 + (Top, Left) + 标题**排；重开场景后按同样规则再算一遍就能对上
+- **跨屏修正**（实现期发现）：排序必须先按显示器分组再比坐标。保存侧是 `rcNormalPosition`（工作区坐标）、还原侧是 `GetWindowRect`（屏幕坐标），跨屏直接比 Top / Left 会把同一个应用在两块屏上的窗口排出相反次序。已补单测锁定
+- **配对四级**：同应用 + 同类名 + 同位次 → 同应用 + 同标题（同屏优先）→ 同屏最近 → 任意屏最近。第 1 级是这次补的，也正是「浏览器切过标签页就认不回来」的直接修复点
+- **新模块 `Core/WindowIdentity`**：`AppId` / `AssignOrdinals`（保存侧写回、还原侧出字典）/ `Pair` 三段纯规则，不碰 Win32，位次与配对都能直接单测；`DisplayRules.PickRestoreCandidate` 保留为薄入口
+- **去重与抑制也换成身份键**：`SceneEdit.IdentityKey`（身份键优先、旧快照退回 exe + 标题键），`Merge` / `Visible` 双键登记与消费——旧快照的 `Suppressed` 里存的是旧键，仍能挡住，不会「移除过的窗口又回来了」
+- **详情窗「已打开」双键判定**：身份键命中或旧键命中都算打开，切过标签页的成员不再被误标「未打开」
+- **追加列表的「已在场景」加类名维度**：`WindowIdentity.LooseKey`（应用 + 类名 + 标题）配合旧键判断，同程序的主窗口与开发者工具不会再互相串；「移除窗口」写进抑制集合的也改成身份键
+- **旧快照不迁移**：`AppId` 为空即走旧路径（标题 + 矩形），与改造前完全一致——旧数据里没有类名和位次，补算都是猜测，猜错会把窗口摆到别处
+- **AUMID 读取端暂不填**：`AppId()` 支持 `aumid:` 前缀，但调用方传 null。绝大多数桌面应用没有显式 AUMID，而且当前候选本来就按 exe 过滤，填了也不改变配对结果——等真有消费场景再接，不写死代码
+- 验证：`dotnet build` 0 警告 0 错误、`dotnet test` **104/104**（新增 `WindowIdentityTests` 11 条 + `SceneEditTests` 3 条身份键兼容用例）、`REPO CHECK: PASS`
+- 版本号 1.11.0
+
+## 1.10.0 — 2026-11-18
+
+计划 S2：把「状态对账」从 2.5 s 轮询改成窗口事件驱动，并让「关闭场景」的提示按**实际关掉的个数**说话。两件事合在一个钩子里做——它们要的是同一批信号。
+
+- **事件驱动剪枝**：新增 `Core/WindowEventWatcher`，按**被跟踪进程**订阅 `EVENT_OBJECT_DESTROY / SHOW / HIDE`。`SetWinEventHook` 的 `idProcess` 是注册期过滤，所以是一个进程一个钩子而不是一个全局钩子——全局钩子会把系统里所有菜单 / 提示框 / 输入法的显示隐藏都收进回调，每条还得查一次 PID 才能丢。管几个进程就装几个钩子，回调量接近零，进程退出钩子自己消失
+- **从事件到界面 150–250 ms**（旧实现最坏 2.5 s）：事件到达后合并 150 ms 再对账，一次最小化会连着改可见性与位置，一串事件只处理一次。只处理记录里的句柄——一个进程自己的辅助窗口（WPF 的 `HwndWrapper`、浏览器每个标签页）销毁时也发 `DESTROY`，实测关掉一个进程能收到十几条，一次字典查找全部丢掉
+- **图标重贴独立成 5 s 定时器**：`Prune` 拆成 `Prune()`（只做状态对账）与 `ReapplyIcons()`。重贴要跨进程 `WM_GETICON` / `WM_SETICON`，遇到半死不活的程序会把调用方一起拖住；而 `WM_SETICON` **不产生任何 WinEvent**，没法订阅，只能定期补
+- **关闭计数改成「过一会儿再报」**：`WorkspaceService.Close` 改为返回**真正投出 `WM_CLOSE` 的句柄**，由 `CloseReport.Measure` 延时复核。250 ms 先看一次（绝大多数程序这一下就关完，用户感知不到延迟）；还有活着的再等 800 ms 给「弹了确认框、用户马上点确定」留余量。目标程序弹保存框时，提示从假的「已关闭 3 个窗口」变成「已关闭 2 个窗口，1 个仍在等待响应」
+- **`CloseReport` 是纯规则**：三种分支（全关掉 / 部分在等 / 一个都没投出去）+ 数字自洽（关闭数不超过请求数）都有单测，提示文案从此只有一处
+- **实机验证**（双进程夹具，父进程订阅子进程窗口）：`SW_HIDE` → Hide 事件 5 ms、`SW_SHOWNA` → Show 5 ms、`WM_CLOSE` → 窗口销毁 16–24 ms；**关键场景「窗口已被收起（SW_HIDE）后从任务管理器强杀」→ 5 ms 收到 `DESTROY`**（收起中的成员没有可见性变化，这条如果收不到就等于没修）；`Sync` 幂等（同一 PID 重复同步钩子数不变）、增删 PID 时钩子数按预期 1→2→1
+- 验证：`dotnet build` 0 警告 0 错误、`dotnet test` 90/90（新增 `WindowEventWatcherTests` 4 条 + `CloseReportTests` 4 条）、`REPO CHECK: PASS`
+- 版本号 1.10.0
+
+## 1.9.1 — 2026-11-18
+
+计划 S1：修掉第 1 轮走查遗留的 W-13，并把「给关键控件补 AutomationId」这件事真正做成。**过程中发现原计划的前提是错的**——补 ID 之前必须先换控件类型，否则补的全是死代码。
+
+- **说明窗高度上限按主屏算（W-13）**：`HelpWindow` 的 `MaxHeight` 原本在 `OnSourceInitialized` 里算，此时窗口还在主屏；4K 主屏 + 1080p 副屏时会按主屏算出上限，窗口比副屏工作区还高、底部的「关闭」落到屏幕外。改为在 `PlaceOnMonitorOf` 定位之后按目标屏重算，与详情窗 1.8.1 的修法对齐
+- **`Border` 不是按钮：UIA 里根本看不见**：实测确认（同一进程内用 UIA 客户端查自己）——带 `AutomationId` + `Name` 的 `Border` 在 ControlView 与 RawView 里**都查不到**，只有它的子 `TextBlock` 以纯文本出现；`Button` 则完整暴露 `ControlType.Button` + id + name + `InvokePattern`。所以 `Ui.ActionButton` 从「带 `MouseLeftButtonUp` 的 `Border`」改成真正的 `Button` + 自定义 `ControlTemplate`（圆角底板 + `ContentPresenter`），外观逐项对齐原实现：底色 / 圆角 8 / 内边距 11×5 / 悬停变色 / 禁用 `Opacity 0.45` + 箭头光标，`Focusable=false` 保持原来的键盘行为（实测不影响 `InvokePattern`）
+- **一套控件工厂**：新增 `Ui.CardButton`（整块可点的卡片行，`CornerRadius 10` + 悬停高亮）与 `Ui.DangerButton`（红边危险操作），场景行 / 开关行 / 详情窗「删除场景」全部换掉；`SceneEditorWindow.MakeDanger` 删除
+- **AutomationId 覆盖关键控件**：面板 `panel.help` / `panel.close` / `panel.newScene` / `panel.expandLatest` / `panel.expandAll` / `panel.singleWindow` / `panel.autoStart` / `panel.appIconScale` / `panel.badgeScale` / `panel.hotkey` / `panel.scene.{id}` 与 `.close` / `.detail` / `panel.saved.{id}` 与 `.open` / `.detail`；详情窗 `editor.refresh` / `editor.rename` / `editor.delete` / `editor.done` / `editor.paletteReset` / `editor.remove.{index}` / `editor.append.{index}` / `editor.status.{index}`；说明窗 `help.close` / `help.done`；重命名对话框 `prompt.ok` / `prompt.cancel`。内容不是纯文本的卡片行额外给 `AutomationProperties.Name`（否则读屏里是一串空白）
+- **验收方式**：临时离屏夹具（不入库）真实例化三个窗（喂进一条运行中场景 + 一条已关闭场景 + 两条窗口行），走 UIA 客户端把带 `AutomationId` 的元素全部 dump 出来（主面板 22 / 详情窗 14 / 说明窗 5，`invoke=True` 全覆盖），并 `RenderTargetBitmap` 导出 PNG 与「改造前的 `Border` 版」逐项对照，确认按钮外观零变化
+- 验证：`dotnet build` 0 警告 0 错误、`dotnet test` 82/82、`REPO CHECK: PASS`
+- 版本号 1.9.1
+
+## 1.9.0 — 2026-11-18
+
+窗口归属改造 P1 + P2：弹窗不再被当成窗口收进场景，场景详情能看出「哪些成员没打开」。方案见 [docs/design/window-identity.md](docs/design/window-identity.md)。
+
+- **弹窗准入过滤**：`WindowEnumerator` 新增「被拥有的窗口」判定——`GetWindow(hwnd, GW_OWNER) != 0` 即对话框 / 弹出层 / 浏览器扩展弹窗，不再进入候选。同时排除 `WS_EX_NOACTIVATE` 窗口；`WS_EX_APPWINDOW` 作为豁免（系统语义是「当作没有 owner」，即显式要求出现在任务栏）。判定收敛到 `WindowEnumerator.ExclusionReason()` 一处，枚举与 `--probe` 共用
+- **窗口簇：收纳时连带隐藏弹窗**：`SW_HIDE` 主窗口**不会**联动它的 owned 弹窗（系统只在最小化 / 销毁时联动），只过滤不隐藏会留下一个对话框孤零零浮在桌面。现在收纳时把同簇可见弹窗（沿 `GetLastActivePopup` 链，最多 4 层）一起隐藏，句柄记在 `StashedWindow.OwnedHidden`；展开 / 删除场景 / 退出时用 `SW_SHOWNA` 放回来。弹窗**不写快照**、不计入窗口数、不参与配对
+- **关闭只针对簇主**：`Close` 跳过「根 owner 也在本组」的句柄——旧场景里混进的弹窗会随主窗口一起关，单独发 `WM_CLOSE` 反而可能触发应用自己的关闭主窗口逻辑
+- **配对候选排除弹窗**：`WorkspaceService.TopLevelWindows` 增加 `Owned` 标记，还原配对、等待新窗口、追加列表三处都跳过 owned 窗口，弹窗不会再抢走主窗口的位置
+- **崩溃恢复补齐**：`WindowRecovery` 救回主窗口后，把被一起藏起来的同簇弹窗也放回来（强杀时主窗口回来了、弹窗还隐形，应用会看起来卡在对话框上）
+- **详情窗「已打开 / 未打开」**：`SavedWindowItem.IsOpen` + `SceneService.Detail()` 把快照与运行时组对照起来；每行前显示状态、未打开的整行降饱和度（移除按钮照常可用），标题旁汇总「N 个已打开 · M 个未打开」；追加列表的「已在场景」改为「已在场景（已打开）」，与成员列表口径一致
+- **`--probe` 输出排除原因**：新增「被排除的可见窗口」分组（不可见 / 挂起 / cloaked / 工具窗 / 不抢焦点 / 本程序 / 矩形为空 / 被拥有的弹窗 / 无标题 / shell），排查「为什么这个窗口没被收进去」不用再猜
+- **实机验证**：用离屏夹具（一个普通窗口 + 一个 `ShowInTaskbar=false` 的 owned 对话框）跑 `--probe`，对话框被归入「被拥有的弹窗 / 对话框」、主窗口仍是候选。顺带确认了 `WS_EX_APPWINDOW` 豁免是必要的：WinForms 默认窗体会带上该样式，那种「有 owner 但要上任务栏」的窗口本来就该算窗口
+- 验证：`dotnet build` 0 警告 0 错误、`dotnet test` 82/82
+- 版本号 1.9.0
+
+## 1.8.1 — 2026-11-18
+
+按 scenario-walkthrough 方法走查 18 条操作链，修掉 11 个问题（其中两个是用户实报的单窗口模式缺陷）。报告见 [docs/walkthrough/report-1.md](docs/walkthrough/report-1.md)。
+
+- **修复单窗口模式下打开 / 展开场景，其它窗口不最小化**：批量恢复期间的 `SuspendTemporarily()` 把前台事件全压掉了，系统之后不会再给事件——「避免误最小化同伴」和「该最小化其它窗口」被同一段抑制一起取消，且没有任何补偿。新增 `SingleWindowMode.ApplyNow(anchor)` + `AppShell.FinishSceneOpen(groupId)`，在「展开运行中场景 / 打开已关闭场景 / 展开最近」三处收尾补一次；启动出来的窗口在接管时补一次
+- **修复打开的场景停在 z 序最下面**：从快照拉起的组由 `Adopt` 现场创建，`ForegroundBefore` 恒为 0，而 `ExpandGroup` 只在它可用时才激活——这类场景永远不置前，再收起再展开也一样。新增 `Core/SceneFocusRules.Pick`（纯规则 + 5 条单测）：优先收纳前的前台窗口，不可用时退回场景里第一个刚还原的窗口；`FinishSceneOpen` 统一置前
+- **最小化改用 `SW_SHOWMINNOACTIVE`**：`SW_MINIMIZE` 会「激活 Z 序里的下一个顶层窗口」，一轮最小化下来焦点被抢走，场景窗口刚置前又被顶下去
+- **追加到「收起中」的场景不再翻转状态**：新成员接入后立刻 `StashSingle` 收进收纳区，否则胶囊会变成「已展开」而其它成员还在收纳区，点它反而变成「收起」
+- **快照写盘失败不再留下假场景**：`SaveFrom` 失败时撤掉内存里的场景并让调用方把窗口放回桌面（此前会留一个「重启就消失」的胶囊，而窗口已经被藏起来）；提示改为「无法存成场景，窗口已放回桌面」
+- **修复禁用按钮被按下时拖走整个窗口**：详情窗的「移除」、追加列表的「已在场景 / 在其它场景」都是禁用态且 `Cursor` 为箭头，拖窗逻辑把它们当成了空白处；禁用按钮现在带 `NoDragTag`，`IsInteractive` 认它
+- **修复托盘「按场景切换」在菜单展开时被重建**：从可见下拉里移除子项会把菜单在鼠标底下收起来（2.5 s 一次的 Prune 只要计数变一次就触发）。菜单可见时只记脏，`Closed` 后重建
+- **修复开机自启状态显示失真**：原来用整串命令比较，升级 / 换目录后显示「未开启」，而注册表里的旧命令仍会拉起旧副本。改为「Run 值存在即开启」，并在启动时 `Repair()` 把路径刷成当前 exe
+- **修复详情窗高度上限按主屏算**：4K 主屏 + 1080p 副屏时右下角一拖就能把窗口拉出屏幕底部；改为在 `PlaceBeside` 定位之后按目标屏重算
+- 文案与一致性：主面板提示里的「⭐ 胶囊」改为彩色圆点；改标识失败时回推真实数据，不再让详情窗显示未生效的标识
+- 验证：`dotnet build` 0 警告 0 错误、`dotnet test` 82/82（新增 `SceneFocusRulesTests` 5 条）
+- 版本号 1.8.1
+
+## 1.8.0 — 2026-11-18
+
+拆分 `AppShell`：1286 行、四类职责混在一起的组合根，按「谁改什么」切成三片 `partial class`。纯机械搬迁，行为零变化。
+
+- **`AppShell.cs`（365 行）**：字段、`Initialize` 的装配顺序、消息宿主与热键注册、`Safe`、`RequestSurfaceUpdate` / `UpdateSurface`、唤起重启与 `Exit` / `Dispose`
+- **`AppShell.Commands.cs`（652 行）**：每个用户动作的实现、规则卡片绑定、设置写入与反馈文案。只走 `SceneService` / `StashAllService` / `WorkspaceService`，不直接改控件
+- **`AppShell.Wiring.cs`（361 行）**：`WireServices` / `WireTray` / `WirePanel` / `WireChips` / `WireSingleWindow` / `WireHotkeyHost` / `WireRules`，以及面板 / 详情 / 说明窗口的开关与数据推送
+- **装配顺序写成显式契约**：`Initialize` 现在由 8 个 `Wire*` 调用组成，顺序即依赖——托盘必须在热键注册之前（注册失败要弹托盘气泡）、面板必须最后建（要读已生效的热键文案与外观设置）。原来这层依赖只存在于语句顺序里，没人敢动
+- **验证**：`dotnet build` 0 警告 0 错误、`dotnet test` 77/77；成员集合做了机械核对（拆分前 53 个方法，拆分后逐个只存在一处，新增仅 `Wire*`）；实机启动冒烟：日志正常（启动横幅 → 显示器 → 加载场景 1 个），0 异常，`saved-groups.json` 运行前后 md5 一致
+- 版本号 1.8.0
+
+## 1.7.1 — 2026-11-18
+
+修复胶囊「偶尔被任务栏压住、点不到」：把 2 秒一轮的纯轮询换成事件驱动 + 自适应守卫，并把「抬 z 序」与「全量重排」拆成两条路。
+
+- **根因确认**：胶囊和任务栏同属一个 topmost 波段，谁最后被抬起谁在上面。任务栏在你点它、切窗口、改几何时会抬自己，而旧实现只在每 2 s 的一轮体检里才发现被压住，于是最长有一个周期的窗口里胶囊既看不见（从半透明任务栏里透出来）又点不到（点击被任务栏吃掉）。判定逻辑本身没错，错在驱动节奏
+- **前台事件驱动**：挂 `EVENT_SYSTEM_FOREGROUND` 只读监听（不注入 DLL、不装全局钩子），前台一变立刻体检一次——覆盖「点任务栏、点任务栏按钮切窗口、开始菜单收起」这几种任务栏抬自己的时刻
+- **任务栏几何事件**：按 **Explorer 进程**订阅 `EVENT_OBJECT_LOCATIONCHANGE`（不全局订阅，避免拖窗口时被成百上千次回调淹没），覆盖自动隐藏滑动、任务栏改边、换分辨率、通知图标增减；Explorer 重启后按新 PID 自动重挂
+- **自适应守卫**：事件之后开 250 ms 高频守卫、8 轮后自动停，平时不占 CPU；2 s 全量体检保留作兜底
+- **复位动作拆成两条**：只是被压住时用 `SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE` 只抬 z 序，不动位置尺寸、不触发 WPF 重新布局；几何真的变了才走全量重排。原来每次自愈都要对每枚胶囊做一次带位置尺寸的 `SetWindowPos`
+- **可验收**：被压住并复位时写一行日志「被任务栏压住 N 枚 → 已复位 来源=… 耗时=…ms」，实机点任务栏后可直接用日志判断是否进到几十毫秒
+- **判定范围保持只认任务栏**：被开始菜单 / 通知中心盖住不抢——那些浮层盖上来时用户也不需要胶囊，硬抢会变成胶囊浮在浮层上面；浮层收起时前台事件自然会把它叫醒
+- 版本号 1.7.1
+
 ## 文档维护 · 2026-11-17
 
 升级到 **repo-kit 2.6.0 / 单项目规范 2.1.2**，不改产品代码，不产生版本号。
