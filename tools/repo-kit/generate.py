@@ -58,6 +58,16 @@ def rel_link(from_rel: str, to_rel: str) -> str:
     return posixpath.relpath(to_rel, posixpath.dirname(from_rel))
 
 
+def agents_blocked(root: Path, outputs: dict[str, str]) -> str | None:
+    """AGENTS.md 是唯一会与手写入口冲突的生成物。
+
+    存量仓库经常已经有一份手写 AGENTS.md，却还没有 schema/agents.template.md。
+    此时内置兜底模板会把整份文件替换掉（2.7.3 及更早就是这么丢内容的）。
+    判定逻辑放在 check_repo 里，两个入口共用一份，避免哪天只改了一边。
+    """
+    return "AGENTS.md" if cr.agents_conflict(root, set(outputs)) else None
+
+
 def count_by(pages: dict[str, dict], key: str) -> dict[str, int]:
     out: dict[str, int] = {}
     for page in pages.values():
@@ -82,11 +92,30 @@ def build_agents(pages: dict[str, dict], tax: dict, root: Path, tool_rel: str = 
             .replace("{{VERSION}}", str(tax.get("version", "?")))
             .replace("{{TOOL}}", tool_rel)
         )
+    # 内置兜底模板只能在仓库自己拥有这些页面时才写链接，否则生成完立刻 LINK_BROKEN。
+    intro_links = [
+        f"{label}见 [{rel}]({rel})"
+        for label, rel in (
+            ("完整用法", "docs/usage.md"),
+            ("概念定义", "docs/concepts/ssot.md"),
+            ("决策", "docs/decisions/index.md"),
+        )
+        if (root / rel).exists()
+    ]
+    intro = "这是给 AI 与人的**唯一入口**。"
+    if intro_links:
+        intro += "，".join(intro_links) + "。"
+    intro += "`CLAUDE.md`、`CURSOR.md` 等只允许一行指向本文件。"
+
+    howto = "本文件不复制命令清单、报错表和新页清单。"
+    if (root / "docs/usage.md").exists():
+        howto = "只有一处权威：[使用说明](docs/usage.md)。" + howto
+
     return f"""# AGENTS.md — 仓库唯一入口
 
 > 生成文件，勿手改。改规则请改 `schema/` 或 `{tool_rel}/generate.py`，再运行 `python {tool_rel}/generate.py --root . --write`。
 
-这是给 AI 与人的**唯一入口**。完整用法见 [docs/usage.md](docs/usage.md)，概念定义见 [docs/concepts/ssot.md](docs/concepts/ssot.md)，决策见 [docs/decisions/index.md](docs/decisions/index.md)。`CLAUDE.md`、`CURSOR.md` 等只允许一行指向本文件。
+{intro}
 
 ## 非协商（只放最关键的 6 条）
 1. 改真源（源码 / schema / 原始材料）时，**同一个 PR** 带上所有引用它的文档。
@@ -97,7 +126,7 @@ def build_agents(pages: dict[str, dict], tax: dict, root: Path, tool_rel: str = 
 6. 未经用户确认不装软件、不付费、不对外发送、不改生产库。
 
 ## 怎么操作
-只有一处权威：[使用说明](docs/usage.md)。本文件不复制命令清单、报错表和新页清单。
+{howto}
 
 ## 验收
 ```bash
@@ -428,6 +457,20 @@ def main() -> int:
     declared = None if raw_declared is None else set(raw_declared)
     outputs = {rel: text for rel, text in candidates.items() if declared is None or rel in declared}
     skipped = [rel for rel in candidates if rel not in outputs]
+    blocked = agents_blocked(root, outputs)
+    if blocked:
+        print(f"GENERATED_BLOCKED: {blocked} 是手写文件，且缺少 schema/agents.template.md", file=sys.stderr)
+        print("  生成器不会覆盖它，本次未写入任何文件。二选一：", file=sys.stderr)
+        print('  1) 保留手写：把 "AGENTS.md" 从 schema/taxonomy.json 的 generated_files 移除；', file=sys.stderr)
+        print("  2) 改为生成：cp AGENTS.md schema/agents.template.md，"
+              "把易变数字换成 {{PAGES}}/{{CRITICAL}}/{{TYPES}}/{{VERSION}}，再跑 --write。", file=sys.stderr)
+        if args.json:
+            print(cr.json.dumps({"pages": len(pages), "stale": [], "written": False,
+                                 "blocked": [blocked], "skipped": skipped},
+                                ensure_ascii=False, indent=2))
+        elif not args.write:
+            print(f"GENERATE CHECK: FAIL (blocked={blocked}, pages={len(pages)})")
+        return 2 if args.write else 1
     problems = []
     for rel, content in outputs.items():
         path = root / rel

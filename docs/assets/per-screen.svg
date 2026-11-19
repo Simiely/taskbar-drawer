@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" width="1200" height="400" role="img" aria-labelledby="title desc">
+  <title id="title">单窗口模式按屏幕独立</title>
+  <desc id="desc">每块屏幕独立处理；场景属于它自己的那块屏幕，成员被拖到别的屏幕也不改变归属。</desc>
+  <rect width="1200" height="400" rx="18" fill="#0f1115"/>
+  <text x="48" y="58" fill="#f2f4f7" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="26" font-weight="700">每块屏幕独立，场景属于它自己的那块屏</text>
+  <text x="48" y="90" fill="#9aa0a6" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15">在一块的屏幕上切换窗口，不会动另一块屏上的场景</text>
+
+  <!-- divider -->
+  <line x1="600" y1="120" x2="600" y2="356" stroke="#2d313a" stroke-dasharray="6 6"/>
+  <text x="600" y="380" fill="#9aa0a6" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13" text-anchor="middle">互不影响</text>
+
+  <!-- DISPLAY1 -->
+  <text x="48" y="138" fill="#9aa0a6" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14">DISPLAY 1</text>
+  <rect x="48" y="152" width="500" height="190" rx="12" fill="#14171c" stroke="#2d313a"/>
+  <g>
+    <rect x="76" y="176" width="210" height="66" rx="9" fill="#20232b" stroke="#56ccf2" stroke-opacity="0.55"/>
+    <circle cx="250" cy="192" r="8" fill="#56ccf2"/>
+    <text x="244" y="196" fill="#0f1115" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="9" font-weight="700">A</text>
+    <rect x="98" y="192" width="120" height="8" rx="4" fill="#e8eaed" opacity="0.9"/>
+    <rect x="98" y="210" width="150" height="6" rx="3" fill="#9aa0a6" opacity="0.55"/>
+  </g>
+  <g>
+    <rect x="310" y="204" width="200" height="66" rx="9" fill="#20232b" stroke="#2d313a"/>
+    <rect x="330" y="220" width="110" height="8" rx="4" fill="#e8eaed" opacity="0.9"/>
+    <rect x="330" y="238" width="150" height="6" rx="3" fill="#9aa0a6" opacity="0.55"/>
+  </g>
+  <text x="76" y="318" fill="#56ccf2" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">场景 A 在这里；切到普通窗口时 A 收起</text>
+
+  <!-- DISPLAY2 -->
+  <text x="652" y="138" fill="#9aa0a6" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14">DISPLAY 2</text>
+  <rect x="652" y="152" width="500" height="190" rx="12" fill="#14171c" stroke="#2d313a"/>
+  <g>
+    <rect x="680" y="176" width="210" height="66" rx="9" fill="#20232b" stroke="#bb6bd9" stroke-opacity="0.55"/>
+    <circle cx="854" cy="192" r="8" fill="#bb6bd9"/>
+    <text x="848" y="196" fill="#0f1115" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="9" font-weight="700">B</text>
+    <rect x="702" y="192" width="120" height="8" rx="4" fill="#e8eaed" opacity="0.9"/>
+    <rect x="702" y="210" width="150" height="6" rx="3" fill="#9aa0a6" opacity="0.55"/>
+  </g>
+  <g>
+    <rect x="914" y="204" width="200" height="66" rx="9" fill="#20232b" stroke="#bb6bd9" stroke-dasharray="5 4"/>
+    <circle cx="1088" cy="220" r="8" fill="#bb6bd9"/>
+    <text x="1082" y="224" fill="#0f1115" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="9" font-weight="700">B</text>
+    <rect x="936" y="220" width="110" height="8" rx="4" fill="#e8eaed" opacity="0.9"/>
+    <rect x="936" y="238" width="135" height="6" rx="3" fill="#9aa0a6" opacity="0.55"/>
+  </g>
+  <text x="680" y="318" fill="#bb6bd9" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="13">从左边拖过来的窗口仍算场景 B 的</text>
+</svg>

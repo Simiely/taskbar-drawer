@@ -83,9 +83,9 @@ python tools/repo-kit/generate.py --root . --check
 
 ## 当前规模
 
-- 页面：7（critical=0）
-- 按 type：explanation=2, reference=5
-- 词表版本：2.7.0
+- 页面：22（critical=0）
+- 按 type：explanation=17, reference=5
+- 词表版本：2.9.1
 
 ## 详细规则
 

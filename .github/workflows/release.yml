@@ -1,0 +1,35 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build package
+        run: pwsh -NoProfile -File tools/release.ps1
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $zip = Get-ChildItem dist -Filter "TaskbarDrawer-*-win-x64.zip" | Select-Object -First 1
+          if (-not $zip) { throw "package not found" }
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $zip.FullName --clobber
+          } else {
+            gh release create $tag $zip.FullName --title "TaskbarDrawer $tag" --generate-notes
+          }

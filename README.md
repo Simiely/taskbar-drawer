@@ -6,6 +6,12 @@
 
 > Windows 11 不允许第三方程序往任务栏里塞控件，所以胶囊是一枚紧贴任务栏的无边框置顶小窗：视觉上贴着任务栏，行为上可点击。
 
+## 下载
+
+[下载最新版](https://github.com/Simiely/taskbar-drawer/releases/latest) · Windows 10 / 11 x64 · 需要 [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0)（框架依赖单文件，不内置运行时）
+
+![收纳与展开示意](docs/assets/capsule-flow.svg)
+
 ## 功能
 
 - **新建场景**：`Ctrl+Alt+Shift+D` 把当前显示器上可见的窗口收成一个新场景并自动保存；这块屏幕上没有可收的窗口时再按一次，展开这块屏幕上最近的场景
@@ -16,6 +22,8 @@
 - **多显示器**：每块屏幕完全独立——在一块的屏幕上切换窗口，不会动另一块屏上的窗口或场景；收纳、展开、收起也默认只作用于当前操作的显示器。单窗口模式下场景算一个窗口，并且属于它<b>自己那块屏幕</b>（收纳时确定）：成员被拖到别的屏幕也仍属于原场景、仍算原屏的窗口；要换屏就解散场景、在新屏重新收纳
 - **主面板**：双击托盘图标打开（左键单击切换单窗口模式），查看场景列表、切换开关、改热键；顶部横条和面板空白 / 文字处都能拖动面板，拖动后记住位置；右上角「说明」打开带矢量示意图与编号标注的使用说明
 - **细节**：开机自启、深色托盘菜单、单文件发布、崩溃日志
+
+![单窗口模式：每块屏幕独立，场景归属屏固定](docs/assets/per-screen.svg)
 
 ## 系统要求
 
@@ -43,7 +51,15 @@ dotnet publish src/TaskbarDrawer/TaskbarDrawer.csproj -c Release -r win-x64 `
   --self-contained false -p:PublishSingleFile=true -o publish
 ```
 
-产物是单个 `publish\TaskbarDrawer.exe`（约 500 KB，需要 .NET 8 运行时）。
+产物是单个 `publish\TaskbarDrawer.exe`（约 550 KB，需要 .NET 8 运行时）。
+
+做可直接下载的发布包：
+
+```powershell
+pwsh tools/release.ps1
+```
+
+脚本会跑构建 / 测试、生成 `dist\TaskbarDrawer-<版本>-win-x64.zip`（exe + 使用说明 + LICENSE）并打印 SHA256。
 
 ## 命令行
 
@@ -79,7 +95,9 @@ dotnet publish src/TaskbarDrawer/TaskbarDrawer.csproj -c Release -r win-x64 `
 ## 文档
 
 - [AGENTS.md](AGENTS.md) — 给 AI / 未来的自己：技术栈、关键坑、约定、常用命令
-- [DEVELOPMENT.md](DEVELOPMENT.md) — 架构说明与关键问题记录
+- [DEVELOPMENT.md](DEVELOPMENT.md) — 项目概览、架构总览、问题索引
+- [架构说明](docs/架构.md) — 分层、组合根、场景服务、单窗口模式与关键数据流
+- [问题记录索引](docs/_generated/pitfalls.md) — 已解决问题的 TL;DR / 根因 / 方案
 - [CHANGELOG.md](CHANGELOG.md) — 版本历史
 
 ## 致谢

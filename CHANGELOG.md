@@ -8,7 +8,8 @@
 - **根因**：跨屏拖动时前台窗口**一直是同一个**，系统只在「前台换成别的窗口」时发 `EVENT_SYSTEM_FOREGROUND`；拖到另一块屏落地后没有任何事件，单窗口模式不知道它已经换屏了
 - **修法**：`SingleWindowMode` 额外监听 `EVENT_SYSTEM_MOVESIZEEND`（鼠标拖动 / 调整大小结束），按 `GetForegroundWindow()` 补一次判定；日志新增 `拖动结束 0x… → 前台 0x… screen=…`
 - 仍带 `WINEVENT_SKIPOWNPROCESS`，本程序自己的窗口拖动不触发
-- 验证：`dotnet build` 0 警告 0 错误、`dotnet test` **164/164**
+- **仓库维护**：按 knowledge-base 单项目规范拆分 `DEVELOPMENT.md` → `docs/架构.md` + `docs/问题记录/`（14 篇）；补 MIT LICENSE、`tools/release.ps1`、tag 触发的 Release workflow、README SVG 示意图与下载入口
+- 验证：`dotnet build` 0 警告 0 错误、`dotnet test` **164/164**、`REPO CHECK` / `GENERATE CHECK` / `KIT LOCK` 全绿
 - 版本号 1.15.3
 
 ## 1.15.2 — 2026-11-19

@@ -47,8 +47,8 @@ LINK_SCHEMES = ("http://", "https://", "mailto:", "tel:", "javascript:", "data:"
 ADR_RE = re.compile(r"ADR-(\d{4})-[a-z0-9-]+\.md$")
 ID_RE = re.compile(r"^[a-z0-9]+(\.[a-z0-9-]+)+$")
 PITFALL_FIELDS = ("summary", "symptom", "cause", "detect", "avoid", "recover", "applies_to", "severity")
-KIT_VERSION = "2.7.0"
-SPEC_VERSION = "2.1.3"
+KIT_VERSION = "2.9.1"
+SPEC_VERSION = "2.1.5"
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +404,47 @@ def is_generated(rel: str, generated: set[str]) -> bool:
     return rel in generated or rel.startswith("docs/_generated/")
 
 
+GENERATED_MARKER = "生成文件，勿手改"
+AGENTS_MAX_LINES = 150  # 规范 2.1.4 的「门面」阈值，见 单项目规范 §二/§七
+
+
+def agents_length_problem(root: Path) -> tuple[int, str] | None:
+    """AGENTS.md 超过 150 行时返回 (行数, 修法提示)，否则 None。
+
+    计数口径是**文件总行数**（等价 `wc -l`），与规范正文一致——不是非空行，
+    也不是词数（2.1.4 之前的「150 词」实测 97 个仓里 96 个超标，等于死条文）。
+    """
+    path = root / "AGENTS.md"
+    if not path.exists():
+        return None
+    total = len(path.read_text(encoding="utf-8", errors="replace").splitlines())
+    if total <= AGENTS_MAX_LINES:
+        return None
+    if (root / "schema/agents.template.md").exists():
+        hint = "它是生成物：把细节搬进 rules/*.md，再改 schema/agents.template.md 后重跑 generate.py --write"
+    else:
+        hint = "把细节搬进 rules/*.md，主文件只留门面 + @引用"
+    return total, hint
+
+
+def agents_conflict(root: Path, generated: set[str]) -> bool:
+    """AGENTS.md 声明为生成物，但仓库里那份是手写的，且没有模板。
+
+    这种配置下 generate.py 会用内置兜底模板覆盖手写内容，所以两个入口
+    （check_repo 报 ERROR、generate 拒绝写入）共用这一个判断，避免各写一份。
+    """
+    if "AGENTS.md" not in generated:
+        return False
+    path = root / "AGENTS.md"
+    if not path.exists():
+        return False
+    if (root / "schema/agents.template.md").exists():
+        return False
+    # 只看前 5 行：生成标识写在标题下方，正文里引用这句话不算
+    head = "\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[:5])
+    return GENERATED_MARKER not in head
+
+
 def matches_basename(rel: str, patterns: list[str]) -> bool:
     name = Path(rel).name
     return any(fnmatch.fnmatch(name, pat) for pat in patterns)
@@ -486,8 +527,10 @@ def check_spec(root: Path, report: Report) -> None:
 
     - 无 kit.lock：视为未接入机器层（v1），不报错
     - 有 kit.lock 但缺字段：WARN，提示重跑安装器
-    - 格式非法 / 高于校验器支持：ERROR
+    - 格式非法 / 主次版本高于校验器支持：ERROR
     - 主版本落后：ERROR（需要迁移）；次版本落后：WARN
+    - 补丁版本差异（任一方向）：不报。补丁只做措辞澄清，不构成不兼容；
+      按主次版本比较后，发一个 PATCH 版规范不会让已接入仓库集体报红。
     """
     lock_path = root / "schema" / "kit.lock.json"
     if not lock_path.exists():
@@ -510,85 +553,33 @@ def check_spec(root: Path, report: Report) -> None:
         return
     repo_ver = tuple(int(x) for x in match.groups())
     cur_ver = tuple(int(x) for x in SPEC_VERSION.split("."))
-    if repo_ver > cur_ver:
+    repo_mm, cur_mm = repo_ver[:2], cur_ver[:2]
+    if repo_mm > cur_mm:
         report.add(
             "SPEC_NEWER", "ERROR", "schema/kit.lock.json",
-            f"仓库规范 {raw} 高于校验器支持的 {SPEC_VERSION}，请升级 repo-kit",
+            f"仓库规范 {raw} 高于校验器支持的 {SPEC_VERSION}（按主次版本比较），请升级 repo-kit",
         )
-    elif repo_ver[0] < cur_ver[0]:
+    elif repo_mm[0] < cur_mm[0]:
         report.add(
             "SPEC_OUTDATED", "ERROR", "schema/kit.lock.json",
             f"仓库规范 {raw} 落后主版本 {SPEC_VERSION}，需要按迁移文档升级",
         )
-    elif repo_ver[1] < cur_ver[1]:
+    elif repo_mm[1] < cur_mm[1]:
         report.add(
             "SPEC_OUTDATED", "WARN", "schema/kit.lock.json",
             f"仓库规范 {raw} 落后次版本 {SPEC_VERSION}",
         )
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(description=f"repo-kit v{KIT_VERSION} 不变量校验器")
-    ap.add_argument("--root", default=".", help="仓库根目录")
-    ap.add_argument("--json", action="store_true", help="JSON 输出（等价于 --format json）")
-    ap.add_argument("--format", choices=["text", "json", "sarif", "github"], default="text", help="输出格式")
-    ap.add_argument("--baseline", default="", help="baseline JSON 文件")
-    ap.add_argument("--write-baseline", default="", help="把当前问题写入 baseline JSON")
-    ap.add_argument("--baseline-format", choices=["v1", "v2"], default="v1", help="写 baseline 的格式")
-    ap.add_argument(
-        "--prune-baseline", default="",
-        help="删除 baseline 中已不再命中的条目（规则收紧/静音后留下的死配置）",
-    )
-    ap.add_argument("--changed-since", default="", help="只报告该 git ref 之后变更的文件")
-    ap.add_argument("--changed-files", default="", help="newline 分隔的变更文件列表（用于 CI）")
-    ap.add_argument("--allow-truth-only", action="store_true", help="允许真源单独变更（纯重构逃生口）")
-    ap.add_argument("--strict-summary", action="store_true", help="standard/index/decision 缺 summary 时 WARN")
-    ap.add_argument("--check-git", action="store_true", help="校验 source_commit 是否存在于 git")
-    ap.add_argument("--today", default="", help="覆盖今天的日期（YYYY-MM-DD），用于测试")
-    args = ap.parse_args()
-    if args.json:
-        if args.format not in ("text", "json"):
-            print("--json 与 --format sarif/github 不能同时使用", file=sys.stderr)
-            return 2
-        args.format = "json"
-
-    if yaml is None or MarkdownIt is None:
-        print("DEPENDENCY_MISSING: 请先安装 requirements.txt（PyYAML、markdown-it-py）", file=sys.stderr)
-        return 2
-
-    root = Path(args.root).resolve()
-    tax_path = root / "schema/taxonomy.json"
-    schema_path = root / "schema/frontmatter.schema.json"
-    sources_path = root / "schema/sources.json"
-    for p in (tax_path, schema_path):
-        if not p.exists():
-            print(f"CONFIG_MISSING: {p}", file=sys.stderr)
-            return 2
-
-    tax = json.loads(tax_path.read_text(encoding="utf-8"))
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    sources_cfg = json.loads(sources_path.read_text(encoding="utf-8")) if sources_path.exists() else {}
-    today = dt.date.fromisoformat(args.today) if args.today else dt.date.today()
-    # 这两个键实测 12/12 仓库取值相同（github / warn），不再是配置项。
-    # 旧键仍被读取但值被忽略，并由 resolve_exempt 报 TAXONOMY_LEGACY_KEY。
-    slugger_mode = CONST_KEYS["slugger"]
-    summary_policy = CONST_KEYS["summary_policy"]
-    skills_cfg = tax.get("skills") or {}
-    skill_schema = None
-    if skills_cfg.get("schema"):
-        skill_schema_path = root / str(skills_cfg["schema"])
-        if skill_schema_path.exists():
-            skill_schema = json.loads(skill_schema_path.read_text(encoding="utf-8"))
-        else:
-            print(f"CONFIG_MISSING: {skill_schema_path}", file=sys.stderr)
-            return 2
-
-    report = Report()
-    ignored = tax.get("ignore", [])
-    included = tax.get("include") or []
-    generated = set(tax.get("generated_files", []))
-    exempt_names, exempt_paths = resolve_exempt(tax, report)
-
+def collect_docs(
+    root: Path,
+    included: list[str],
+    ignored: list[str],
+    exempt_names: list[str],
+    exempt_paths: list[str],
+    slugger_mode: str,
+) -> tuple[dict[str, "Doc"], set[str]]:
+    """扫出参与校验的 Markdown，并记录「豁免 frontmatter」的文件。"""
     docs: dict[str, Doc] = {}
     context_or_exempt: set[str] = set()
     for p in sorted(root.rglob("*.md")):
@@ -606,8 +597,20 @@ def main() -> int:
         text = p.read_text(encoding="utf-8", errors="replace")
         headings, links, code_tokens = parse_markdown(text)
         docs[rel] = Doc(p, rel, text, headings, anchor_set(headings, slugger_mode), links, code_tokens)
+    return docs, context_or_exempt
 
-    # 技能 profile：SKILL.md 用独立 schema，不套通用页面契约
+
+def check_skill_contracts(
+    docs: dict[str, "Doc"],
+    skills_cfg: dict,
+    skill_schema: dict | None,
+    context_or_exempt: set[str],
+    report: "Report",
+) -> tuple[set[str], dict[str, str]]:
+    """skills profile：SKILL.md 用独立 schema，不套通用页面契约。
+
+    返回 (技能文件集合, 技能名→文件)，后者供坑位校验判断 applies_to 是否指向技能。
+    """
     skill_files: set[str] = set()
     if skills_cfg.get("glob"):
         for rel in docs:
@@ -636,7 +639,183 @@ def main() -> int:
         description = str(fm.get("description", "") or "")
         if description and len(description) < min_description:
             report.add("SKILL_DESC_SHORT", "ERROR", rel, f"description 只有 {len(description)} 字符，建议至少 {min_description}")
+    return skill_files, seen_skill_names
 
+
+def resolve_local_link(rel: str, doc_path: Path, root: Path, target: str, skills_cfg: dict) -> Path:
+    """解析本地链接；SKILL.md 额外尝试「安装后布局」。
+
+    默认按文件真实位置解析。若 skills.install_prefix 有值（例如 "skills"），
+    说明技能目录在仓库里比安装后多一层：安装时 skills/<name>/ 被平铺成 <name>/，
+    共享的 scripts/、docs/ 与技能目录同级。此时再按剥掉前缀的位置解析一次，
+    让 ../scripts/... 这类为安装布局写的链接在仓库内也能校验通过；
+    技能目录内部的 references/... 仍然走真实位置。
+    """
+    dest = (doc_path.parent / target).resolve()
+    prefix = str(skills_cfg.get("install_prefix") or "").strip("/")
+    glob = str(skills_cfg.get("glob") or "")
+    if not prefix or not glob:
+        return dest
+    if not rel.startswith(prefix + "/") or not fnmatch.fnmatch(rel, glob):
+        return dest
+    alt = (root / rel[len(prefix) + 1:]).parent
+    alt = (alt / target).resolve()
+    if not dest.exists() and alt.exists():
+        return alt
+    return dest
+
+
+def check_links_and_orphans(
+    docs: dict[str, "Doc"],
+    pages: dict[str, "Doc"],
+    root: Path,
+    generated: set[str],
+    slugger_mode: str,
+    report: "Report",
+    inbound: set[str],
+    skills_cfg: dict,
+) -> None:
+    """链接、锚点与孤儿页。`inbound` 由调用方传入并就地累加（关系也会贡献入链）。"""
+    # 注意：inbound 不能在函数内重新初始化——relations / pitfalls 已经往里加过入链
+    heading_cache: dict[str, set[str]] = {rel: d.anchors for rel, d in docs.items()}
+
+    def headings_for(path: Path) -> set[str]:
+        try:
+            rel = path.resolve().relative_to(root).as_posix()
+        except ValueError:
+            rel = ""
+        if rel in heading_cache:
+            return heading_cache[rel]
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return set()
+        hs, _, _ = parse_markdown(text)
+        anchors = anchor_set(hs, slugger_mode)
+        if rel:
+            heading_cache[rel] = anchors
+        return anchors
+
+    for rel, doc in docs.items():
+        for href, line in doc.links:
+            raw = href.strip()
+            if not raw:
+                continue
+            if raw.startswith(LINK_SCHEMES) or raw.startswith("//"):
+                continue
+            filepart, _, anchor = raw.partition("#")
+            filepart = urllib.parse.unquote(filepart).split("?", 1)[0]
+            anchor = urllib.parse.unquote(anchor)
+            if filepart:
+                if filepart.startswith("/"):
+                    dest = (root / filepart.lstrip("/")).resolve()
+                else:
+                    dest = resolve_local_link(rel, doc.path, root, filepart, skills_cfg)
+            else:
+                dest = doc.path.resolve()
+            if not dest.exists():
+                report.add("LINK_BROKEN", "ERROR", rel, f"本地链接目标不存在：{raw}", line)
+                continue
+            if dest.is_dir():
+                # 指向一个**存在**的目录是合法写法：GitHub 会渲染目录列表，
+                # README/DEVELOPMENT 索引源码目录时常用。真断链已由上面的
+                # LINK_BROKEN 覆盖，所以这里不产出告警 —— v2.5.0 之前报
+                # LINK_DIR(WARN)，实测单仓常驻上百条，把整条 WARN 通道淹了。
+                continue
+            try:
+                dest_rel = dest.relative_to(root).as_posix()
+            except ValueError:
+                dest_rel = ""
+            if dest_rel and not is_generated(rel, generated):
+                inbound.add(dest_rel)
+            if anchor and dest.suffix.lower() == ".md":
+                if anchor not in headings_for(dest):
+                    report.add(
+                        "ANCHOR_BROKEN", "ERROR", rel,
+                        f"锚点 #{anchor} 在 {dest.name} 中不存在（改过标题？）", line,
+                    )
+
+    # 孤儿页（WARN）：只针对 docs 下的普通页；生成页与决策页不算
+    for rel in pages:
+        if not rel.startswith("docs/"):
+            continue
+        if rel == "docs/index.md" or "/decisions/" in rel:
+            continue
+        if rel not in inbound:
+            report.add("ORPHAN", "WARN", rel, "没有任何入链，建议挂到 docs/index.md 或补 related")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(description=f"repo-kit v{KIT_VERSION} 不变量校验器")
+    ap.add_argument("--root", default=".", help="仓库根目录")
+    ap.add_argument("--json", action="store_true", help="JSON 输出（等价于 --format json）")
+    ap.add_argument("--format", choices=["text", "json", "sarif", "github"], default="text", help="输出格式")
+    ap.add_argument("--baseline", default="", help="baseline JSON 文件")
+    ap.add_argument("--write-baseline", default="", help="把当前问题写入 baseline JSON")
+    ap.add_argument("--baseline-format", choices=["v1", "v2"], default="v1", help="写 baseline 的格式")
+    ap.add_argument(
+        "--prune-baseline", default="",
+        help="删除 baseline 中已不再命中的条目（规则收紧/静音后留下的死配置）",
+    )
+    ap.add_argument("--changed-since", default="", help="只报告该 git ref 之后变更的文件")
+    ap.add_argument("--changed-files", default="", help="newline 分隔的变更文件列表（用于 CI）")
+    ap.add_argument("--allow-truth-only", action="store_true", help="允许真源单独变更（纯重构逃生口）")
+    ap.add_argument("--strict-summary", action="store_true", help="[已废弃] summary 自 2.7.0 起默认告警，本开关不再产生任何效果")
+    ap.add_argument("--check-git", action="store_true", help="校验 source_commit 是否存在于 git")
+    ap.add_argument("--today", default="", help="覆盖今天的日期（YYYY-MM-DD），用于测试")
+    args = ap.parse_args()
+    return ap
+
+
+def render_report(report: "Report", fmt: str, pages: dict[str, "Doc"]) -> int:
+    """四种输出格式；返回进程退出码。"""
+    if fmt == "json":
+        print(json.dumps(
+            {
+                "errors": len(report.errors),
+                "warnings": len(report.warnings),
+                "baselined": len(report.baselined),
+                "pages": len(pages),
+                "items": report.items,
+            },
+            ensure_ascii=False, indent=2,
+        ))
+    elif fmt == "sarif":
+        print(json.dumps(build_sarif(report), ensure_ascii=False, indent=2))
+    elif fmt == "github":
+        emit_github(report)
+    else:
+        for i in report.items:
+            mark = "BASELINED" if i.get("baselined") else i["severity"]
+            loc = f"{i['file']}:{i['line']}" if i.get("line") else i["file"]
+            print(f"[{mark:<9}] {i['code']:<20} {loc}: {i['message']}")
+        print(
+            "\nREPO CHECK: %s  (ERROR=%d, WARN=%d, BASELINED=%d, pages=%d)\n"
+            % ("FAIL" if report.errors else "PASS", len(report.errors), len(report.warnings), len(report.baselined), len(pages))
+        )
+
+    return 1 if report.errors else 0
+
+
+def build_page_index(
+    docs: dict[str, "Doc"],
+    context_or_exempt: set[str],
+    generated: set[str],
+    schema: dict,
+    report: "Report",
+    today: dt.date,
+    tax: dict,
+    root: Path,
+    *,
+    strict_summary: bool,
+    check_git: bool,
+    seen_skill_names: dict[str, str],
+) -> tuple[dict[str, "Doc"], dict[str, str], dict[str, str], list, list]:
+    """把文档集合变成「可校验的页面索引」：frontmatter、id、关系、坑位。
+
+    返回的五个累加器由后续阶段共用（关系与坑位还要做二次校验），
+    因此这里一次性算完，而不是拆成多个各自重扫的 pass。
+    """
     pages: dict[str, Doc] = {}
     by_id: dict[str, str] = {}
     defines: dict[str, str] = {}
@@ -745,7 +924,7 @@ def main() -> int:
         if sc:
             if not re.fullmatch(r"[0-9a-f]{7,40}", str(sc)):
                 report.add("SOURCE_COMMIT_FORMAT", "ERROR", rel, f"source_commit 必须是 7-40 位小写 hex：{sc!r}")
-            elif args.check_git:
+            elif check_git:
                 inside = subprocess.run(
                     ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
                     capture_output=True, text=True,
@@ -776,7 +955,7 @@ def main() -> int:
                 report.add("STALE", "ERROR", rel, f"last_reviewed 不是 ISO 日期：{reviewed!r}")
 
         if (
-            (summary_policy == "warn" or args.strict_summary)
+            (CONST_KEYS["summary_policy"] == "warn" or strict_summary)
             and fm.get("kind") in ("standard", "index", "decision", "pitfall")
             and not fm.get("summary")
         ):
@@ -800,6 +979,68 @@ def main() -> int:
             pass
 
     # 关系目标与重复
+
+    return pages, by_id, defines, relations, pitfalls
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    if args.json:
+        if args.format not in ("text", "json"):
+            print("--json 与 --format sarif/github 不能同时使用", file=sys.stderr)
+            return 2
+        args.format = "json"
+
+    if yaml is None or MarkdownIt is None:
+        print("DEPENDENCY_MISSING: 请先安装 requirements.txt（PyYAML、markdown-it-py）", file=sys.stderr)
+        return 2
+
+    root = Path(args.root).resolve()
+    tax_path = root / "schema/taxonomy.json"
+    schema_path = root / "schema/frontmatter.schema.json"
+    sources_path = root / "schema/sources.json"
+    for p in (tax_path, schema_path):
+        if not p.exists():
+            print(f"CONFIG_MISSING: {p}", file=sys.stderr)
+            return 2
+
+    tax = json.loads(tax_path.read_text(encoding="utf-8"))
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    sources_cfg = json.loads(sources_path.read_text(encoding="utf-8")) if sources_path.exists() else {}
+    today = dt.date.fromisoformat(args.today) if args.today else dt.date.today()
+    # 这两个键实测 12/12 仓库取值相同（github / warn），不再是配置项。
+    # 旧键仍被读取但值被忽略，并由 resolve_exempt 报 TAXONOMY_LEGACY_KEY。
+    slugger_mode = CONST_KEYS["slugger"]
+    summary_policy = CONST_KEYS["summary_policy"]
+    skills_cfg = tax.get("skills") or {}
+    skill_schema = None
+    if skills_cfg.get("schema"):
+        skill_schema_path = root / str(skills_cfg["schema"])
+        if skill_schema_path.exists():
+            skill_schema = json.loads(skill_schema_path.read_text(encoding="utf-8"))
+        else:
+            print(f"CONFIG_MISSING: {skill_schema_path}", file=sys.stderr)
+            return 2
+
+    report = Report()
+    ignored = tax.get("ignore", [])
+    included = tax.get("include") or []
+    generated = set(tax.get("generated_files", []))
+    exempt_names, exempt_paths = resolve_exempt(tax, report)
+
+    docs, context_or_exempt = collect_docs(
+        root, included, ignored, exempt_names, exempt_paths, slugger_mode
+    )
+    skill_files, seen_skill_names = check_skill_contracts(
+        docs, skills_cfg, skill_schema, context_or_exempt, report
+    )
+
+    pages, by_id, defines, relations, pitfalls = build_page_index(
+        docs, context_or_exempt, generated, schema, report, today, tax, root,
+        strict_summary=args.strict_summary, check_git=args.check_git,
+        seen_skill_names=seen_skill_names,
+    )
+
     seen_directed: dict[tuple[str, str, str], str] = {}
     seen_symmetric: dict[tuple[str, str, str], str] = {}
     for owner, target, reltype, source_rel in relations:
@@ -848,7 +1089,6 @@ def main() -> int:
             elif target not in by_id and target not in seen_skill_names:
                 report.add("PITFALL_TARGET", "ERROR", rel, f"applies_to 指向不存在的页面/技能：{target}")
 
-    # 链接与锚点
     inbound: set[str] = set()
     # related 也是入链：只通过关系引用、没有正文链接的页面不应被判孤儿
     for _owner, target, _reltype, _source_rel in relations:
@@ -859,72 +1099,7 @@ def main() -> int:
         for target in fm.get("applies_to") or []:
             if str(target) in by_id:
                 inbound.add(by_id[str(target)])
-    heading_cache: dict[str, set[str]] = {rel: d.anchors for rel, d in docs.items()}
-
-    def headings_for(path: Path) -> set[str]:
-        try:
-            rel = path.resolve().relative_to(root).as_posix()
-        except ValueError:
-            rel = ""
-        if rel in heading_cache:
-            return heading_cache[rel]
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return set()
-        hs, _, _ = parse_markdown(text)
-        anchors = anchor_set(hs, slugger_mode)
-        if rel:
-            heading_cache[rel] = anchors
-        return anchors
-
-    for rel, doc in docs.items():
-        for href, line in doc.links:
-            raw = href.strip()
-            if not raw:
-                continue
-            if raw.startswith(LINK_SCHEMES) or raw.startswith("//"):
-                continue
-            filepart, _, anchor = raw.partition("#")
-            filepart = urllib.parse.unquote(filepart).split("?", 1)[0]
-            anchor = urllib.parse.unquote(anchor)
-            if filepart:
-                if filepart.startswith("/"):
-                    dest = (root / filepart.lstrip("/")).resolve()
-                else:
-                    dest = (doc.path.parent / filepart).resolve()
-            else:
-                dest = doc.path.resolve()
-            if not dest.exists():
-                report.add("LINK_BROKEN", "ERROR", rel, f"本地链接目标不存在：{raw}", line)
-                continue
-            if dest.is_dir():
-                # 指向一个**存在**的目录是合法写法：GitHub 会渲染目录列表，
-                # README/DEVELOPMENT 索引源码目录时常用。真断链已由上面的
-                # LINK_BROKEN 覆盖，所以这里不产出告警 —— v2.5.0 之前报
-                # LINK_DIR(WARN)，实测单仓常驻上百条，把整条 WARN 通道淹了。
-                continue
-            try:
-                dest_rel = dest.relative_to(root).as_posix()
-            except ValueError:
-                dest_rel = ""
-            if dest_rel and not is_generated(rel, generated):
-                inbound.add(dest_rel)
-            if anchor and dest.suffix.lower() == ".md":
-                if anchor not in headings_for(dest):
-                    report.add(
-                        "ANCHOR_BROKEN", "ERROR", rel,
-                        f"锚点 #{anchor} 在 {dest.name} 中不存在（改过标题？）", line,
-                    )
-
-    # 孤儿页（WARN）：只针对 docs 下的普通页；生成页与决策页不算
-    for rel in pages:
-        if not rel.startswith("docs/"):
-            continue
-        if rel == "docs/index.md" or "/decisions/" in rel:
-            continue
-        if rel not in inbound:
-            report.add("ORPHAN", "WARN", rel, "没有任何入链，建议挂到 docs/index.md 或补 related")
+    check_links_and_orphans(docs, pages, root, generated, slugger_mode, report, inbound, skills_cfg)
 
     # ADR：唯一编号 + 索引同步，不要求连续
     adr_dir = root / "docs/decisions"
@@ -994,7 +1169,23 @@ def main() -> int:
             if len(lines) > 5 or "AGENTS.md" not in "\n".join(lines):
                 report.add("ENTRY_DUP", "ERROR", name, "只允许一行指向 AGENTS.md 的指针，禁止第二份完整规则")
 
+    # 门面阈值：AGENTS.md 超过 150 行说明细节没搬走（规范 2.1.4）
+    problem = agents_length_problem(root)
+    if problem is not None:
+        total, hint = problem
+        report.add(
+            "AGENTS_TOO_LONG", "ERROR", "AGENTS.md",
+            f"{total} 行 > {AGENTS_MAX_LINES} 行（规范 2.1.4 的门面阈值）。{hint}",
+        )
+
     # 生成产物存在性（内容是否最新由 generate.py --check 负责）
+    if agents_conflict(root, generated):
+        report.add(
+            "GENERATED_BLOCKED", "ERROR", "AGENTS.md",
+            "AGENTS.md 是手写文件，且缺 schema/agents.template.md；"
+            "二选一：从 generated_files 移除 AGENTS.md（保留手写），或先补模板再生成。"
+            "在此之前 generate --write 会整轮拒绝写入",
+        )
     for rel in generated:
         if not (root / rel).exists():
             report.add("GENERATED_MISSING", "ERROR", rel, "生成产物缺失，请运行 python scripts/generate.py --root . --write")
@@ -1106,31 +1297,7 @@ def main() -> int:
         print(f"BASELINE WRITTEN: {args.write_baseline} ({len(out['items'])} items, v{version})")
         return 0
 
-    if args.format == "json":
-        print(json.dumps(
-            {
-                "errors": len(report.errors),
-                "warnings": len(report.warnings),
-                "baselined": len(report.baselined),
-                "pages": len(pages),
-                "items": report.items,
-            },
-            ensure_ascii=False, indent=2,
-        ))
-    elif args.format == "sarif":
-        print(json.dumps(build_sarif(report), ensure_ascii=False, indent=2))
-    elif args.format == "github":
-        emit_github(report)
-    else:
-        for i in report.items:
-            mark = "BASELINED" if i.get("baselined") else i["severity"]
-            loc = f"{i['file']}:{i['line']}" if i.get("line") else i["file"]
-            print(f"[{mark:<9}] {i['code']:<20} {loc}: {i['message']}")
-        print(
-            "\nREPO CHECK: %s  (ERROR=%d, WARN=%d, BASELINED=%d, pages=%d)\n"
-            % ("FAIL" if report.errors else "PASS", len(report.errors), len(report.warnings), len(report.baselined), len(pages))
-        )
-    return 1 if report.errors else 0
+    return render_report(report, args.format, pages)
 
 
 if __name__ == "__main__":

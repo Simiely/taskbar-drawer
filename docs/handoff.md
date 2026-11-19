@@ -1,7 +1,7 @@
 ---
 id: docs.handoff
 title: 交接：进度、待办与发布路径
-summary: 接手必读：当前版本与提交、十项架构优化待办、残留圆点的根因与未落地方案、发布与验收流程。
+summary: 接手必读：当前版本与提交、已完成主线、发布与验收流程、文档维护入口。
 type: reference
 kind: note
 status: active
@@ -10,7 +10,7 @@ tier: normal
 topics: [development]
 source_type: doc
 source: DEVELOPMENT.md
-last_reviewed: 2026-11-18
+last_reviewed: 2026-11-19
 related: []
 ---
 # 交接：进度、待办与发布路径
@@ -19,8 +19,9 @@ related: []
 
 ## 当前状态
 
-- 版本 **1.15.3**（本地工作区已验证，尚未入库；远端 main 仍是 1.13.8 `5c467ac`）
+- 版本 **1.15.3**（已推送 `8e8d66a`；本轮按 knowledge-base 单项目规范整理文档并准备 `v1.15.3` Release）
 - 1.15.3：修「跨屏拖动后不触发收起」——拖动前后前台窗口没变，系统不发 `EVENT_SYSTEM_FOREGROUND`；新增 `EVENT_SYSTEM_MOVESIZEEND` 监听，拖动结束后按当前前台补一次判定
+- 仓库维护：DEVELOPMENT 拆为 `docs/架构.md` + `docs/问题记录/`（一坑一篇）；补 LICENSE（MIT）、`tools/release.ps1`、tag 触发的 Release workflow 与 README SVG 示意图
 - 1.15.2：死代码清理（无行为变化）——未读字段 / 未用参数 / 无消费者的属性 / 3 个废弃 Win32 常量 / 11 条无用 using；`IDE0051/0052/0005/0060` 已清零
 - 1.15.1：单窗口模式按「每块屏幕完全独立」重做——场景有固定归属屏（`StashGroup.Screen` / `SavedGroup.MonitorDevice`，收纳时冻结、拖动成员不改变），前台在别的屏上时不再收起本屏场景；场景收起时成员拖到哪都一起收；胶囊按「任意屏有可见成员」算展开；只收起和当前场景同一块屏的其它场景
 - 1.15.0（已被 1.15.1 取代）：全局收起 + 跨屏客人最小化；保留其中的「资源管理器当普通应用」修复
@@ -83,28 +84,31 @@ P1 / P2（详细调研与取舍见 [剩余待办调研与建议](design/backlog-
 
 ## 发布流程
 
-- 源码主目录：`C:\Users\260803\Documents\Trae-CN\temp_20261112_01\taskbar-drawer`（交付目录，只放源码与四件套）
-- 发布副本：`C:\Temp\td-release\repo`。同步时只覆盖 `src` / `tests` / `tools/make_icon.py` / 三份根文档，不要把 `bin` / `obj` / `publish` 带进去
-- 步骤：同步文件 → `python tools/repo-kit/generate.py --root . --write` → `python tools/repo-kit/check_repo.py --root .` → 与远端逐 blob 比对 → 按 GitHub Data API 提交（token 从 Windows 凭据管理器 `git:https://github.com` 读取，不要写进文件）
-- 网络限制：`github.com` / `git push` 在当前环境不通，`api.github.com` 与 `uploads.github.com` 的实际上传端点可通；所以用 Data API 把本轮本地提交 Squash 成**一个父提交为远端 main 的远端提交**，本地再把 `refs/heads/main` / `refs/remotes/origin/main` 对齐到同一个 SHA（旧本地提交先留 `backup/pre-api-YYYYMMDD` 分支）
-- Release 命名沿用 `v{版本}`：`TaskbarDrawer v{版本}` + 资产 `TaskbarDrawer-{版本}-win-x64.zip`（框架依赖单文件 exe + 中文使用说明），正文按「主要变化 / 下载 / 验证」三段写
-- 改完文档后把 `schema/agents.template.md` 的「文档基线」行更新成最新提交 hash，重新生成 `AGENTS.md`
+- 源码目录：`C:\Users\260803\WorkBuddy\2026-11-18-09-32-50`（当前工作区，直接 git push）
+- 本地发布：`pwsh tools/release.ps1`——校验版本 / 干净工作区 → build + test → `dotnet publish` 单文件 → 写 `使用说明.txt` + `LICENSE.txt` → `dist\TaskbarDrawer-<版本>-win-x64.zip`，输出 SHA256
+- 版本与资产命名沿用 `v{版本}`：Release 标题 `TaskbarDrawer v{版本}`，资产 `TaskbarDrawer-{版本}-win-x64.zip`（框架依赖单文件 exe + 中文使用说明 + LICENSE），正文按「主要变化 / 下载 / 验证」三段写
+- 发布：本地干净后 `git push origin main`；打 tag `v{版本}` 并推送，`.github/workflows/release.yml` 会自动构建/上传；也可以本地 `gh release create`（token 从 Windows 凭据管理器读取，不要写进文件）
+- 文档基线：发版后把 `schema/agents.template.md` 的「文档基线」行更新成最新提交 hash，重新生成 `AGENTS.md`，并回填 knowledge-base `用户库/仓库盘点表.md`
+- 历史备注：1.13.8 入库时 `git push` 不通，曾用 GitHub Data API Squash；现在普通 push 已可用，不再走那条路
 
 ## 验收清单
 
 - `dotnet build src/TaskbarDrawer/TaskbarDrawer.csproj -c Release`：0 警告 0 错误
-- `dotnet test tests/TaskbarDrawer.Tests/TaskbarDrawer.Tests.csproj -c Release`：当前基线 **160 项全过**
+- `dotnet test tests/TaskbarDrawer.Tests/TaskbarDrawer.Tests.csproj -c Release`：当前基线 **164 项全过**
+- `python tools/repo-kit/check_repo.py --root .`、`generate.py --check`、`pwsh tools/update-repo-kit.ps1 -Check`：全绿
 - 胶囊 z 序（1.7.1）：实机点几次任务栏 / 点任务栏按钮切几次窗口，看 `logs\app-*.log` 的 `[chip] 被任务栏压住 N 枚 → 已复位 来源=… 耗时=…ms`——`来源=前台切换` 且耗时几十毫秒为正常；出现 `(非事件触发)` 说明有一路事件没覆盖到，需要补触发源
 - UI 用 UI Automation 找元素 + 真实鼠标点击验证；不要用模拟全局热键，会误触发收纳
 - 配置检查：`settings.json` 的 `Version` 应为 4，尺寸 0.90 / 0.55，`SceneBadgeColors` 第 8 项 `#000000`
-- 发布产物：`dotnet publish ... -p:PublishSingleFile=true -o publish`，单文件约 500 KB（框架依赖，含 SVG 重绘的矢量说明图）
+- 发布产物：`dist\TaskbarDrawer-1.15.3-win-x64.zip`，约 260 KB（框架依赖；需 .NET 8 Desktop Runtime）
 
 ## 文档职责
 
 | 文件 | 写什么 | 不写什么 |
 | --- | --- | --- |
 | [README](../README.md) | 功能、系统要求、快速开始 | 内部实现与待办 |
-| [DEVELOPMENT](../DEVELOPMENT.md) | 分层、数据流、历史问题背景 | 当前进度与下一步 |
+| [DEVELOPMENT](../DEVELOPMENT.md) | 项目概览、架构总览、问题索引 | 当前进度与下一步 |
+| [架构说明](架构.md) | 分层、组合根、场景服务、单窗口模式、数据流 | 历史问题与待办 |
+| [问题记录](_generated/pitfalls.md) | 一坑一篇的 TL;DR / 根因 / 方案 | 跨项目通用经验（提炼后进 knowledge-base） |
 | [AGENTS](../AGENTS.md) | 规则、关键坑、常用命令（生成文件） | 进度 |
 | [CHANGELOG](../CHANGELOG.md) | 每个版本改了什么 | 未完成项 |
 | 本页 | 当前状态、待办、未落地方案、发布与验收 | 重复功能说明 |

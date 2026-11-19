@@ -1,0 +1,16 @@
+TaskbarDrawer {{VERSION}}
+====================
+
+运行环境：Windows 10 / 11 x64 + .NET 8 Desktop Runtime（框架依赖单文件，不内置运行时）。
+运行时下载：https://dotnet.microsoft.com/download/dotnet/8.0
+
+使用：
+1. 解压本 zip 到任意目录；
+2. 双击 TaskbarDrawer.exe（首次运行可能被 Win11 收进托盘折叠区 ^）；
+3. 默认热键 Ctrl+Alt+Shift+D：收纳 / 展开当前显示器的可见窗口；
+4. 左键点任务栏上的场景胶囊：收起 / 展开；右键：重命名 / 关闭窗口 / 删除场景。
+
+单窗口模式：每个场景算一个窗口；每块屏幕独立，场景属于它自己的那块屏幕。
+数据位置：%LOCALAPPDATA%\TaskbarDrawer
+诊断日志：程序目录 logs\app-yyyyMMdd.log
+版本说明与下载：{{RELEASE_URL}}
