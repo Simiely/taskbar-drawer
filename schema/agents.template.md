@@ -1,6 +1,6 @@
 # AGENTS.md · 项目规则
 
-> 📌 **文档基线**：2026-11-18 · `22cb813`（1.13.7–1.13.8：移除回归 / 详情按钮开关）　← 前序：b2cb4e3
+> 📌 **文档基线**：2026-11-19 · `abaa907`（1.15.3：按屏独立单窗口 + 文档整理 / Release）　← 前序：22cb813
 > **更新文档 / 代码后，请更新此行**（日期 + 新 commit hash），并在 CHANGELOG 追加版本。
 
 > 生成文件，勿手改。改规则请改 `schema/agents.template.md`，再运行 `python tools/repo-kit/generate.py --root . --write`。
