@@ -69,6 +69,8 @@ $fileVersion = (Get-Item -LiteralPath $exe).VersionInfo.FileVersion
 if (-not $fileVersion.StartsWith($Version)) {
     throw "exe FileVersion $fileVersion does not match $Version"
 }
+# Keep the download lean: the previous release shipped only exe + usage.
+Get-ChildItem -LiteralPath $packageDir -Filter '*.pdb' -File | Remove-Item -Force
 
 $text = Get-Content -LiteralPath $template -Raw -Encoding UTF8
 $text = $text.Replace('{{VERSION}}', $Version)
