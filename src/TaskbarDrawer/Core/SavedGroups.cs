@@ -61,6 +61,14 @@ public sealed class SavedGroup
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string Emoji { get; set; }
 
+    /// <summary>
+    /// 场景归属的屏幕（设备名，如 \\.\DISPLAY1）：创建 / 收纳时确定，之后成员被拖到别的屏幕
+    /// 也不改——单窗口模式按这块屏幕判定「哪个场景被激活 / 该收谁」。
+    /// 只有解散场景、在新屏幕重新收纳，才会得到新的归属屏。
+    /// 旧数据没有该字段（null）时按成员窗口的位置推断。
+    /// </summary>
+    public string MonitorDevice { get; set; }
+
     public DateTime CreatedAt { get; set; }
     public List<SavedWindow> Windows { get; set; } = new();
 

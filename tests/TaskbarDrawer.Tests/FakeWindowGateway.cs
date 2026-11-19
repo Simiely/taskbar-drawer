@@ -40,9 +40,6 @@ internal sealed class FakeWindowGateway : IWindowGateway
     /// <summary>被置前过的窗口：展开场景后应当有且只有一个。</summary>
     public List<IntPtr> Activated { get; } = new();
 
-    /// <summary>被藏过的窗口（按调用顺序）。</summary>
-    public List<IntPtr> Hidden { get; } = new();
-
     /// <summary>被写过位置的窗口。</summary>
     public List<IntPtr> Applied { get; } = new();
 
@@ -148,7 +145,6 @@ internal sealed class FakeWindowGateway : IWindowGateway
         if (window == null) return;
 
         bool visible = visibility != WindowVisibility.Hidden;
-        if (!visible) Hidden.Add(hwnd);
         window.Visible = visible;
         window.Minimized = visibility == WindowVisibility.Minimized;
     }

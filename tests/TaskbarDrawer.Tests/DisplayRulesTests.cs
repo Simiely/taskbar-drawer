@@ -151,6 +151,30 @@ public class DisplayRulesTests
         Assert.Equal(-1, DisplayRules.PickRestoreCandidate(Array.Empty<DisplayRules.RestoreCandidate>(), saved));
     }
 
+    [Fact]
+    public void PrimaryMonitorOf_Uses_Member_Majority()
+    {
+        var devices = new[] { @"\\.\DISPLAY2", @"\\.\DISPLAY2", @"\\.\DISPLAY1", @"\\.\DISPLAY2" };
+
+        Assert.Equal(@"\\.\DISPLAY2", DisplayRules.PrimaryMonitorOf(devices));
+    }
+
+    [Fact]
+    public void PrimaryMonitorOf_Tie_Is_Stable_And_Ignores_Empty()
+    {
+        var devices = new[] { @"\\.\DISPLAY2", @"\\.\DISPLAY1", null!, "" };
+
+        Assert.Equal(@"\\.\DISPLAY1", DisplayRules.PrimaryMonitorOf(devices));
+    }
+
+    [Fact]
+    public void PrimaryMonitorOf_Returns_Null_When_Unknown()
+    {
+        Assert.Null(DisplayRules.PrimaryMonitorOf(Array.Empty<string>()));
+        Assert.Null(DisplayRules.PrimaryMonitorOf(null!));
+        Assert.Null(DisplayRules.PrimaryMonitorOf(new string[] { null!, "" }));
+    }
+
     private static DisplayRules.RestoreCandidate Candidate(
         long handle, string title, string device, int left, int top)
         => new()

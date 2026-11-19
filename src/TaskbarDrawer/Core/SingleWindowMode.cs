@@ -4,33 +4,30 @@ using TaskbarDrawer.Interop;
 namespace TaskbarDrawer.Core;
 
 /// <summary>
-/// 单窗口模式：监听前台变化，把除前台窗口以外的候选窗口系统最小化（保留任务栏按钮与 Alt+Tab）。
+/// 单窗口模式：监听前台变化，把除前台窗口以外的窗口系统最小化（保留任务栏按钮与 Alt+Tab）。
 ///
 /// 只处理「合法的前台窗口」事件：桌面 / 任务栏 / 开始菜单 / 本程序成为前台时什么都不做，
 /// 否则点一下开始菜单就会把所有窗口最小化。
+///
+/// <b>一块屏幕是完全独立的</b>：前台在哪块屏，就只管哪块屏上的窗口。另一块屏上的场景
+/// 不会被这里的事件收起 / 最小化。场景属于<b>它自己的那块屏幕</b>（收纳时确定，之后成员
+/// 被拖到别的屏也不改）：只有在这块屏上切换窗口，才会把属于它的场景收回胶囊。
 /// </summary>
 public sealed class SingleWindowMode : IDisposable
 {
-    private readonly Dispatcher _dispatcher;
     private readonly DispatcherTimer _coalesce;
     private readonly NativeMethods.WinEventProc _callback;
     private IntPtr _hook;
+    private IntPtr _moveHook;
     private IntPtr _pending;
     private DateTime _suppressUntil;
     private bool _enabled;
     private bool _applying;
     private bool _disposed;
 
-    /// <summary>
-    /// 被本模式最小化的窗口。切回场景内同伴时只恢复这些；
-    /// 用户自己点最小化的窗口不在集合里，不会被自动弹回来。
-    /// </summary>
-    private readonly HashSet<long> _selfMinimized = new();
-
     public SingleWindowMode(Dispatcher dispatcher)
     {
-        _dispatcher = dispatcher;
-        _callback = OnForegroundEvent;
+        _callback = OnWinEvent;
 
         // OUTOFCONTEXT 回调在注册线程到达；用 60 ms 合并窗口把连续切换压成一次扫描。
         _coalesce = new DispatcherTimer(DispatcherPriority.Background, dispatcher)
@@ -57,12 +54,31 @@ public sealed class SingleWindowMode : IDisposable
     public Func<IntPtr, int> GroupOf { get; set; }
 
     /// <summary>
-    /// 由组合根注入：把某一场景在这块屏幕上整组收回收纳区（隐藏窗口、保留组），返回收起的窗口数。
-    /// 必须带显示器设备名：场景里可能混有其它屏幕的窗口（旧快照还原 / 用户拖过去），
-    /// 不能因为这块屏幕上的切换让另一块屏幕的窗口跟着消失。
-    /// 注入后「切到别的窗口」时，别的场景会整体回到胶囊里，而不是散成一排最小化按钮。
+    /// 由组合根注入：把某一场景整组收回收纳区（隐藏窗口、保留组），返回收起的窗口数。
+    /// 场景是整体：成员被拖到别的屏幕也一起收（它仍然属于这个场景）。
     /// </summary>
-    public Func<int, string, int> CollapseGroup { get; set; }
+    public Func<int, int> CollapseGroup { get; set; }
+
+    /// <summary>
+    /// 由组合根注入：场景归属的屏幕（收纳 / 创建时确定，拖动成员不改变）。
+    /// 只有当前台就在这块屏上时，这个场景才算「被激活」；也只有在它自己的屏上
+    /// 切换窗口，才会把它收起。别的屏上的场景成员即使被拖到这里，也不参与本屏的判定。
+    /// </summary>
+    public Func<int, string> GroupScreen { get; set; }
+
+    /// <summary>
+    /// 由组合根注入：场景正在屏幕上、但某个成员的程序被关掉又重开时，先把新窗口认回场景。
+    /// 必须赶在「切到场景外 → 整组收回胶囊」之前：否则用户刚打开的程序会把整个场景收走。
+    /// 返回 true 表示已接入，后续归组判断就会把它当成场景成员。
+    /// </summary>
+    public Func<IntPtr, bool> ClaimForeground { get; set; }
+
+    /// <summary>
+    /// 由组合根注入：前台和某个场景的成员是同进程 / 子进程时返回该场景组号（否则 0）。
+    /// 用途只有一个：判断「同应用但不是场景成员」→ 单窗口模式直接跳过、不做任何动作。
+    /// 不要把返回值赋给 group 再跑下面的最小化循环——那会把整个场景当成被激活（1.14.4）。
+    /// </summary>
+    public Func<IntPtr, int> GroupOfRelated { get; set; }
 
     /// <summary>一次应用里被最小化的窗口数（订阅方可用于状态提示）。</summary>
     public event Action<int> Applied;
@@ -77,6 +93,11 @@ public sealed class SingleWindowMode : IDisposable
             NativeMethods.EVENT_SYSTEM_FOREGROUND, NativeMethods.EVENT_SYSTEM_FOREGROUND,
             IntPtr.Zero, _callback, 0, 0,
             NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
+        // 跨屏拖动「结束」必须补一次判定：拖动过程中前台窗口没变，只有 MOVESIZEEND。
+        _moveHook = NativeMethods.SetWinEventHook(
+            NativeMethods.EVENT_SYSTEM_MOVESIZEEND, NativeMethods.EVENT_SYSTEM_MOVESIZEEND,
+            IntPtr.Zero, _callback, 0, 0,
+            NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
     }
 
     public void SetEnabled(bool value, bool applyImmediately = true)
@@ -87,8 +108,6 @@ public sealed class SingleWindowMode : IDisposable
         {
             _coalesce.Stop();
             _pending = IntPtr.Zero;
-            // 关掉开关后不再替用户恢复窗口；集合清空，避免下次打开时误弹旧窗口。
-            _selfMinimized.Clear();
             return;
         }
         // 打开开关的瞬间先执行一次：此刻屏幕上可能已经有很多窗口。
@@ -153,7 +172,7 @@ public sealed class SingleWindowMode : IDisposable
         }
     }
 
-    private void OnForegroundEvent(
+    private void OnWinEvent(
         IntPtr hook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
     {
         // 这是交给 Win32 的回调：异常一旦逃回原生栈会直接终止进程，所以就地隔离。
@@ -162,13 +181,27 @@ public sealed class SingleWindowMode : IDisposable
             if (!_enabled || _disposed) return;
             if (idObject != 0) return;          // 只认 OBJID_WINDOW，忽略子元素事件
             if (hwnd == IntPtr.Zero) return;
-            _pending = hwnd;
+
+            // 拖动结束：窗口可能刚被拖到另一块屏幕。前台窗口本身没变，系统不会再发
+            // FOREGROUND，必须借这次事件按当前前台补一次判定，否则新屏幕上的场景不会收起。
+            // 用 GetForegroundWindow 而不是事件里的 hwnd：拖动的窗口不一定被激活。
+            IntPtr target = hwnd;
+            if (eventType == NativeMethods.EVENT_SYSTEM_MOVESIZEEND)
+            {
+                target = NativeMethods.GetForegroundWindow();
+                if (target == IntPtr.Zero) return;
+                Diagnostics.Info("single",
+                    $"拖动结束 0x{hwnd.ToInt64():X} → 前台 0x{target.ToInt64():X} " +
+                    $"screen={NativeMethods.MonitorDeviceOf(target) ?? "(未知)"}");
+            }
+
+            _pending = target;
             _coalesce.Stop();
             _coalesce.Start();
         }
         catch (Exception ex)
         {
-            Diagnostics.Write("foreground hook", ex);
+            Diagnostics.Write("window event hook", ex);
         }
     }
 
@@ -198,6 +231,34 @@ public sealed class SingleWindowMode : IDisposable
             IntPtr head = NativeMethods.RootOwner(foreground);
             int group = ResolveGroup(foreground, groupOf, _ => head);
             string exclusion = group == 0 ? WindowEnumerator.ExclusionReason(foreground) : null;
+
+            // 和场景成员同一个应用、但不是场景成员的窗口（微信图片 / 小程序宿主 /
+            // 应用自己的对话框的宿主等）：单窗口模式什么都不做。
+            //
+            // 这里刻意**不**把它归到场景组：归组会走进下面的「保留同组、最小化其它窗口」，
+            // 等于把整个场景当成被激活，日志里就会出现「关联组=1 最小化=1」这种误动作。
+            if (group == 0 && exclusion == null && GroupOfRelated != null)
+            {
+                int related = GroupOfRelated(foreground);
+                if (related != 0)
+                {
+                    Diagnostics.Info("single",
+                        $"跳过前台 0x{foreground.ToInt64():X}（与场景 {related} 同应用，不是成员） " +
+                        $"class={NativeMethods.ClassName(foreground)} " +
+                        $"owner=0x{NativeMethods.Owner(foreground).ToInt64():X}");
+                    return;
+                }
+            }
+
+            // 「场景成员的程序关掉又重开」：新窗口此刻不属于任何场景，但它其实是某个
+            // 展开场景在等回来的成员。先认领，再继续下面的判定——否则会把它当成场景外窗口，
+            // 反而把用户刚打开程序所属的整个场景收走（实机日志 10:39:08）。
+            if (group == 0 && ClaimForeground != null && ClaimForeground(foreground))
+            {
+                head = NativeMethods.RootOwner(foreground);
+                group = ResolveGroup(foreground, groupOf, _ => head);
+            }
+
             if (ShouldIgnoreForeground(group, exclusion))
             {
                 Diagnostics.Info("single",
@@ -208,55 +269,51 @@ public sealed class SingleWindowMode : IDisposable
                 return;
             }
 
-            // 已经被用户还原 / 关掉的窗口从「自己最小化」集合里清出去，
-            // 免得下次切回同伴时对已不在最小化状态的窗口发还原请求。
-            _selfMinimized.RemoveWhere(hwnd =>
-                !NativeMethods.IsWindow(new IntPtr(hwnd)) || !NativeMethods.IsIconic(new IntPtr(hwnd)));
-
-            // 多显示器：单窗口模式只管前台所在的那块屏幕——在哪块屏操作，就只影响哪块屏，
-            // 另一块屏上的窗口保持原样。
+            // 每块屏幕完全独立：只处理前台所在的这块屏。
             IntPtr monitor = NativeMethods.MonitorFromWindow(foreground, NativeMethods.MONITOR_DEFAULTTONEAREST);
             monitorDevice = NativeMethods.MonitorDeviceOf(foreground);
 
-            // 前台属于某个组：先把组里「被本模式最小化」的同伴恢复（不抢焦点）。
-            // 用户手动最小化的场景窗口跳过：手动最小化是明确意图，不能马上弹回来。
-            if (group > 0)
-            {
-                foreach (var member in WindowEnumerator.Enumerate(includeMinimized: true))
-                {
-                    if (member.Handle == foreground) continue;
-                    if (groupOf(member.Handle) != group) continue;
-                    if (NativeMethods.MonitorFromWindow(member.Handle, NativeMethods.MONITOR_DEFAULTTONEAREST) != monitor) continue;
-                    if (!NativeMethods.IsIconic(member.Handle)) continue;
-                    if (!_selfMinimized.Remove(member.Handle.ToInt64())) continue;
-                    NativeMethods.ShowNoActivate(member.Handle);
-                }
-            }
+            // 场景只属于它自己的那块屏幕：前台虽然属于某个场景，但若这块屏不是它的归属屏
+            // （成员被用户拖过来了），它在本屏只是一个普通窗口，不展开 / 收起它的同伴。
+            bool activeScene = group > 0 && SceneOnScreen(group, monitorDevice);
 
             var collapsed = new HashSet<int>();
             foreach (var candidate in WindowEnumerator.Enumerate(includeMinimized: false))
             {
                 if (candidate.Handle == foreground) continue;
-                // 别的屏幕上的窗口不归这一轮管。
+                // 别的屏幕上的窗口一根手指都不能碰：另一块屏在做什么与本屏无关。
                 if (NativeMethods.MonitorFromWindow(candidate.Handle, NativeMethods.MONITOR_DEFAULTTONEAREST) != monitor) continue;
+
                 int memberGroup = groupOf != null ? groupOf(candidate.Handle) : 0;
-
-                // 同一场景的同伴不最小化：一个场景就是「一个单窗口」。
-                if (group > 0 && memberGroup == group) continue;
-
-                // 别的场景整组收回胶囊（一个场景只收一次）：单窗口模式里场景是一个整体，
-                // 应该「收起来」而不是拆成一排最小化按钮留在任务栏。
-                if (memberGroup > 0 && CollapseGroup != null && !string.IsNullOrEmpty(monitorDevice))
+                if (memberGroup > 0)
                 {
-                    if (collapsed.Add(memberGroup)) collapsedCount += CollapseGroup(memberGroup, monitorDevice);
+                    // 别的屏幕的场景：即使有成员被拖到这块屏，也不参与本屏的判定。
+                    if (!SceneOnScreen(memberGroup, monitorDevice)) continue;
+                    // 同一场景的同伴不最小化：一个场景就是「一个单窗口」。
+                    if (activeScene && memberGroup == group) continue;
+
+                    // 场景是整体：收起时连被拖到别的屏幕的成员一起收（归属屏不变）。
+                    if (collapsed.Add(memberGroup) && CollapseGroup != null)
+                        collapsedCount += CollapseGroup(memberGroup);
                     continue;
+                }
+
+                // 场景应用的辅助窗口（微信图片 / 小程序宿主等）也不是「别的窗口」：
+                // 当前场景的不动；别的屏幕的场景的辅助窗口同样不归这块屏管。
+                if (GroupOfRelated != null)
+                {
+                    int related = GroupOfRelated(candidate.Handle);
+                    if (related != 0)
+                    {
+                        if (!SceneOnScreen(related, monitorDevice)) continue;
+                        if (activeScene && related == group) continue;
+                    }
                 }
 
                 // 必须用 SW_SHOWMINNOACTIVE 而不是 SW_MINIMIZE：后者会「激活 Z 序里的下一个顶层窗口」，
                 // 最小化一圈下来焦点会被抢走，用户看到的是场景窗口刚置前又被顶下去。
                 if (NativeMethods.ShowWindow(candidate.Handle, NativeMethods.SW_SHOWMINNOACTIVE))
-                    _selfMinimized.Add(candidate.Handle.ToInt64());
-                minimized++;
+                    minimized++;
             }
         }
         finally
@@ -274,6 +331,17 @@ public sealed class SingleWindowMode : IDisposable
                 $"最小化={minimized} 收回场景={collapsedCount}");
         }
         if (minimized + collapsedCount > 0) Applied?.Invoke(minimized + collapsedCount);
+    }
+
+    /// <summary>
+    /// 这个场景是不是属于这块屏幕。归属屏在收纳 / 创建时确定，拖动成员不改变；
+    /// 归属屏未知（旧运行时组）时按旧行为「算本屏」，由调用方继续按成员位置处理。
+    /// </summary>
+    private bool SceneOnScreen(int groupId, string monitorDevice)
+    {
+        string screen = GroupScreen?.Invoke(groupId);
+        if (string.IsNullOrEmpty(screen)) return true;
+        return DisplayRules.BelongsTo(monitorDevice, screen);
     }
 
     /// <summary>
@@ -319,12 +387,16 @@ public sealed class SingleWindowMode : IDisposable
         if (_disposed) return;
         _disposed = true;
         _enabled = false;
-        _selfMinimized.Clear();
         _coalesce.Stop();
         if (_hook != IntPtr.Zero)
         {
             NativeMethods.UnhookWinEvent(_hook);
             _hook = IntPtr.Zero;
+        }
+        if (_moveHook != IntPtr.Zero)
+        {
+            NativeMethods.UnhookWinEvent(_moveHook);
+            _moveHook = IntPtr.Zero;
         }
     }
 }

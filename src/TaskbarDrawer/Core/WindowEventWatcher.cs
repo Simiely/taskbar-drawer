@@ -41,9 +41,6 @@ public sealed class WindowEventWatcher : IDisposable
     /// <summary>某个被跟踪窗口发生了状态变化。在安装线程（UI 线程）上同步回调。</summary>
     public event Action<IntPtr, WindowEventKind> Changed;
 
-    /// <summary>当前挂着的钩子数（= 被跟踪的进程数）。</summary>
-    public int HookCount => _hooks.Count;
-
     /// <summary>
     /// 把订阅集合换成这批进程：新增的装钩子，消失的卸钩子。
     /// 幂等——集合没变就什么都不做，调用方可以每次刷新界面时无脑同步一次。

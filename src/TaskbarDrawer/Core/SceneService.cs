@@ -37,7 +37,116 @@ public sealed class SceneService
     }
 
     /// <summary>展开仍保留的运行时组（场景没有被关闭）。</summary>
-    public int Restore(int groupId) => _stash.ExpandGroup(groupId);
+    public int Restore(int groupId)
+    {
+        // 先认回「关掉又重开」的程序，再展开：它们不在运行时组里，但快照里还留着位置。
+        // 这样用户重新打开程序、再点胶囊时，新窗口也能一起回到场景，而不是留在外面。
+        int reclaimed = ReclaimVisible(groupId);
+        return reclaimed + _stash.ExpandGroup(groupId);
+    }
+
+    /// <summary>
+    /// 场景成员的程序被关掉又重新打开：把新窗口认回原来的场景（只处理正在屏幕上的组）。
+    /// 由全局「窗口显示」事件调用；返回 true 表示已经接入。
+    ///
+    /// 场景收起时不在这里接入：把用户刚打开的程序立刻藏起来更吓人；
+    /// 收起状态下的认领放在展开时做（<see cref="Restore"/> → <see cref="ReclaimVisible"/>）。
+    /// </summary>
+    public bool TryReattach(IntPtr hwnd)
+    {
+        if (hwnd == IntPtr.Zero || _stash.GroupIdOf(hwnd) != 0) return false;
+
+        // 先对账一次：旧句柄可能刚销毁、事件还没合并，留着它会把「缺了谁」算错。
+        _stash.Prune();
+
+        foreach (var summary in _stash.Groups())
+        {
+            if (!summary.Expanded || string.IsNullOrEmpty(summary.SavedId)) continue;
+            var saved = _workspace.Find(summary.SavedId);
+            if (saved == null) continue;
+
+            var missing = MissingOf(summary, saved);
+            if (missing.Count == 0) continue;
+            if (AdoptInto(summary, missing, hwnd) >= 0) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 把桌面上已经开着、属于这个场景但不在运行时组里的同程序窗口认回来。
+    /// 展开场景时调用：用户关掉程序、重新打开、再点胶囊，新窗口也能一起回到场景。
+    /// 返回接入的窗口数。
+    /// </summary>
+    public int ReclaimVisible(int groupId)
+    {
+        _stash.Prune();
+        var summary = _stash.Groups().FirstOrDefault(g => g.Id == groupId);
+        if (summary == null || string.IsNullOrEmpty(summary.SavedId)) return 0;
+        var saved = _workspace.Find(summary.SavedId);
+        if (saved == null) return 0;
+
+        var missing = MissingOf(summary, saved);
+        if (missing.Count == 0) return 0;
+
+        int adopted = 0;
+        foreach (var window in WindowEnumerator.Enumerate(includeMinimized: false))
+        {
+            if (_stash.GroupIdOf(window.Handle) != 0) continue;
+            if (AdoptInto(summary, missing, window.Handle) < 0) continue;
+            adopted++;
+            if (missing.Count == 0) break;
+        }
+        return adopted;
+    }
+
+    /// <summary>
+    /// 快照里没有对应运行成员的项。收起中的成员也算「还开着」——
+    /// 判断的是「这个程序在不在组里」，不是「窗口现在可不可见」。
+    /// </summary>
+    private List<SavedWindow> MissingOf(StashGroupSummary summary, SavedGroup saved)
+    {
+        var live = _stash.Items
+            .Where(i => i.GroupId == summary.Id && NativeMethods.IsWindow(i.Handle))
+            .Select(WindowIdentity.Candidate)
+            .ToArray();
+        return SceneReattach.Missing(saved.Windows, live);
+    }
+
+    /// <summary>
+    /// 把 hwnd 认成 missing 里的某一项：摆回保存位置 → 接入运行时组。
+    /// 返回命中项的下标（-1 = 这个窗口不属于这个场景）。
+    /// </summary>
+    private int AdoptInto(StashGroupSummary summary, List<SavedWindow> missing, IntPtr hwnd)
+    {
+        if (WindowEnumerator.ExclusionReason(hwnd) != null) return -1;
+
+        var snapshot = _stash.CaptureSnapshot(hwnd);
+        if (snapshot == null || string.IsNullOrWhiteSpace(snapshot.ProcessPath)) return -1;
+
+        var candidate = new SceneReattach.Candidate
+        {
+            Handle = hwnd,
+            Title = snapshot.Title,
+            ClassName = NativeMethods.ClassName(hwnd),
+            ProcessPath = snapshot.ProcessPath,
+            Rect = snapshot.Placement.rcNormalPosition
+        };
+
+        int index = SceneReattach.Match(missing, candidate);
+        if (index < 0) return -1;
+
+        var target = missing[index];
+        // 先摆回保存位置再接入：Adopt 会按此刻的位置记下 Placement，收起 / 展开才不会漂。
+        _workspace.PlaceWindow(hwnd, target);
+        if (!_stash.Adopt(hwnd, summary.SavedId, summary.Name, summary.Badge,
+                _stash.MonitorOfGroup(summary.Id))) return -1;
+
+        missing.RemoveAt(index);
+        Diagnostics.Info("scene",
+            $"自动认回重新打开的程序 group={summary.Id}「{summary.Name}」 hwnd=0x{hwnd.ToInt64():X} " +
+            $"「{target.Title}」 rect={target.Left},{target.Top},{target.Left + target.Width},{target.Top + target.Height}");
+        return index;
+    }
 
     /// <summary>
     /// 打开已关闭的场景：已经在跑的窗口摆回保存位置，缺失的程序启动后接管。
@@ -262,7 +371,7 @@ public sealed class SceneService
             foreach (var item in incoming)
             {
                 if (_stash.GroupIdOf(item.Handle) != 0) continue;
-                if (!_stash.Adopt(item.Handle, savedId, saved.Name, saved.Badge)) continue;
+                if (!_stash.Adopt(item.Handle, savedId, saved.Name, saved.Badge, sceneMonitor)) continue;
 
                 adopted++;
                 // 场景本来收着：新成员也收进收纳区。否则胶囊会翻成「已展开」，

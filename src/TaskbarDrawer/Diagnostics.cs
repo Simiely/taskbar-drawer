@@ -1,6 +1,5 @@
 using System.IO;
 using System.Text;
-using TaskbarDrawer.Core;
 using TaskbarDrawer.Interop;
 
 namespace TaskbarDrawer;

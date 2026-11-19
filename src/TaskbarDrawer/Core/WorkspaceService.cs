@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.IO;
 using TaskbarDrawer.Interop;
 
@@ -212,8 +211,13 @@ public sealed partial class WorkspaceService
         return open.Contains(SceneEdit.Key(window));
     }
 
-    /// <summary>已关闭场景属于哪块屏幕：按快照里记录的显示器判断（旧快照退回矩形推断）。</summary>
-    public string MonitorOfSaved(SavedGroup group) => group == null ? null : DisplayRules.MonitorOf(group.Windows);
+    /// <summary>已关闭场景属于哪块屏幕：优先场景级归属屏，旧快照退回成员窗口的位置。</summary>
+    public string MonitorOfSaved(SavedGroup group)
+        // 场景归属屏在创建时冻结：成员被拖到别的屏幕不改变它（单窗口模式按屏隔离的前提）。
+        // 旧快照没有场景级字段，退回成员窗口的位置。
+        => group == null ? null
+            : !string.IsNullOrEmpty(group.MonitorDevice) ? group.MonitorDevice
+            : DisplayRules.MonitorOf(group.Windows);
 
     private static string Normalize(string path)
         => string.IsNullOrWhiteSpace(path) ? null : path.Replace('\\', '/').ToLowerInvariant();

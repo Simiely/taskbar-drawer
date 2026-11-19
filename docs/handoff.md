@@ -19,7 +19,19 @@ related: []
 
 ## 当前状态
 
-- 版本 **1.13.8**（本提交入库，Release `v1.13.8` 同版）；入库前远端 main 为 `f9988a1`，本轮按仓库标准用 GitHub Data API 以它为父提交 Squash 入库。**计划 S1–S5 已全部完成**
+- 版本 **1.15.3**（本地工作区已验证，尚未入库；远端 main 仍是 1.13.8 `5c467ac`）
+- 1.15.3：修「跨屏拖动后不触发收起」——拖动前后前台窗口没变，系统不发 `EVENT_SYSTEM_FOREGROUND`；新增 `EVENT_SYSTEM_MOVESIZEEND` 监听，拖动结束后按当前前台补一次判定
+- 1.15.2：死代码清理（无行为变化）——未读字段 / 未用参数 / 无消费者的属性 / 3 个废弃 Win32 常量 / 11 条无用 using；`IDE0051/0052/0005/0060` 已清零
+- 1.15.1：单窗口模式按「每块屏幕完全独立」重做——场景有固定归属屏（`StashGroup.Screen` / `SavedGroup.MonitorDevice`，收纳时冻结、拖动成员不改变），前台在别的屏上时不再收起本屏场景；场景收起时成员拖到哪都一起收；胶囊按「任意屏有可见成员」算展开；只收起和当前场景同一块屏的其它场景
+- 1.15.0（已被 1.15.1 取代）：全局收起 + 跨屏客人最小化；保留其中的「资源管理器当普通应用」修复
+- 1.14.5：修父进程链误判——`explorer.exe` 等 shell / 启动器处截断，记事本 / 写字板 / 从任务栏启动的浏览器不再被当成场景同应用，场景恢复正常的收起与最小化
+- 1.14.4：把「同应用但非场景成员」从归组降级为跳过——资源管理器 / 微信辅助窗口成为前台时单窗口模式直接不动作，不再出现 `关联组=1 最小化=1`
+- 1.14.3：修「场景成员拖到另一块屏后，在那块屏切窗口，它的任务栏按钮跟着消失」——`DisplayRules.PrimaryMonitorOf` 取场景主屏；主屏不在这块屏的「客人」按普通窗口最小化（保留任务栏按钮），主屏上的收起逻辑不变
+- 1.14.2：按 1.14.1 日志收尾——同进程归组只给通过准入的顶层应用窗口（弹窗 / 工具窗不再被 `关联组` 绕过忽略）；跨屏位次命中在保存屏有同程序窗口时跳过，避免把另一块屏的资源管理器挪过来；最小化候选改读 `rcNormalPosition`
+- 1.14.1：修「微信打开图片 / 小程序把整个场景收回胶囊」——`Core/ProcessSceneLink` 按「同进程 → 父进程 → 祖父进程」把同应用的辅助窗口归到场景组，单窗口模式不再把它们当场景外窗口；辅助窗口不接入场景
+- 1.14.0：修「场景里的程序关掉再打开认不回来」——新增 `Core/SceneReattach`（同标题 → 同程序最近位置的一对一配对 + 新窗口认领）、`SceneService.TryReattach` / `ReclaimVisible`、全局 `EVENT_OBJECT_SHOW` 监听（150 ms 合并），并在 `Restore` / `ExpandLatest` / `ExpandAll` 展开时兜底；单窗口模式先 `ClaimForeground` 再判定，避免把刚打开的程序当场景外窗口
+- 1.13.9：按 11-18 / 11-19 实机日志修三处——① 还原场景时把「收在别的场景里」的隐藏窗口也算作已在运行，不再重复启动（`WorkspaceService.Restore` 的 busy 判定）；② `WinUIDesktopWin32WindowClass`（Win11 桌面）与 `OperationStatusWindow`（复制进度窗）加入 shell 黑名单，点桌面 / 复制文件不再误触发单窗口模式；③ 胶囊守卫间隔 250 → 120 ms，被任务栏压住后的复位空窗减半
+- 版本 **1.13.8**（已入库，Release `v1.13.8` 同版）；入库前远端 main 为 `f9988a1`，本轮按仓库标准用 GitHub Data API 以它为父提交 Squash 入库。**计划 S1–S5 已全部完成**
 - 1.13.8：同一场景再次点「详情」直接收起详情窗；点另一个场景仍切换内容并置前（`SceneEdit.ShouldCloseEditor` + 4 条单测）
 - 1.13.7 修「移除的窗口又被关场景写回」：`Detach` 改用两层身份配对，`UpdateSnapshot` 只刷新位置不改成员集合；真实窗口夹具 8 项全过（隔离数据目录）
 - 1.13.6 修「点场景详情误触外层卡片 toggle」；1.13.4 / 1.13.5 分别修浏览器扩展弹窗与本程序 UI 打开时的单窗口误动作（用户已确认浏览器弹窗正常）
@@ -32,7 +44,7 @@ related: []
 - 1.8.1 走查修复：18 条链路 → 13 个问题、修 11 个，见 [walkthrough/report-1.md](walkthrough/report-1.md)
 - 1.8.0 结构：`AppShell` 拆三片（`AppShell.cs` 组合根 / `.Commands.cs` 命令 / `.Wiring.cs` 接线）
 - 1.7.1 胶囊 z 序：事件驱动 + 250 ms 守卫，实测 74–176 ms
-- 验收基线：`dotnet build` 0 警告 0 错误、`dotnet test` **139/139**、`REPO CHECK: PASS`
+- 验收基线：`dotnet build` 0 警告 0 错误、`dotnet test` **164/164**、`REPO CHECK: PASS`
 - 主线一句话：`AppShell` 是组合根（三片），收纳走 `StashAllService`（运行时组），快照走 `WorkspaceService`，两者靠 `SavedGroup.Id` / `StashGroup.SavedId` 关联；窗口隐藏与图标装饰在 `WindowStash`；**场景回到屏幕必须走 `FinishSceneOpen` 收尾**（坑 10）；**弹窗不是窗口，按窗口簇处理**（坑 11）
 
 ## 待办（按收益排序）
@@ -44,7 +56,7 @@ P0：
 - [x] 生命周期收敛为四动词 New / Restore / Stash / Dissolve：删除 `StashAllService.ToggleGroup` 与 `AppShell.CloseScene`，`ToggleScene` 只做状态分派（落到 Restore / Stash），`Dissolve` 用 `keepSnapshot` 区分关闭窗口 / 删除场景
 - [x] 图标 / 标识尺寸的默认值与范围收敛到单一常量源（`Core/SceneIconMetrics`，设置 / 绘制 / 面板 / 夹取共用）
 - [x] 规则引擎边界确认：规则层只服务 Hotkey / SceneChip 两个状态不明确的入口；托盘 / 面板是显式命令，统一走 `SceneService` 命令层，不接入 `RuleRunner`。已删除无消费者的 `ForTrigger` / `TriggerTitle` / `TriggerHint`，以及 `RuleCardDefinition` 的 `Title` / `Description` / `ArgKey` / `ArgLabel` / `ArgDefault`；`Find`（解释器依赖）、`OnlyTriggers` / `AppliesTo`（规则约束测试）保留，`RuleStep.Args` 运行时参数保留（Toast 动作仍读 `text`）
-- [x] 胶囊被任务栏压住（1.7.1）：根因不是判定错而是驱动节奏——原来的 2 s 心跳就是用户能感知的故障时长。改为事件驱动（前台切换 + 任务栏几何）+ 250 ms 自适应守卫，复位只抬 z 序。**结论：DeskBand 在 Win11 已移除、`SetWindowBand` 对普通进程永远 0x5、`CreateWindowInBand` 只放行 DEFAULT / DESKTOP、`SetParent` 到任务栏不受支持——浮窗抢 z 序是唯一可行路径，不要再去试「换逻辑」**
+- [x] 胶囊被任务栏压住（1.7.1）：根因不是判定错而是驱动节奏——原来的 2 s 心跳就是用户能感知的故障时长。改为事件驱动（前台切换 + 任务栏几何）+ 120 ms 自适应守卫（1.13.9 从 250 ms 收紧），复位只抬 z 序。**结论：DeskBand 在 Win11 已移除、`SetWindowBand` 对普通进程永远 0x5、`CreateWindowInBand` 只放行 DEFAULT / DESKTOP、`SetParent` 到任务栏不受支持——浮窗抢 z 序是唯一可行路径，不要再去试「换逻辑」**
 
 P1 / P2（详细调研与取舍见 [剩余待办调研与建议](design/backlog-plan.md)，不要再逐条重新评估）：
 
@@ -81,7 +93,7 @@ P1 / P2（详细调研与取舍见 [剩余待办调研与建议](design/backlog-
 ## 验收清单
 
 - `dotnet build src/TaskbarDrawer/TaskbarDrawer.csproj -c Release`：0 警告 0 错误
-- `dotnet test tests/TaskbarDrawer.Tests/TaskbarDrawer.Tests.csproj -c Release`：当前基线 **139 项全过**
+- `dotnet test tests/TaskbarDrawer.Tests/TaskbarDrawer.Tests.csproj -c Release`：当前基线 **160 项全过**
 - 胶囊 z 序（1.7.1）：实机点几次任务栏 / 点任务栏按钮切几次窗口，看 `logs\app-*.log` 的 `[chip] 被任务栏压住 N 枚 → 已复位 来源=… 耗时=…ms`——`来源=前台切换` 且耗时几十毫秒为正常；出现 `(非事件触发)` 说明有一路事件没覆盖到，需要补触发源
 - UI 用 UI Automation 找元素 + 真实鼠标点击验证；不要用模拟全局热键，会误触发收纳
 - 配置检查：`settings.json` 的 `Version` 应为 4，尺寸 0.90 / 0.55，`SceneBadgeColors` 第 8 项 `#000000`

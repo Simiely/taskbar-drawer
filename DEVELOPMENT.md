@@ -73,7 +73,7 @@
 
 界面对象：
 
-- `TaskbarChipLayer`：胶囊层。全量体检每 2 s 一次（兜底），z 序靠 `EVENT_SYSTEM_FOREGROUND` 与 Explorer 进程的 `EVENT_OBJECT_LOCATIONCHANGE` 事件驱动 + 250 ms 自适应守卫（8 轮后停）；被压住时只抬 z 序，几何变了才重排。最多 7 枚，多出的进溢出槽（逐场景可点）。
+- `TaskbarChipLayer`：胶囊层。全量体检每 2 s 一次（兜底），z 序靠 `EVENT_SYSTEM_FOREGROUND` 与 Explorer 进程的 `EVENT_OBJECT_LOCATIONCHANGE` 事件驱动 + 120 ms 自适应守卫（16 轮后停）；被压住时只抬 z 序，几何变了才重排。最多 7 枚，多出的进溢出槽（逐场景可点）。
 - `TaskbarChipWindow`：单枚胶囊（深色圆角、数量、tooltip）。
 - `MainPanelWindow`：主面板（场景列表 / 开关 / 热键）；顶部拖动条与空白 / 文字处可拖，长说明统一收进 `HelpWindow`。
 - `SceneEditorWindow`：场景详情侧窗（面板旁、非模态、初始约半屏、窗内滚动、右下角可调大小；移除窗口 / 追加这块屏幕上的全部窗口 / 重命名 / 删除）。只读数据 + 抛事件，写操作全部回 `AppShell` → `WorkspaceService` / `SceneService`。
@@ -112,6 +112,16 @@
 - 修法分两层：`Detach` 复用 `WindowIdentity.Candidate` / `AssignOrdinals` / `Pair`（与还原配对、详情窗「已打开」判定同一套规则）；`UpdateSnapshot` 降级为**只刷新矩形 / 最大化 / 显示器**，永不改 `group.Windows`
 - 兼容：旧快照没有身份字段时，`Pair` 与 `SceneEdit.IdentityKey` 都会退回旧键 / 矩形，行为与 1.11.0 之前一致；`Suppressed` 双键并存，旧数据不需要迁移
 - 验证：真实窗口夹具用 `TASKBAR_DRAWER_HOME` 隔离数据，改标题后 `Detach` 仍摘对成员；再故意把窗口 `Adopt` 回旧运行时组跑 `UpdateSnapshot`，磁盘快照仍只有 1 项
+
+### 问题：场景里的程序关掉再打开，运行中的场景认不回来（1.14.0）
+
+**TL;DR**：运行时组只记句柄，窗口销毁后记录被移出，快照项还在；程序重开是新句柄，不会自动回到组里。重启本程序后反而正常——场景变回「已关闭」，点开时走的是还原配对。
+
+- 现象：场景展开时关掉其中一个程序（日志 `窗口已销毁，移出记录`），重新打开后新窗口不跟场景一起收起 / 展开，胶囊计数也不含它。
+- 根因：`StashAllService` 只持有 hwnd；`Prune` 销毁记录后，运行态与快照之间没有「等它回来」的桥。
+- 解决：`Core/SceneReattach` 算出快照里缺了哪一项、把新窗口认回缺失项；`SceneService.TryReattach` 由全局 `EVENT_OBJECT_SHOW` 驱动（150 ms 合并），`ReclaimVisible` 在展开入口（`Restore` / `ExpandLatest` / `ExpandAll`）兜底。配对刻意不用位次——少一个成员后位次会整体前移，会把还开着的认成被关掉的。
+- 竞态：单窗口模式必须先 `ClaimForeground` 再判定，否则新窗口会被当成「场景外窗口」，把整个场景收回胶囊。
+- 边界：收起中的场景不在 SHOW 时接入（避免把用户刚打开的程序藏掉），只在展开时认领。
 
 ### 问题：浏览器切过标签页，场景重开时两个窗口互相换位（1.11.0）
 
@@ -179,7 +189,7 @@
 - 问题：用户点任务栏 / 切窗口之后，胶囊有时会「灰一下」甚至点不动，点击被任务栏吃掉，可能误触相邻的任务栏按钮。
 - 根因：不是判定错，是节奏错。`WindowFromPoint` 命中测试能正确识别「被任务栏或其子窗口压住」，但入口只有 `DispatcherTimer` 的 2 s 心跳，而任务栏抬自己发生在点击 / 激活 / 改几何这些瞬间。
 - 为什么不换更硬的方案：DeskBand 在 Win11 已被移除；`SetWindowBand` 对普通进程永远返回 0x5，`CreateWindowInBand` 只允许 `ZBID_DEFAULT` / `ZBID_DESKTOP`，`ZBID_UIACCESS` 需要 UIAccess token（要签名证书 + 受信安装路径）；把胶囊 `SetParent` 到 `Shell_TrayWnd` 不受支持，Explorer 重建任务栏就丢。浮窗抢 z 序是唯一可行路径，只能把竞速赢下来。
-- 解决：`EVENT_SYSTEM_FOREGROUND` 事件立即体检；按 Explorer 进程订阅 `EVENT_OBJECT_LOCATIONCHANGE` 覆盖几何变化；事件后 250 ms 自适应守卫 8 轮；复位用 `SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE` 只抬 z 序，把「抬起来」和「重新布局」彻底分开。
+- 解决：`EVENT_SYSTEM_FOREGROUND` 事件立即体检；按 Explorer 进程订阅 `EVENT_OBJECT_LOCATIONCHANGE` 覆盖几何变化；事件后 120 ms 自适应守卫 16 轮；复位用 `SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE` 只抬 z 序，把「抬起来」和「重新布局」彻底分开。
 - 预防：任何「与系统 UI 抢层级」的窗口，判断标准应是「输入命中」（`WindowFromPoint`）而不是「矩形坐标」；而驱动必须是**事件**，轮询只能当兜底——轮询周期就是用户能感知到的故障时长。
 - 刻意不做：被开始菜单 / 通知中心盖住时不抢，那属于正常遮挡；硬抢会让胶囊浮在浮层上面。
 

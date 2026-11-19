@@ -164,6 +164,34 @@ public class WindowIdentityTests
         Assert.NotEqual(1, WindowIdentity.Pair(candidates, Saved(0, "谁都不匹配", 0, 0), ordinals));
     }
 
+    [Fact]
+    public void Pair_Skips_Cross_Screen_Ordinal_When_Saved_Screen_Has_Same_App_Window()
+    {
+        // 日志 13:37:17 现场：资源管理器都最小化，位次 0 按显示器名落在主屏；
+        // 保存项在副屏，副屏也有同程序窗口——不能因为主屏那个位次对上就把它挪过来。
+        var primary = Candidate(1, "窗口", 0, 0, monitor: @"\\.\DISPLAY1");
+        var secondary = Candidate(2, "窗口", -602, 0, monitor: @"\\.\DISPLAY2");
+        var candidates = new[] { primary, secondary };
+        var ordinals = WindowIdentity.AssignOrdinals(candidates);   // 1 → 0，2 → 1
+
+        var saved = Saved(0, "保存时的标题", -602, 0, monitor: @"\\.\DISPLAY2");
+
+        Assert.Equal(1, WindowIdentity.Pair(candidates, saved, ordinals));
+    }
+
+    [Fact]
+    public void Pair_Keeps_Cross_Screen_Ordinal_When_No_Same_Screen_Candidate()
+    {
+        // 副屏没有同程序窗口（例如显示器被拔掉）：位次命中仍然有效，不能退化成「找不到」。
+        var primary = Candidate(1, "窗口", 0, 0, monitor: @"\\.\DISPLAY1");
+        var candidates = new[] { primary };
+        var ordinals = WindowIdentity.AssignOrdinals(candidates);
+
+        var saved = Saved(0, "保存时的标题", -602, 0, monitor: @"\\.\DISPLAY2");
+
+        Assert.Equal(0, WindowIdentity.Pair(candidates, saved, ordinals));
+    }
+
     private static DisplayRules.RestoreCandidate Candidate(
         long handle, string title, int left, int top, string className = ChromeClass,
         string? appId = null, string monitor = @"\\.\DISPLAY1")
@@ -177,7 +205,8 @@ public class WindowIdentityTests
             ClassName = className
         };
 
-    private static SavedWindow Saved(int ordinal, string title, int left, int top)
+    private static SavedWindow Saved(int ordinal, string title, int left, int top,
+        string monitor = @"\\.\DISPLAY1")
         => new()
         {
             Title = title,
@@ -185,7 +214,7 @@ public class WindowIdentityTests
             Top = top,
             Width = 800,
             Height = 600,
-            MonitorDevice = @"\\.\DISPLAY1",
+            MonitorDevice = monitor,
             AppId = WindowIdentity.AppId(null, Chrome),
             ClassName = ChromeClass,
             Ordinal = ordinal

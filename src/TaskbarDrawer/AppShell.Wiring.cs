@@ -1,4 +1,3 @@
-using System.Windows;
 using System.Windows.Threading;
 using TaskbarDrawer.Core;
 using TaskbarDrawer.Core.Rules;
@@ -44,7 +43,7 @@ public sealed partial class AppShell
         //   事件（150 ms 合并）负责「状态变了要立刻看见」；
         //   定时器（5 s）只做两件没法订阅的事：图标重贴（WM_SETICON 不产生事件）和整体兜底。
         _windowEvents = new WindowEventWatcher();
-        _windowEvents.Changed += (hwnd, kind) => Safe("watch", () => OnWindowEvent(hwnd, kind));
+        _windowEvents.Changed += (hwnd, _) => Safe("watch", () => OnWindowEvent(hwnd));
 
         _eventPrune = new DispatcherTimer(DispatcherPriority.Background, _dispatcher)
         {
@@ -67,6 +66,9 @@ public sealed partial class AppShell
                 // 应用换图标（浏览器切页面换 favicon）没有任何事件可订阅，只能定期补。
                 _stash.ReapplyIcons();
             }
+            // 新窗口事件钩子装不上时，用 5 s 巡检兜底「关掉又重开的程序认不回来」。
+            if (_windowShownHook == IntPtr.Zero)
+                Safe("reattach.scan", ReattachVisibleCandidates);
             // 兜底落盘：隐藏集合变化的第一时间由 UpdateSurface 写，这里只补外部还原 / 关闭。
             WindowRecovery.Save(_stash.Items);
         });
@@ -82,8 +84,14 @@ public sealed partial class AppShell
             Feedback("这块屏幕上没有可接管的窗口"));
         // 让单窗口模式认识场景：同一场景展开的窗口当成一个整体，而不是互斥的多个窗口。
         _single.GroupOf = hwnd => _stash.GroupIdOf(hwnd);
-        // 切到别的场景 / 别的窗口时，别的场景整组收回胶囊（而不是最小化成一排任务栏按钮）。
-        _single.CollapseGroup = (groupId, monitorDevice) => _stash.StashGroup(groupId, monitorDevice);
+        // 场景应用的辅助窗口（微信图片查看器 / 小程序宿主）同进程或子进程，按所属场景处理。
+        _single.GroupOfRelated = hwnd => ProcessSceneLink.GroupOf(hwnd, _stash.Items);
+        // 场景只属于它自己的那块屏幕（收纳时确定，拖动成员不改变）：本屏事件只处理本屏的场景。
+        _single.GroupScreen = groupId => _stash.MonitorOfGroup(groupId);
+        // 场景成员的程序关掉又重开：先认回场景再判定，避免「刚打开的程序把整个场景收走」。
+        _single.ClaimForeground = hwnd => _scenes.TryReattach(hwnd);
+        // 切到别的场景 / 别的窗口时，本屏的其它场景整组收回（场景是整体，成员拖到哪都一起收）。
+        _single.CollapseGroup = groupId => _stash.StashGroup(groupId);
         _single.Applied += count => Safe("single.applied", () =>
         {
             if (count > 0) _tray?.SetStatus($"单窗口模式：已收起 {count} 个窗口");

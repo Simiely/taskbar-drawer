@@ -1,5 +1,4 @@
 using System.Reflection;
-using TaskbarDrawer;
 using Xunit;
 
 namespace TaskbarDrawer.Tests;

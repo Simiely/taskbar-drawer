@@ -245,6 +245,56 @@ public class StashAllServiceTests
     }
 
     [Fact]
+    public void 场景归属屏在收纳时确定_拖动成员不改变()
+    {
+        var (service, gateway, _) = New();
+        gateway.Add(1, "甲");
+        service.StashAll(out int groupId, Screen);
+
+        Assert.Equal(Screen, service.MonitorOfGroup(groupId));
+
+        // 用户把成员拖到副屏：场景仍属于原来的屏。
+        // 单窗口模式靠这条判定「副屏上的切换不收起主屏的场景」。
+        service.ExpandGroup(groupId);
+        gateway.Get(new IntPtr(1)).Monitor = FakeWindowGateway.Display2;
+
+        Assert.Equal(Screen, service.MonitorOfGroup(groupId));
+    }
+
+    [Fact]
+    public void Adopt_从快照打开的场景沿用快照的归属屏()
+    {
+        var (service, gateway, _) = New();
+        gateway.Add(1, "已经开着的窗口", FakeWindowGateway.Display2);
+
+        bool ok = service.Adopt(new IntPtr(1), "saved-1", "场景", SceneBadge.Default,
+            FakeWindowGateway.Display2);
+
+        Assert.True(ok);
+        Assert.Equal(FakeWindowGateway.Display2, service.MonitorOfGroup(1));
+    }
+
+    [Fact]
+    public void Groups_任意屏幕有可见成员就算展开()
+    {
+        var (service, gateway, _) = New();
+        gateway.Add(1, "甲");
+        gateway.Add(2, "乙");
+        service.StashAll(out int groupId, Screen);
+        service.LinkSaved(groupId, "saved-1", "场景", SceneBadge.Default);
+        var guest = gateway.Add(3, "拖到副屏的成员", FakeWindowGateway.Display2);
+        service.Adopt(guest.Handle, "saved-1", "场景", SceneBadge.Default, Screen);
+        service.ExpandGroup(groupId);
+
+        // 只收主屏这块屏上的成员（单窗口模式按屏处理）：副屏的成员还可见，场景仍算展开。
+        int hidden = service.StashGroup(groupId, Screen);
+
+        Assert.Equal(2, hidden);
+        Assert.True(service.Groups()[0].Expanded);
+        Assert.True(guest.Visible);
+    }
+
+    [Fact]
     public void Prune_清理已销毁的窗口()
     {
         var (service, gateway, _) = New();

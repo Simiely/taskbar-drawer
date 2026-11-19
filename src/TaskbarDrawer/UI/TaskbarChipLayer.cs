@@ -86,11 +86,14 @@ public sealed class TaskbarChipLayer : IDisposable
     /// <summary>静止状态下每 15 个计时周期（约 30 s）仍完整重贴一次，兜底其它置顶窗口。</summary>
     private const int KeepAliveTicks = 15;
 
-    /// <summary>守卫体检间隔：被盖住后最坏等这么久复位（原来要等满一个 2 s 周期）。</summary>
-    private static readonly TimeSpan GuardInterval = TimeSpan.FromMilliseconds(250);
+    /// <summary>
+    /// 守卫体检间隔：被盖住后最坏等这么久复位（原来 250 ms，日志里经常看到
+    /// 250–500 ms 的可见空窗；120 ms 只是多几次 WindowFromPoint，代价可以忽略）。
+    /// </summary>
+    private static readonly TimeSpan GuardInterval = TimeSpan.FromMilliseconds(120);
 
     /// <summary>一次前台切换后连续守卫多少轮（约 2 s），之后退回 2 s 保活。</summary>
-    private const int GuardTicks = 8;
+    private const int GuardTicks = 16;
 
     /// <summary>守卫剩余轮数；0 = 守卫没在跑。</summary>
     private int _guardTicks;

@@ -99,6 +99,23 @@ public static class DisplayRules
     }
 
     /// <summary>
+    /// 一组窗口所在显示器里出现次数最多的那块屏（场景的「主屏」）。
+    /// 平票时按设备名排序取第一个，保证结果稳定；没有可用设备名时返回 null。
+    /// 用途：单窗口模式判断某块屏上的场景成员是「主场」还是「被拖过来的客人」。
+    /// </summary>
+    public static string PrimaryMonitorOf(IEnumerable<string> devices)
+    {
+        if (devices == null) return null;
+        return devices
+            .Where(device => !string.IsNullOrEmpty(device))
+            .GroupBy(device => device, StringComparer.Ordinal)
+            .OrderByDescending(group => group.Count())
+            .ThenBy(group => group.Key, StringComparer.Ordinal)
+            .Select(group => group.Key)
+            .FirstOrDefault();
+    }
+
+    /// <summary>
     /// 还原时的候选窗口（同程序、可见、未被其它场景占用）。只带匹配所需字段。
     /// <see cref="AppId"/> / <see cref="ClassName"/> 是两层身份的原料，喂给
     /// <see cref="WindowIdentity.Pair"/> 做「同位次优先」的配对；旧快照用不到它们。

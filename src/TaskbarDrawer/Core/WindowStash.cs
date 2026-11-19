@@ -1,5 +1,3 @@
-using System.Diagnostics;
-using System.Runtime.InteropServices;
 using TaskbarDrawer.Interop;
 
 namespace TaskbarDrawer.Core;

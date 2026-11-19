@@ -214,7 +214,29 @@ public static class WindowIdentity
                 bestDistance = distance;
             }
         }
+
+        // 位次是「同 (L1, 类名) 窗口」的相对顺序，跨屏时同一组里的 0 号可能落在另一块屏
+        // （AssignOrdinals 先按显示器名排序）。保存项明明有同屏的同程序窗口时，不能因为
+        // 另一块屏的窗口位次对上就把它挪过来——交给标题 / 最近矩形两级，它们优先同屏。
+        if (best >= 0 && !bestOnScreen && HasSameAppOnScreen(candidates, saved, device)) return -1;
         return best;
+    }
+
+    /// <summary>保存屏上有没有同应用、同类名的候选窗口（位次跳级前用它判断要不要放弃跨屏命中）。</summary>
+    private static bool HasSameAppOnScreen(
+        IReadOnlyList<DisplayRules.RestoreCandidate> candidates, SavedWindow saved, string device)
+    {
+        if (string.IsNullOrEmpty(device)) return false;
+
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            var candidate = candidates[i];
+            if (!SameApp(candidate, saved)) continue;
+            if (!string.IsNullOrEmpty(saved.ClassName) && !string.IsNullOrEmpty(candidate.ClassName) &&
+                !string.Equals(candidate.ClassName, saved.ClassName, StringComparison.OrdinalIgnoreCase)) continue;
+            if (DisplayRules.BelongsTo(device, candidate.MonitorDevice)) return true;
+        }
+        return false;
     }
 
     /// <summary>第 2 级：同应用 + 同标题。先找同屏的，再放宽到任意屏。</summary>

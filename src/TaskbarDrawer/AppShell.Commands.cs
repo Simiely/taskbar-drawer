@@ -84,14 +84,19 @@ public sealed partial class AppShell
         RequestSurfaceUpdate();
     }
 
-    /// <summary>把这块屏幕上已展开的场景收回胶囊；keepGroupId 非 0 时保留指定组。</summary>
+    /// <summary>
+    /// 把这块屏幕上已展开的场景整组收回胶囊；keepGroupId 非 0 时保留指定组。
+    /// 只收「归属屏 == 这块屏」的场景：另一块屏的场景不受影响。
+    /// 场景是整体——收起时连被拖到别的屏幕的成员一起收。
+    /// </summary>
     private int StashExpandedGroups(string monitorDevice, int keepGroupId = 0)
     {
         int hidden = 0;
         foreach (var group in _stash.Groups()
                      .Where(g => g.Expanded && g.Id != keepGroupId)
+                     .Where(g => DisplayRules.BelongsTo(monitorDevice, _stash.MonitorOfGroup(g.Id)))
                      .ToArray())
-            hidden += _stash.StashGroup(group.Id, monitorDevice);
+            hidden += _stash.StashGroup(group.Id);
         return hidden;
     }
 
@@ -109,6 +114,8 @@ public sealed partial class AppShell
 
         _single.SuspendTemporarily();
         int shown = _stash.ExpandNewest(monitorDevice);
+        // 这块屏上展开的场景里可能有人把程序关掉又重开了：把桌面上已开着的同程序窗口认回来。
+        if (shown > 0) shown += _scenes.ReclaimVisible(_stash.LastExpandedGroupId);
         if (shown > 0) CollapseOtherScenes(_stash.LastExpandedGroupId);
         if (shown > 0) FinishSceneOpen(_stash.LastExpandedGroupId);
         Feedback(shown > 0
@@ -131,6 +138,12 @@ public sealed partial class AppShell
 
         _single.SuspendTemporarily();
         int shown = _stash.ExpandAll(monitorDevice);
+        if (shown > 0)
+        {
+            // 展开后同样认回这块屏幕上已开着的同程序窗口（关掉又重开的成员）。
+            foreach (var group in _stash.Groups().Where(g => g.Expanded).ToArray())
+                shown += _scenes.ReclaimVisible(group.Id);
+        }
         Feedback(shown > 0
             ? $"已展开这块屏幕上的全部场景 · {shown} 个窗口"
             : "这块屏幕上没有已收起的场景", monitorDevice);
@@ -180,21 +193,20 @@ public sealed partial class AppShell
     }
 
     /// <summary>
-    /// 单窗口模式下展开一个场景时，把其它已展开的场景收回胶囊：
+    /// 单窗口模式下展开一个场景时，把其它已展开的场景收回：
     /// 「每个场景就是一个单窗口」，切场景时上一个场景应该回到收纳区，而不是留在桌面上。
+    ///
+    /// 每块屏幕独立：只收和这个场景属于同一块屏的场景；另一块屏上的场景保持不动。
+    /// 场景是整体：收起时成员拖到哪都一起收（<see cref="StashAllService.StashGroup"/> 不传屏幕）。
     /// </summary>
     private int CollapseOtherScenes(int keepGroupId)
     {
         if (!_single.Enabled) return 0;
 
-        // 多显示器：只收起和这个场景在同一块屏幕上的窗口，另一块屏上的窗口保持不动。
-        // 场景属于哪块屏都判断不出来时，一个都不收：宁可少收，不要跨屏误收。
-        string monitor = _stash.MonitorOfGroup(keepGroupId);
-        if (monitor == null) return 0;
+        string screen = _stash.MonitorOfGroup(keepGroupId);
+        if (screen == null) return 0;
 
-        // 不按「场景归属屏」整组过滤：一个场景可能同时有窗口在两块屏上（旧快照 / 用户拖过），
-        // StashGroup 按屏收紧，只收当前屏的成员，另一块屏的窗口不会跟着消失。
-        return StashExpandedGroups(monitor, keepGroupId);
+        return StashExpandedGroups(screen, keepGroupId);
     }
 
     /// <summary>面板场景行的「关闭窗口」：有关联快照就按场景关闭，否则兜底直接关这个场景的窗口。</summary>
@@ -241,7 +253,8 @@ public sealed partial class AppShell
             var (moved, launched, busy, failed) = _scenes.Restore(
                 group,
                 managed,
-                hwnd => _stash.Adopt(hwnd, group.Id, group.Name, group.Badge),
+                hwnd => _stash.Adopt(hwnd, group.Id, group.Name, group.Badge,
+                    _workspace.MonitorOfSaved(group)),
                 hwnd => _dispatcher.BeginInvoke(new Action(() => AdoptRestoredWindow(group, hwnd))),
                 () =>
                 {
@@ -272,7 +285,8 @@ public sealed partial class AppShell
     private void AdoptRestoredWindow(SavedGroup group, IntPtr hwnd)
     {
         if (_disposed) return;
-        if (!_stash.Adopt(hwnd, group.Id, group.Name, group.Badge)) return;
+        if (!_stash.Adopt(hwnd, group.Id, group.Name, group.Badge,
+                _workspace.MonitorOfSaved(group))) return;
 
         // 启动的程序窗口是稍后才出现的：这一刻它就是前台，单窗口模式要立刻按它收一遍，
         // 否则批量恢复期间被压掉的那次应用永远补不回来。

@@ -10,6 +10,13 @@ public static partial class NativeMethods
 {
     public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
 
+    /// <summary>
+    /// 用户用鼠标拖动 / 调整窗口大小结束。
+    /// 必须单独监听：跨屏拖动时前台窗口本身没变，系统不会再发 FOREGROUND，
+    /// 单窗口模式就不知道它已经落到另一块屏幕上了。
+    /// </summary>
+    public const uint EVENT_SYSTEM_MOVESIZEEND = 0x000B;
+
     /// <summary>对象位置 / 大小变化：任务栏自动隐藏滑动、改边、换分辨率都会触发。</summary>
     public const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
 
@@ -39,9 +46,6 @@ public static partial class NativeMethods
 
     /// <summary>GetAncestor 的 GA_ROOT：取顶层祖先，用来判断命中窗口是不是任务栏的子窗口。</summary>
     public const uint GA_ROOT = 2;
-
-    /// <summary>GetAncestor 的 GA_ROOTOWNER：沿 owner 链一直往上，用于判断「这个窗口是不是被拥有的弹窗」。</summary>
-    public const uint GA_ROOTOWNER = 3;
 
     /// <summary>GetWindow 的 GW_OWNER：直接取一层 owner（对话框 / 弹出层的典型标志）。</summary>
     public const uint GW_OWNER = 4;
@@ -344,8 +348,6 @@ public static partial class NativeMethods
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new IntPtr(ex | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE));
     }
 
-    public static void ShowNoActivate(IntPtr hwnd) => ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-
     /// <summary>主面板：只加工具窗样式（不进 Alt+Tab / 任务栏），保留正常激活能力。</summary>
     public static void ApplyToolWindowStyle(IntPtr hwnd)
     {
@@ -391,4 +393,21 @@ public static partial class NativeMethods
     public static RECT ToWorkspaceCoordinates(RECT rect, POINT origin)
         => RECT.FromLTRB(rect.Left - origin.X, rect.Top - origin.Y,
             rect.Right - origin.X, rect.Bottom - origin.Y);
+
+    /// <summary>
+    /// 窗口的「正常位置」矩形（屏幕坐标）。最小化窗口的 <c>GetWindowRect</c> 返回
+    /// (-32000, -32000) 哨兵，同程序窗口会被排成同一个位置，配对只能靠枚举顺序；
+    /// 这里读 <c>WINDOWPLACEMENT.rcNormalPosition</c> 并换算成与保存侧一致的屏幕坐标。
+    /// </summary>
+    public static bool TryNormalRectOf(IntPtr hwnd, out RECT rect)
+    {
+        rect = default;
+        if (hwnd == IntPtr.Zero || !IsWindow(hwnd)) return false;
+
+        var placement = new WINDOWPLACEMENT { length = Marshal.SizeOf<WINDOWPLACEMENT>() };
+        if (!GetWindowPlacement(hwnd, ref placement)) return false;
+
+        rect = ToScreenCoordinates(placement.rcNormalPosition, WorkspaceOffsetOfWindow(hwnd));
+        return !rect.IsEmpty;
+    }
 }

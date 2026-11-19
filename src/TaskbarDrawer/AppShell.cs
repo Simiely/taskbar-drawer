@@ -1,4 +1,3 @@
-using System.Threading;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Threading;
@@ -38,6 +37,10 @@ public sealed partial class AppShell : IDisposable
     private DispatcherTimer _pruneTimer;
     private DispatcherTimer _eventPrune;
     private WindowEventWatcher _windowEvents;
+    private DispatcherTimer _reattachTimer;
+    private IntPtr _windowShownHook;
+    private NativeMethods.WinEventProc _windowShownProc;
+    private readonly HashSet<long> _pendingShown = new();
     private Dispatcher _dispatcher;
     private EventWaitHandle _showSignal;
     private ManualResetEvent _signalStop;
@@ -78,6 +81,7 @@ public sealed partial class AppShell : IDisposable
         // 4) 面板必须最后建：它要读已生效的热键文案和外观设置。
         WireServices();
         WireSingleWindow();
+        WireReattach();
         WireChips();
         WireHotkeyHost();
         WireTray();
@@ -234,7 +238,7 @@ public sealed partial class AppShell : IDisposable
     /// 在任务管理器里结束一个成员，胶囊上的计数最坏要等一个整周期才变。
     /// 现在由事件触发，从窗口消失到界面更新稳定在 150–250 ms。
     /// </summary>
-    private void OnWindowEvent(IntPtr hwnd, WindowEventKind kind)
+    private void OnWindowEvent(IntPtr hwnd)
     {
         if (_disposed || _eventPrune == null) return;
 
@@ -254,6 +258,93 @@ public sealed partial class AppShell : IDisposable
         _eventPrune?.Stop();
         if (_disposed) return;
         _stash.Prune();
+    }
+
+    /// <summary>
+    /// 新窗口监听：场景成员的程序被关掉又重开时，新窗口的句柄不在运行时组里，
+    /// 快照里却还留着它那一项。只听全局的顶层窗口 SHOW（过滤 OBJID / 本进程），
+    /// 150 ms 合并后交给 <see cref="SceneService.TryReattach"/> 认回场景。
+    ///
+    /// 全局监听是必要的：重新打开的程序通常是一个新进程，按 PID 装的
+    /// <see cref="WindowEventWatcher"/> 根本收不到它的事件。
+    /// </summary>
+    private void WireReattach()
+    {
+        _reattachTimer = new DispatcherTimer(DispatcherPriority.Background, _dispatcher)
+        {
+            Interval = TimeSpan.FromMilliseconds(150)
+        };
+        _reattachTimer.Tick += (_, _) => Safe("reattach.flush", FlushShownWindows);
+
+        try
+        {
+            _windowShownProc = OnWindowShown;
+            _windowShownHook = NativeMethods.SetWinEventHook(
+                NativeMethods.EVENT_OBJECT_SHOW, NativeMethods.EVENT_OBJECT_SHOW,
+                IntPtr.Zero, _windowShownProc, 0, 0,
+                NativeMethods.WINEVENT_OUTOFCONTEXT | NativeMethods.WINEVENT_SKIPOWNPROCESS);
+            if (_windowShownHook == IntPtr.Zero)
+                Diagnostics.Info("reattach", "新窗口事件监听未就绪，退回 5 s 巡检");
+        }
+        catch (Exception ex)
+        {
+            Diagnostics.Write("reattach hook", ex);
+        }
+    }
+
+    /// <summary>全局 SHOW 回调：只做最便宜的过滤与入队，真正的窗口查询放在合并定时器里。</summary>
+    private void OnWindowShown(
+        IntPtr hook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
+    {
+        try
+        {
+            if (_disposed || hwnd == IntPtr.Zero) return;
+            if (idObject != NativeMethods.OBJID_WINDOW || idChild != 0) return;
+            if (WindowEnumerator.IsOwnProcessWindow(hwnd)) return;
+
+            _pendingShown.Add(hwnd.ToInt64());
+            _reattachTimer?.Stop();
+            _reattachTimer?.Start();
+        }
+        catch (Exception ex)
+        {
+            Diagnostics.Write("reattach event", ex);
+        }
+    }
+
+    private void FlushShownWindows()
+    {
+        _reattachTimer?.Stop();
+        if (_disposed) return;
+
+        var pending = _pendingShown.ToArray();
+        _pendingShown.Clear();
+        foreach (long raw in pending)
+        {
+            if (_disposed) return;
+            var hwnd = new IntPtr(raw);
+            if (_stash.Contains(hwnd)) continue;   // 已在本程序的场景里，不需要认领
+            _scenes.TryReattach(hwnd);
+        }
+    }
+
+    /// <summary>
+    /// 事件钩子装不上时的 5 s 兜底：只有「有展开场景缺成员」时才枚举窗口，
+    /// 正常情况下这条分支一次都不会跑。
+    /// </summary>
+    private void ReattachVisibleCandidates()
+    {
+        foreach (var group in _stash.Groups())
+        {
+            if (!group.Expanded || string.IsNullOrEmpty(group.SavedId)) continue;
+            var saved = _workspace.Find(group.SavedId);
+            if (saved == null) continue;
+            int live = _stash.Items.Count(i => i.GroupId == group.Id && NativeMethods.IsWindow(i.Handle));
+            if (saved.Windows.Count <= live) continue;
+
+            foreach (var window in WindowEnumerator.Enumerate(includeMinimized: false))
+                _scenes.TryReattach(window.Handle);
+        }
     }
 
     /// <summary>把订阅集合同步成「当前记录里的进程」。钩子按 PID 注册，进程退出后跟着消失。</summary>
@@ -394,6 +485,16 @@ public sealed partial class AppShell : IDisposable
 
         _pruneTimer?.Stop();
         _eventPrune?.Stop();
+        _reattachTimer?.Stop();
+        try
+        {
+            if (_windowShownHook != IntPtr.Zero)
+            {
+                NativeMethods.UnhookWinEvent(_windowShownHook);
+                _windowShownHook = IntPtr.Zero;
+            }
+        }
+        catch { /* 退出路径不再抛 */ }
         try { _windowEvents?.Dispose(); } catch { }
         try { _signalStop?.Set(); } catch { }
         try { _signalThread?.Join(200); } catch { }

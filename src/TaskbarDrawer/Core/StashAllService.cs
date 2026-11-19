@@ -17,6 +17,13 @@ public sealed class StashGroup
 
     /// <summary>场景标识（颜色 / 数字 / 位置）：展开期间会画在成员窗口图标的角上。</summary>
     public SceneBadge Badge { get; set; } = SceneBadge.Default;
+
+    /// <summary>
+    /// 场景归属的屏幕（设备名）：收纳 / 创建时确定，之后成员被拖到别的屏幕也不改。
+    /// 单窗口模式按它判定「这个场景属于哪块屏」，避免在另一块屏操作时把它收掉。
+    /// 解散场景、在新屏幕重新收纳才会换屏。
+    /// </summary>
+    public string Screen { get; set; }
 }
 
 /// <summary>给托盘菜单 / 任务栏胶囊 / 主面板用的只读分组摘要。</summary>
@@ -97,6 +104,7 @@ public sealed class StashAllService
                     Id = g.Id,
                     CreatedAt = g.CreatedAt,
                     Count = items.Length,
+                    // 「任意屏幕上有可见成员」就算展开：场景是整体，成员被拖到别的屏也仍然算它的一部分。
                     Expanded = items.Length > 0 && items.Any(i => !i.Hidden),
                     Titles = items.Select(i => i.Title).ToArray(),
                     SavedId = g.SavedId,
@@ -154,6 +162,8 @@ public sealed class StashAllService
         _groups.Add(new StashGroup
         {
             Id = newGroupId,
+            // 归属屏固定下来：之后用户把成员拖到别的屏幕，单窗口模式仍然按这块屏判定。
+            Screen = monitorDevice,
             CreatedAt = DateTime.Now,
             ForegroundBefore = IsEligibleActivationTarget(foreground) &&
                                DisplayRules.BelongsTo(monitorDevice, _gateway.MonitorOf(foreground))
@@ -303,7 +313,7 @@ public sealed class StashAllService
     /// 这样打开后的组和普通场景一样：点胶囊收起 / 展开，而不是反复关掉再开。
     /// 窗口已属于别的组时不动它，避免拆散别的场景。
     /// </summary>
-    public bool Adopt(IntPtr hwnd, string savedId, string name, SceneBadge badge)
+    public bool Adopt(IntPtr hwnd, string savedId, string name, SceneBadge badge, string screen = null)
     {
         if (hwnd == IntPtr.Zero) return false;
         _stash.Prune();
@@ -316,6 +326,8 @@ public sealed class StashAllService
             _groups.Add(new StashGroup
             {
                 Id = groupId,
+                // 从快照打开的场景沿用快照里的归属屏；现场接入（追加窗口）时由调用方给。
+                Screen = screen,
                 CreatedAt = DateTime.Now,
                 SavedId = savedId,
                 Name = name,
@@ -333,18 +345,21 @@ public sealed class StashAllService
     }
 
     /// <summary>
-    /// 这个场景现在属于哪块屏幕：展开时按可见窗口实测（用户可能把它拖到别的屏），
-    /// 全部收起时用收纳时记下的设备名。多显示器下热键 / 收起都靠它按屏隔离。
+    /// 这个场景属于哪块屏幕。归属屏在收纳 / 创建时固定（<see cref="StashGroup.Screen"/>），
+    /// 之后成员被拖到别的屏幕也不改——单窗口模式按它判定「这块屏上该不该动这个场景」。
+    /// 旧运行时组没有记录时，退回「成员最多的那块屏」，再退回收纳时记下的设备名。
     /// </summary>
     public string MonitorOfGroup(int groupId)
     {
+        var group = _groups.FirstOrDefault(g => g.Id == groupId);
+        if (group == null) return null;
+        if (!string.IsNullOrEmpty(group.Screen)) return group.Screen;
+
         var items = _stash.Items.Where(i => i.GroupId == groupId).ToArray();
-        foreach (var item in items.Where(i => !i.Hidden))
-        {
-            string device = _gateway.MonitorOf(item.Handle);
-            if (device != null) return device;
-        }
-        return items.FirstOrDefault(i => !string.IsNullOrEmpty(i.MonitorDevice))?.MonitorDevice;
+        return DisplayRules.PrimaryMonitorOf(items
+                   .Where(i => !i.Hidden)
+                   .Select(i => _gateway.MonitorOf(i.Handle)))
+               ?? items.FirstOrDefault(i => !string.IsNullOrEmpty(i.MonitorDevice))?.MonitorDevice;
     }
 
     /// <summary>

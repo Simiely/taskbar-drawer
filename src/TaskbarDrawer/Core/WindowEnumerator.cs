@@ -18,11 +18,24 @@ public sealed class WindowCandidate
 /// </summary>
 public static class WindowEnumerator
 {
-    /// <summary>桌面、任务栏、开始菜单等由 explorer 画的窗口：既不能最小化也不能收进收纳。</summary>
+    /// <summary>
+    /// 桌面、任务栏、开始菜单等由 explorer 画的窗口：既不能最小化也不能收进收纳。
+    /// <para>
+    /// <c>WinUIDesktopWin32WindowClass</c> 是 Win11 的桌面宿主：点一下桌面它就成前台，
+    /// 它没有 owner / 不是工具窗，漏掉会被当成「切换到了另一个应用」，单窗口模式随即
+    /// 把当前屏幕的窗口最小化或把场景收回胶囊。同一台机器上它有时带 owner、有时不带，
+    /// 不能只靠「被拥有的弹窗」那条兜底。
+    /// </para>
+    /// <para>
+    /// <c>OperationStatusWindow</c> 是资源管理器的复制 / 移动进度窗：它不是用户主动切换过去的
+    /// 应用窗口，但系统会把它设为前台，同样会误触发单窗口模式。
+    /// </para>
+    /// </summary>
     private static readonly HashSet<string> ShellClasses = new(StringComparer.OrdinalIgnoreCase)
     {
         "Progman",
         "WorkerW",
+        "WinUIDesktopWin32WindowClass",
         "Shell_TrayWnd",
         "Shell_SecondaryTrayWnd",
         "Windows.UI.Core.CoreWindow",
@@ -30,7 +43,8 @@ public static class WindowEnumerator
         "ForegroundStaging",
         "MultitaskingViewFrame",
         "XamlExplorerHostIslandWindow",
-        "TaskListThumbnailWnd"
+        "TaskListThumbnailWnd",
+        "OperationStatusWindow"
     };
 
     public static List<WindowCandidate> Enumerate(bool includeMinimized)

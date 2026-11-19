@@ -88,16 +88,22 @@ public sealed partial class WorkspaceService
                 $"rect=({saved.Left},{saved.Top},{saved.Left + saved.Width},{saved.Top + saved.Height}) " +
                 $"max={saved.Maximized}");
 
-            // 同程序的可见候选窗口：排除本轮已经用掉的、以及属于其它场景的。
-            // 不再要求「必须和保存时同一块屏」：程序重启后系统通常把窗口开在主屏，
+            // 同程序的窗口：这里**不先按可见性过滤**。收在别的场景里的窗口是 SW_HIDE 的
+            // （IsWindowVisible=false），但程序确实已经在跑；早先只看可见窗口，于是还原一个
+            // 「程序都收在另一个场景里」的场景时会再启动一遍实例——单实例程序不出新窗口，
+            // 还原要白等 12 s 超时，用户还多出一份重复进程（2026-11-18 日志 15:41:40 现场）。
+            // 可见性只用来挑「可以接管 / 摆位」的候选，busy 判断见下面的 excluded 检查。
+            //
+            // 候选不要求「必须和保存时同一块屏」：程序重启后系统通常把窗口开在主屏，
             // 按屏过滤只会得到 busy、用户看到「位置没恢复」；现在会把它挪回保存屏。
             var sameExe = windows
-                .Where(w => w.Visible && w.Title.Length > 0 && !w.ToolWindow && !w.Owned &&
-                            Normalize(w.Path) == exe)
+                .Where(w => Normalize(w.Path) == exe)
                 .ToArray();
             var candidates = new List<DisplayRules.RestoreCandidate>();
             foreach (var window in sameExe)
             {
+                if (!window.Visible || window.Title.Length == 0 || window.ToolWindow || window.Owned) continue;
+
                 long handle = window.Handle.ToInt64();
                 if (used.Contains(handle)) continue;
                 if (excluded != null && excluded.Contains(handle)) continue;
@@ -136,8 +142,9 @@ public sealed partial class WorkspaceService
                 continue;
             }
 
-            // 同程序窗口存在，但全被其它场景管理：既不能挪，也不能再开一个副本。
-            if (sameExe.Any(w => excluded != null && excluded.Contains(w.Handle.ToInt64())))
+            // 同程序窗口存在，但全被其它场景管理（可能正收在收纳区，所以 IsWindowVisible=false）：
+            // 既不能挪，也不能再开一个副本。
+            if (excluded != null && sameExe.Any(w => excluded.Contains(w.Handle.ToInt64())))
             {
                 busy++;
                 Diagnostics.Info("scene", "  → busy：同程序窗口已在其它场景");
@@ -159,6 +166,12 @@ public sealed partial class WorkspaceService
             $"还原结束 scene={group.Name} 已摆位={moved} 启动={launchedPending.Count} 跳过={busy} 失败={failed}");
         return (moved, launchedPending.Count, busy, failed);
     }
+
+    /// <summary>
+    /// 把一个窗口摆回快照记录的位置：自动认回「关掉又重开」的程序时用。
+    /// 与批量还原共用同一套摆位 / 夹回工作区逻辑。
+    /// </summary>
+    public void PlaceWindow(IntPtr hwnd, SavedWindow saved) => ApplyPlacement(hwnd, saved);
 
     /// <summary>启动后等主窗口出现再摆位：Process.Start 返回时窗口往往还没建好。</summary>
     private static void PositionLater(

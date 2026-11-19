@@ -15,8 +15,6 @@ public static partial class NativeMethods
 
     public const int SW_HIDE = 0;
     public const int SW_SHOWNORMAL = 1;
-    public const int SW_SHOWNOACTIVATE = 4;
-    public const int SW_MINIMIZE = 6;
     public const int SW_SHOWMINNOACTIVE = 7;
     public const int SW_RESTORE = 9;
     public const int SW_SHOWMAXIMIZED = 3;

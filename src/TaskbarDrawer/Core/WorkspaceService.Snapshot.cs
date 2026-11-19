@@ -85,6 +85,8 @@ public sealed partial class WorkspaceService
             Id = Guid.NewGuid().ToString("N")[..6],
             Name = string.IsNullOrWhiteSpace(name) ? NextSceneName() : name.Trim(),
             Badge = SceneBadge.Default,
+            // 场景归属屏在收纳时确定：之后成员被拖到别的屏幕也不改（单窗口模式按屏隔离）。
+            MonitorDevice = stash.MonitorOfGroup(groupId),
             CreatedAt = DateTime.Now,
             Windows = windows
         };
@@ -128,6 +130,10 @@ public sealed partial class WorkspaceService
             saved.Maximized = match.Maximized;
             if (!string.IsNullOrEmpty(match.MonitorDevice)) saved.MonitorDevice = match.MonitorDevice;
         }
+        // 旧快照没有场景级归属屏：第一次关闭场景时按当前运行时组冻结一次，
+        // 之后成员位置再变也不改（否则拖动窗口就等于偷偷换了场景的屏幕）。
+        if (string.IsNullOrEmpty(group.MonitorDevice))
+            group.MonitorDevice = stash.MonitorOfGroup(groupId);
         Persist();
     }
 
@@ -212,6 +218,13 @@ public sealed partial class WorkspaceService
             }
 
             NativeMethods.GetWindowRect(hwnd, out var rect);
+            bool minimized = NativeMethods.IsIconic(hwnd);
+            // 最小化窗口的 GetWindowRect 是 -32000 哨兵：同程序窗口会全部排在同一位置，
+            // 位次与「最近矩形」都失去意义（日志 13:37:17 把另一块屏的资源管理器挪了过来）。
+            // 还原位置统一读 rcNormalPosition，与保存侧口径一致。
+            if (minimized && NativeMethods.TryNormalRectOf(hwnd, out var normal) && !normal.IsEmpty)
+                rect = normal;
+
             list.Add(new TopWindow
             {
                 Handle = hwnd,
@@ -223,7 +236,7 @@ public sealed partial class WorkspaceService
                 Visible = NativeMethods.IsWindowVisible(hwnd),
                 ToolWindow = (NativeMethods.ExStyle(hwnd) & NativeMethods.WS_EX_TOOLWINDOW) != 0,
                 Cloaked = NativeMethods.IsCloaked(hwnd, out _),
-                Minimized = NativeMethods.IsIconic(hwnd),
+                Minimized = minimized,
                 Owned = NativeMethods.Owner(hwnd) != IntPtr.Zero
             });
             return true;
