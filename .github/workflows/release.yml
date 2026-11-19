@@ -29,7 +29,7 @@ jobs:
           if (-not $zip) { throw "package not found" }
           gh release view $tag 2>$null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag $zip.FullName --clobber
-          } else {
-            gh release create $tag $zip.FullName --title "TaskbarDrawer $tag" --generate-notes
+            Write-Host "release $tag already exists; keep the uploaded asset"
+            exit 0
           }
+          gh release create $tag $zip.FullName --title "TaskbarDrawer $tag" --generate-notes
