@@ -56,7 +56,7 @@ dotnet publish src/TaskbarDrawer/TaskbarDrawer.csproj -c Release -r win-x64 `
 做可直接下载的发布包：
 
 ```powershell
-pwsh tools/release.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\release.ps1
 ```
 
 脚本会跑构建 / 测试、生成 `dist\TaskbarDrawer-<版本>-win-x64.zip`（exe + 使用说明 + LICENSE）并打印 SHA256。

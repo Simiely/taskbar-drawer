@@ -19,7 +19,7 @@ related: []
 
 ## 当前状态
 
-- 版本 **1.15.3**（已推送 `8e8d66a`；本轮按 knowledge-base 单项目规范整理文档并准备 `v1.15.3` Release）
+- 版本 **1.15.3**（代码 `8e8d66a`；文档整理 `abaa907`；Release `v1.15.3` 已发布）
 - 1.15.3：修「跨屏拖动后不触发收起」——拖动前后前台窗口没变，系统不发 `EVENT_SYSTEM_FOREGROUND`；新增 `EVENT_SYSTEM_MOVESIZEEND` 监听，拖动结束后按当前前台补一次判定
 - 仓库维护：DEVELOPMENT 拆为 `docs/架构.md` + `docs/问题记录/`（一坑一篇）；补 LICENSE（MIT）、`tools/release.ps1`、tag 触发的 Release workflow 与 README SVG 示意图
 - 1.15.2：死代码清理（无行为变化）——未读字段 / 未用参数 / 无消费者的属性 / 3 个废弃 Win32 常量 / 11 条无用 using；`IDE0051/0052/0005/0060` 已清零
@@ -85,7 +85,7 @@ P1 / P2（详细调研与取舍见 [剩余待办调研与建议](design/backlog-
 ## 发布流程
 
 - 源码目录：`C:\Users\260803\WorkBuddy\2026-11-18-09-32-50`（当前工作区，直接 git push）
-- 本地发布：`pwsh tools/release.ps1`——校验版本 / 干净工作区 → build + test → `dotnet publish` 单文件 → 写 `使用说明.txt` + `LICENSE.txt` → `dist\TaskbarDrawer-<版本>-win-x64.zip`，输出 SHA256
+- 本地发布：`powershell -NoProfile -ExecutionPolicy Bypass -File tools\release.ps1`（PowerShell 7 可用 `pwsh tools/release.ps1`）——校验版本 / 干净工作区 → build + test → `dotnet publish` 单文件 → 写 `使用说明.txt` + `LICENSE.txt` → `dist\TaskbarDrawer-<版本>-win-x64.zip`，输出 SHA256
 - 版本与资产命名沿用 `v{版本}`：Release 标题 `TaskbarDrawer v{版本}`，资产 `TaskbarDrawer-{版本}-win-x64.zip`（框架依赖单文件 exe + 中文使用说明 + LICENSE），正文按「主要变化 / 下载 / 验证」三段写
 - 发布：本地干净后 `git push origin main`；打 tag `v{版本}` 并推送，`.github/workflows/release.yml` 会自动构建/上传；也可以本地 `gh release create`（token 从 Windows 凭据管理器读取，不要写进文件）
 - 文档基线：发版后把 `schema/agents.template.md` 的「文档基线」行更新成最新提交 hash，重新生成 `AGENTS.md`，并回填 knowledge-base `用户库/仓库盘点表.md`
