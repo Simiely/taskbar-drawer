@@ -19,7 +19,7 @@ related: []
 
 ## 当前状态
 
-- 版本 **1.16.1**（本地提交；未推送）
+- 版本 **1.16.1**（已入库：main + tag `v1.16.1`；Release `v1.16.1` 已发布，资产 `TaskbarDrawer-1.16.1-win-x64.zip` 可直接下载）
 - 1.16.1：修「排除管理里看不到 / 加不进已打开的窗口」——打开即展开候选列表（`ExpandPicker`），展开时按内容撑高窗口（上限为所在屏工作区）并滚到列表开头；与场景详情互斥、首次打开后 `Activate`。新增 `[exclusions]` 日志：刷新记录规则数 / 候选数，添加请求记入参、跳过 / 失败 / 落盘各一行。**复测先看日志里的 `候选=N`**：N=0 才说明枚举有问题，否则是界面可见性
 - 1.16.0：新增「排除管理」——主面板「排除管理」在右侧展开独立小窗（`UI/ExclusionWindow`），列表内置资源管理器（默认勾选、可关不可删）+ 用户添加的应用；「添加已打开的窗口」按应用聚合，规则按 exe 全路径记录（读不到时退回进程名），重开窗口仍生效。设置升 v6（`SingleWindowExclusions` 列表，旧 `ExcludeExplorerFromSingleWindow` 自动迁移并继续写回）；单窗口模式改用 `WindowExclusion.MatchesAny` + `ShouldSkipExcludedWindow`，属于场景的窗口不受排除影响
 - 1.15.5：修飞书「打开聊天里的图片 / 视频，飞书主窗口被最小化」——媒体中心 pid 的父进程就是飞书主进程，单窗口模式把主窗口当「别的窗口」最小化；现在最小化候选前会取前台进程的父 / 祖父 pid（遇到 shell 截断），宿主窗口直接保留，日志新增 `宿主=N`
@@ -90,7 +90,7 @@ P1 / P2（详细调研与取舍见 [剩余待办调研与建议](design/backlog-
 
 ## 发布流程
 
-- 源码目录：`C:\Users\260803\WorkBuddy\2026-11-18-09-32-50`（当前工作区，直接 git push）
+- 源码目录：`C:\Users\2504\Documents\Trae-CN\temp_20261125_01\taskbar-drawer`（直接 git push；认证走 Windows 凭据管理器或一次性请求头，不要把 token 写进文件）
 - 本地发布：`powershell -NoProfile -ExecutionPolicy Bypass -File tools\release.ps1`（PowerShell 7 可用 `pwsh tools/release.ps1`）——校验版本 / 干净工作区 → build + test → `dotnet publish` 单文件 → 写 `使用说明.txt` + `LICENSE.txt` → `dist\TaskbarDrawer-<版本>-win-x64.zip`，输出 SHA256
 - 版本与资产命名沿用 `v{版本}`：Release 标题 `TaskbarDrawer v{版本}`，资产 `TaskbarDrawer-{版本}-win-x64.zip`（框架依赖单文件 exe + 中文使用说明 + LICENSE），正文按「主要变化 / 下载 / 验证」三段写
 - 发布：本地干净后 `git push origin main`；打 tag `v{版本}` 并推送，`.github/workflows/release.yml` 会自动构建/上传；也可以本地 `gh release create`（token 从 Windows 凭据管理器读取，不要写进文件）
