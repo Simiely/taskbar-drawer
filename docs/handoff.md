@@ -19,7 +19,8 @@ related: []
 
 ## 当前状态
 
-- 版本 **1.15.5**（本地提交；未推送）
+- 版本 **1.16.0**（本地提交；未推送）
+- 1.16.0：新增「排除管理」——主面板「排除管理」在右侧展开独立小窗（`UI/ExclusionWindow`），列表内置资源管理器（默认勾选、可关不可删）+ 用户添加的应用；「添加已打开的窗口」按应用聚合，规则按 exe 全路径记录（读不到时退回进程名），重开窗口仍生效。设置升 v6（`SingleWindowExclusions` 列表，旧 `ExcludeExplorerFromSingleWindow` 自动迁移并继续写回）；单窗口模式改用 `WindowExclusion.MatchesAny` + `ShouldSkipExcludedWindow`，属于场景的窗口不受排除影响
 - 1.15.5：修飞书「打开聊天里的图片 / 视频，飞书主窗口被最小化」——媒体中心 pid 的父进程就是飞书主进程，单窗口模式把主窗口当「别的窗口」最小化；现在最小化候选前会取前台进程的父 / 祖父 pid（遇到 shell 截断），宿主窗口直接保留，日志新增 `宿主=N`
 - 1.15.4：修飞书「打开聊天里的图片 / 视频，整个场景被收回胶囊」——媒体中心与聊天窗口是**兄弟进程**（`Feishu.exe`，共同父进程不在场景里），`ProcessSceneLink` 在父链之后增加「同一个 exe」兜底，运行环境宿主（`python.exe` / `node.exe` / `java.exe` 等）不参与；面板新增「资源管理器不计入」开关（默认开启），资源管理器窗口不被最小化、也不因它触发单窗口动作，属于场景的仍按场景处理；设置升 v5
 - 版本 **1.15.3**（代码 `8e8d66a`；文档整理 `abaa907`；Release `v1.15.3` 已发布）
@@ -48,7 +49,7 @@ related: []
 - 1.8.1 走查修复：18 条链路 → 13 个问题、修 11 个，见 [walkthrough/report-1.md](walkthrough/report-1.md)
 - 1.8.0 结构：`AppShell` 拆三片（`AppShell.cs` 组合根 / `.Commands.cs` 命令 / `.Wiring.cs` 接线）
 - 1.7.1 胶囊 z 序：事件驱动 + 250 ms 守卫，实测 74–176 ms
-- 验收基线：`dotnet build` 0 警告 0 错误、`dotnet test` **173/173**、`REPO CHECK: PASS`
+- 验收基线：`dotnet build` 0 警告 0 错误、`dotnet test` **183/183**、`REPO CHECK: PASS`
 - 主线一句话：`AppShell` 是组合根（三片），收纳走 `StashAllService`（运行时组），快照走 `WorkspaceService`，两者靠 `SavedGroup.Id` / `StashGroup.SavedId` 关联；窗口隐藏与图标装饰在 `WindowStash`；**场景回到屏幕必须走 `FinishSceneOpen` 收尾**（坑 10）；**弹窗不是窗口，按窗口簇处理**（坑 11）
 
 ## 待办（按收益排序）
@@ -98,12 +99,12 @@ P1 / P2（详细调研与取舍见 [剩余待办调研与建议](design/backlog-
 ## 验收清单
 
 - `dotnet build src/TaskbarDrawer/TaskbarDrawer.csproj -c Release`：0 警告 0 错误
-- `dotnet test tests/TaskbarDrawer.Tests/TaskbarDrawer.Tests.csproj -c Release`：当前基线 **171 项全过**
+- `dotnet test tests/TaskbarDrawer.Tests/TaskbarDrawer.Tests.csproj -c Release`：当前基线 **183 项全过**
 - `python tools/repo-kit/check_repo.py --root .`、`generate.py --check`、`pwsh tools/update-repo-kit.ps1 -Check`：全绿
 - 胶囊 z 序（1.7.1）：实机点几次任务栏 / 点任务栏按钮切几次窗口，看 `logs\app-*.log` 的 `[chip] 被任务栏压住 N 枚 → 已复位 来源=… 耗时=…ms`——`来源=前台切换` 且耗时几十毫秒为正常；出现 `(非事件触发)` 说明有一路事件没覆盖到，需要补触发源
 - UI 用 UI Automation 找元素 + 真实鼠标点击验证；不要用模拟全局热键，会误触发收纳
-- 配置检查：`settings.json` 的 `Version` 应为 5，尺寸 0.90 / 0.55，`SceneBadgeColors` 第 8 项 `#000000`，`ExcludeExplorerFromSingleWindow` 默认 `true`
-- 发布产物：`dist\TaskbarDrawer-1.15.5-win-x64.zip`，约 260 KB（框架依赖；需 .NET 8 Desktop Runtime）
+- 配置检查：`settings.json` 的 `Version` 应为 6，尺寸 0.90 / 0.55，`SceneBadgeColors` 第 8 项 `#000000`，`SingleWindowExclusions` 第一项是内置 `资源管理器`（默认 `Enabled=true`），`ExcludeExplorerFromSingleWindow` 与它同步
+- 发布产物：`dist\TaskbarDrawer-1.16.0-win-x64.zip`，约 260 KB（框架依赖；需 .NET 8 Desktop Runtime）
 
 ## 文档职责
 
