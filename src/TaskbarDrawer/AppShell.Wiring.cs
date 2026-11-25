@@ -79,6 +79,8 @@ public sealed partial class AppShell
     private void WireSingleWindow()
     {
         _single = new SingleWindowMode(Dispatcher.CurrentDispatcher);
+        // 资源管理器默认不计入单窗口模式；面板里可以关掉，改成按普通窗口处理。
+        _single.ExcludeExplorer = _settings.ExcludeExplorerFromSingleWindow;
         // 打开开关时这块屏幕上没有可接管的窗口：提示用户，而不是默默什么都不做。
         _single.NoCandidateOnScreen += () => Safe("single.none", () =>
             Feedback("这块屏幕上没有可接管的窗口"));
@@ -193,6 +195,7 @@ public sealed partial class AppShell
         _panel.ExpandLatestRequested += () => Safe("panel.expandLatest", () => ExpandLatest());
         _panel.ExpandAllRequested += () => Safe("panel.expandAll", () => ExpandAll());
         _panel.SingleWindowRequested += value => Safe("panel.singleWindow", () => SetSingleWindowMode(value));
+        _panel.ExcludeExplorerRequested += value => Safe("panel.excludeExplorer", () => SetExcludeExplorer(value));
         _panel.AutoStartRequested += value => Safe("panel.autoStart", () => SetAutoStart(value));
         _panel.HotkeyChangeRequested += (modifiers, key) => Safe("panel.hotkey", () => ChangeHotkey(modifiers, key));
         _panel.AppIconScaleRequested += value => Safe("panel.appIconSize", () => SetSceneIconSizes(value, null));

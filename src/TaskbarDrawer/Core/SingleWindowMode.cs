@@ -47,6 +47,12 @@ public sealed class SingleWindowMode : IDisposable
     public bool Enabled => _enabled;
 
     /// <summary>
+    /// 资源管理器窗口不计入单窗口模式（默认开启）：不最小化它们，也不因为它们成为前台
+    /// 就收起场景 / 最小化别的窗口。属于场景的资源管理器窗口仍按场景处理。
+    /// </summary>
+    public bool ExcludeExplorer { get; set; } = true;
+
+    /// <summary>
     /// 由组合根注入：返回窗口所属的场景运行组号，0 表示不属于任何场景。
     /// 注入后「同一场景展开的窗口」在单窗口模式下被当成一个整体：切到场景内任一窗口，其余同伴恢复；
     /// 切到场景外时，整个场景收回胶囊（而不是拆成最小化窗口）。
@@ -269,6 +275,16 @@ public sealed class SingleWindowMode : IDisposable
                 return;
             }
 
+            // 资源管理器默认不计入：它既不是「要保留的那个窗口」，也不是「要收掉的别的窗口」。
+            // 属于场景的资源管理器（group > 0）不在此列，仍按场景整体处理。
+            if (ShouldSkipExplorerWindow(ExcludeExplorer, group, WindowEnumerator.IsExplorerWindow(foreground)))
+            {
+                Diagnostics.Info("single",
+                    $"忽略前台 0x{foreground.ToInt64():X}（资源管理器不计入单窗口模式）" +
+                    $" class={NativeMethods.ClassName(foreground)}");
+                return;
+            }
+
             // 每块屏幕完全独立：只处理前台所在的这块屏。
             IntPtr monitor = NativeMethods.MonitorFromWindow(foreground, NativeMethods.MONITOR_DEFAULTTONEAREST);
             monitorDevice = NativeMethods.MonitorDeviceOf(foreground);
@@ -285,6 +301,9 @@ public sealed class SingleWindowMode : IDisposable
                 if (NativeMethods.MonitorFromWindow(candidate.Handle, NativeMethods.MONITOR_DEFAULTTONEAREST) != monitor) continue;
 
                 int memberGroup = groupOf != null ? groupOf(candidate.Handle) : 0;
+                if (ShouldSkipExplorerWindow(
+                        ExcludeExplorer, memberGroup, WindowEnumerator.IsExplorerWindow(candidate.Handle)))
+                    continue;
                 if (memberGroup > 0)
                 {
                     // 别的屏幕的场景：即使有成员被拖到这块屏，也不参与本屏的判定。
@@ -371,6 +390,13 @@ public sealed class SingleWindowMode : IDisposable
     /// </summary>
     public static bool ShouldIgnoreForeground(int group, string exclusionReason)
         => group == 0 && exclusionReason != null;
+
+    /// <summary>
+    /// 资源管理器要不要跳过：开关打开、且它不属于任何场景（属于场景的仍按场景整体处理）。
+    /// 前台判定与候选最小化共用这一条，避免两处语义分叉。
+    /// </summary>
+    public static bool ShouldSkipExplorerWindow(bool excludeExplorer, int group, bool isExplorer)
+        => excludeExplorer && group == 0 && isExplorer;
 
     private static bool IsEligibleForeground(IntPtr hwnd)
     {

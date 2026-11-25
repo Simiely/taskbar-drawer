@@ -29,6 +29,7 @@ public sealed class MainPanelWindow : Window
     private readonly TextBlock _summary;
     private readonly TextBlock _emptyHint;
     private readonly ToggleRow _singleRow;
+    private readonly ToggleRow _excludeExplorerRow;
     private readonly ToggleRow _autoStartRow;
     private readonly TextBlock _stashHotkeyValue;
     private readonly TextBlock _stashEditLabel;
@@ -68,6 +69,10 @@ public sealed class MainPanelWindow : Window
 
         _singleRow = new ToggleRow("单窗口模式", null,
             value => SingleWindowRequested?.Invoke(value), "panel.singleWindow");
+        _excludeExplorerRow = new ToggleRow("资源管理器不计入", null,
+            value => ExcludeExplorerRequested?.Invoke(value), "panel.excludeExplorer");
+        _excludeExplorerRow.Root.ToolTip =
+            "开启后，资源管理器窗口不会被最小化，也不会因它触发单窗口动作；属于场景的资源管理器仍按场景处理";
         _autoStartRow = new ToggleRow("开机自启", null,
             value => AutoStartRequested?.Invoke(value), "panel.autoStart");
 
@@ -106,6 +111,7 @@ public sealed class MainPanelWindow : Window
     public event Action ExpandLatestRequested;
     public event Action ExpandAllRequested;
     public event Action<bool> SingleWindowRequested;
+    public event Action<bool> ExcludeExplorerRequested;
     public event Action<bool> AutoStartRequested;
     public event Action<uint, uint> HotkeyChangeRequested;
 
@@ -208,6 +214,7 @@ public sealed class MainPanelWindow : Window
     }
 
     public void SetSingleWindow(bool value) => _singleRow.Set(value);
+    public void SetExcludeExplorer(bool value) => _excludeExplorerRow.Set(value);
     public void SetAutoStart(bool value) => _autoStartRow.Set(value);
 
     /// <summary>把配置里的两个尺寸套到滑块上（0.8 → 80%）。</summary>
@@ -578,8 +585,10 @@ public sealed class MainPanelWindow : Window
         panel.Children.Add(title);
 
         _singleRow.Root.Margin = new Thickness(0, 8, 0, 0);
+        _excludeExplorerRow.Root.Margin = new Thickness(0, 8, 0, 0);
         _autoStartRow.Root.Margin = new Thickness(0, 8, 0, 0);
         panel.Children.Add(_singleRow.Root);
+        panel.Children.Add(_excludeExplorerRow.Root);
         panel.Children.Add(_autoStartRow.Root);
         return panel;
     }

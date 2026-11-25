@@ -47,6 +47,13 @@ public static class WindowEnumerator
         "OperationStatusWindow"
     };
 
+    /// <summary>资源管理器的文件夹窗口（Win11 的多标签窗口也是 CabinetWClass）。</summary>
+    private static readonly HashSet<string> ExplorerClasses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "CabinetWClass",
+        "ExploreWClass"
+    };
+
     public static List<WindowCandidate> Enumerate(bool includeMinimized)
     {
         var list = new List<WindowCandidate>();
@@ -114,6 +121,10 @@ public static class WindowEnumerator
 
     public static bool IsShellWindow(IntPtr hwnd)
         => hwnd != IntPtr.Zero && ShellClasses.Contains(NativeMethods.ClassName(hwnd));
+
+    /// <summary>资源管理器文件夹窗口：单窗口模式默认不把它算作「别的窗口」。</summary>
+    public static bool IsExplorerWindow(IntPtr hwnd)
+        => hwnd != IntPtr.Zero && ExplorerClasses.Contains(NativeMethods.ClassName(hwnd));
 
     public static bool IsOwnProcessWindow(IntPtr hwnd)
     {

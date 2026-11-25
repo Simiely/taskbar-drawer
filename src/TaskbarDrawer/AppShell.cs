@@ -99,6 +99,7 @@ public sealed partial class AppShell : IDisposable
         _settings.Save();
         _tray.SetAutoStartChecked(autoStart);
         _panel.SetAutoStart(autoStart);
+        _panel.SetExcludeExplorer(_settings.ExcludeExplorerFromSingleWindow);
         _panel.SetSceneIconSizes(_settings.SceneAppIconSize, _settings.SceneBadgeSize);
 
         _tray.SetStatus($"{_stashHotkey.Gesture} 新建场景 / 展开");

@@ -14,6 +14,9 @@ public sealed class AppSettings
     public bool AutoStart { get; set; }
     public bool ShowedWelcome { get; set; }
 
+    /// <summary>资源管理器窗口不计入单窗口模式（1.15.4 起默认开启；面板里可关）。</summary>
+    public bool ExcludeExplorerFromSingleWindow { get; set; } = true;
+
     /// <summary>主面板上次关闭时的位置（DIP）。HasPanelPosition 为 false 时按光标所在屏右下角弹出。</summary>
     public bool HasPanelPosition { get; set; }
     public double PanelLeft { get; set; }
@@ -32,7 +35,7 @@ public sealed class AppSettings
     /// <summary>场景标识的 8 色调色板（#RRGGBB）；可在场景编辑里逐个改色，恢复默认即还原这组值。</summary>
     public List<string> SceneBadgeColors { get; set; } = new(SceneBadge.DefaultPalette);
 
-    private const int CurrentVersion = 4;
+    private const int CurrentVersion = 5;
 
     /// <summary>
     /// 数据目录，默认 <c>%LOCALAPPDATA%\TaskbarDrawer</c>。
@@ -101,6 +104,10 @@ public sealed class AppSettings
                 if (Math.Abs(settings.SceneBadgeSize - 0.60) < 0.0001)
                     settings.SceneBadgeSize = SceneIconMetrics.DefaultBadgeScale;
             }
+
+            // v5 新增「资源管理器不计入单窗口模式」，旧配置没有这个字段（反序列化是 false），
+            // 按新默认值打开；用户在面板里手动关掉后会随 Version=5 原样保留。
+            if (settings.Version < 5) settings.ExcludeExplorerFromSingleWindow = true;
 
             if (settings.Version < CurrentVersion) settings.Version = CurrentVersion;
 

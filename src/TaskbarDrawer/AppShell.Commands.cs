@@ -627,7 +627,7 @@ public sealed partial class AppShell
         RequestSurfaceUpdate();
     }
 
-    // ---------- 设置：单窗口模式 / 开机自启 / 图标尺寸 ----------
+    // ---------- 设置：单窗口模式 / 资源管理器 / 开机自启 / 图标尺寸 ----------
 
     private void SetSingleWindowMode(bool value) => SetSingleWindowMode(value, persist: true);
 
@@ -645,6 +645,17 @@ public sealed partial class AppShell
         _tray.SetSingleWindowChecked(value);
         _panel?.SetSingleWindow(value);
         if (persist) Feedback(value ? "单窗口模式已开启" : "单窗口模式已关闭");
+    }
+
+    /// <summary>资源管理器不计入单窗口模式：只改判定开关，不需要立即重扫窗口。</summary>
+    private void SetExcludeExplorer(bool value)
+    {
+        if (_settings.ExcludeExplorerFromSingleWindow == value) return;
+        _settings.ExcludeExplorerFromSingleWindow = value;
+        _settings.Save();
+        _single.ExcludeExplorer = value;
+        _panel?.SetExcludeExplorer(value);
+        Feedback(value ? "资源管理器已不计入单窗口模式" : "资源管理器已按普通窗口处理");
     }
 
     private void SetAutoStart(bool value)

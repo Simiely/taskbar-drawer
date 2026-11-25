@@ -38,4 +38,10 @@ public class AppSettingsTests
         Assert.Equal(SceneBadge.DefaultPalette[3], palette[3]);
         Assert.Equal(SceneBadge.DefaultPalette[7], palette[7]);
     }
+
+    [Fact]
+    public void 资源管理器默认不计入单窗口模式()
+    {
+        Assert.True(new AppSettings().ExcludeExplorerFromSingleWindow);
+    }
 }
