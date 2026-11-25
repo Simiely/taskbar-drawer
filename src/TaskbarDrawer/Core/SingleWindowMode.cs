@@ -219,6 +219,7 @@ public sealed class SingleWindowMode : IDisposable
 
         int minimized = 0;
         int collapsedCount = 0;
+        int hostedCount = 0;
         string monitorDevice = null;
         _applying = true;
         try
@@ -294,6 +295,9 @@ public sealed class SingleWindowMode : IDisposable
             bool activeScene = group > 0 && SceneOnScreen(group, monitorDevice);
 
             var collapsed = new HashSet<int>();
+            // 辅助窗口的宿主进程（飞书媒体中心的父进程 / 微信小程序宿主的父进程等）：
+            // 它们的窗口不能被当成「别的窗口」最小化，否则打开图片 / 视频时主窗口会消失。
+            var hostPids = ProcessSceneLink.AncestorPids(foreground);
             foreach (var candidate in WindowEnumerator.Enumerate(includeMinimized: false))
             {
                 if (candidate.Handle == foreground) continue;
@@ -314,6 +318,18 @@ public sealed class SingleWindowMode : IDisposable
                     // 场景是整体：收起时连被拖到别的屏幕的成员一起收（归属屏不变）。
                     if (collapsed.Add(memberGroup) && CollapseGroup != null)
                         collapsedCount += CollapseGroup(memberGroup);
+                    continue;
+                }
+
+                // 辅助窗口的宿主（飞书 / 微信主进程等）不是「别的窗口」：打开图片、视频时
+                // 不能把宿主主窗口最小化掉，否则用户看到的就是「主窗口被隐藏」。
+                if (hostPids.Contains(candidate.ProcessId))
+                {
+                    hostedCount++;
+                    Diagnostics.Info("single",
+                        $"保留宿主 0x{candidate.Handle.ToInt64():X}(pid={candidate.ProcessId}) " +
+                        $"class={candidate.ClassName} 前台=0x{foreground.ToInt64():X}" +
+                        $"（辅助窗口的宿主）");
                     continue;
                 }
 
@@ -340,14 +356,14 @@ public sealed class SingleWindowMode : IDisposable
             _applying = false;
         }
 
-        if (minimized + collapsedCount > 0)
+        if (minimized + collapsedCount + hostedCount > 0)
         {
             uint foregroundPid = 0;
             NativeMethods.GetWindowThreadProcessId(foreground, out foregroundPid);
             Diagnostics.Info("single",
                 $"应用 前台=0x{foreground.ToInt64():X}({NativeMethods.ClassName(foreground)} pid={foregroundPid}) " +
                 $"owner=0x{NativeMethods.Owner(foreground).ToInt64():X} screen={monitorDevice ?? "(未知)"} " +
-                $"最小化={minimized} 收回场景={collapsedCount}");
+                $"最小化={minimized} 收回场景={collapsedCount} 宿主={hostedCount}");
         }
         if (minimized + collapsedCount > 0) Applied?.Invoke(minimized + collapsedCount);
     }

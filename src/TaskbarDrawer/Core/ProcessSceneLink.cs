@@ -109,6 +109,35 @@ public static class ProcessSceneLink
     }
 
     /// <summary>
+    /// 前台窗口所在进程的父 / 祖父 pid：辅助窗口打开时，这些进程的窗口不能被最小化
+    /// （飞书媒体中心的父进程就是飞书主进程，pid=19236 的主窗口在另一块屏上）。
+    /// </summary>
+    public static HashSet<uint> AncestorPids(IntPtr hwnd, int maxDepth = 2)
+    {
+        var result = new HashSet<uint>();
+        if (hwnd == IntPtr.Zero) return result;
+
+        NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
+        return AncestorsOf(pid, ParentOf, maxDepth);
+    }
+
+    internal static HashSet<uint> AncestorsOf(uint pid, Func<uint, uint> parentOf, int maxDepth = 2)
+    {
+        var result = new HashSet<uint>();
+        if (pid == 0 || parentOf == null) return result;
+
+        uint current = pid;
+        for (int depth = 0; depth < maxDepth; depth++)
+        {
+            uint parent = parentOf(current);
+            // 遇到 0（父进程已退出 / 是 shell 启动器）或环就停。
+            if (parent == 0 || !result.Add(parent)) break;
+            current = parent;
+        }
+        return result;
+    }
+
+    /// <summary>
     /// 纯规则：找 exe 文件名相同的场景成员，唯一组才返回，多个组不猜。
     /// </summary>
     internal static int ResolveByExe(

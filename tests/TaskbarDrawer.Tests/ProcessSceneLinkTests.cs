@@ -149,4 +149,25 @@ public class ProcessSceneLinkTests
 
         Assert.Equal(0, group);
     }
+
+    [Fact]
+    public void 辅助窗口的父进程链用于保留宿主窗口()
+    {
+        // 现场：飞书媒体中心 pid=69852，父进程是飞书主进程 19236；
+        // 打开图片 / 视频时主窗口（pid=19236）不能被当成「别的窗口」最小化。
+        var ancestors = ProcessSceneLink.AncestorsOf(
+            69852, Tree((69852, 19236), (19236, 8692), (8692, 0)), maxDepth: 2);
+
+        Assert.Contains(19236u, ancestors);
+        Assert.Contains(8692u, ancestors);
+        Assert.DoesNotContain(69852u, ancestors);
+    }
+
+    [Fact]
+    public void 父进程链遇到环会停()
+    {
+        var ancestors = ProcessSceneLink.AncestorsOf(1, pid => pid == 1 ? 2u : 1u, maxDepth: 5);
+
+        Assert.True(ancestors.SetEquals(new uint[] { 1u, 2u }));
+    }
 }
