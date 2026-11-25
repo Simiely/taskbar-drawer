@@ -10,7 +10,9 @@ namespace TaskbarDrawer.Core;
 /// 单窗口模式会把它们当成「切到了另一个应用」，于是把整个场景收回胶囊——
 /// 用户看到的就是「打开微信图片 / 小程序，其它窗口全没了」。
 ///
-/// 这里只回答「这个窗口的进程属于哪个场景」：同进程 → 父进程 → 祖父进程（最多两层）。
+/// 这里只回答「这个窗口的进程属于哪个场景」：同进程 → 父进程 → 祖父进程（最多两层），
+/// 父链对不上时再看可执行文件是否相同（飞书的媒体中心 / 图片视频查看器是一组兄弟进程，
+/// 父进程是主进程、并不在场景里，只靠父链认不出来）。
 /// 不做成员接入——辅助窗口不该进快照、不该占用场景计数、也不该跟场景一起收起 / 展开。
 /// </summary>
 public static class ProcessSceneLink
@@ -46,6 +48,24 @@ public static class ProcessSceneLink
     };
 
     /// <summary>
+    /// 只能算「运行环境」、不能代表某个应用的 exe：它们同名的进程往往是互不相干的应用，
+    /// 不能按「同 exe = 同应用」兜底归组，否则一个脚本窗口会把另一个脚本窗口认成辅助窗口。
+    /// </summary>
+    private static readonly HashSet<string> GenericHosts = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "python.exe",
+        "pythonw.exe",
+        "node.exe",
+        "java.exe",
+        "javaw.exe",
+        "dotnet.exe",
+        "electron.exe",
+        "wscript.exe",
+        "cscript.exe",
+        "mshta.exe"
+    };
+
+    /// <summary>
     /// 这个窗口的进程（或它的父 / 祖父进程）是不是某个场景成员的同一进程；
     /// 是就返回那个组号，否则 0。
     /// </summary>
@@ -56,9 +76,11 @@ public static class ProcessSceneLink
         NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
         if (pid == 0) return 0;
 
-        // 已销毁的成员不算：进程号可能已经被系统复用。
-        var live = members.Where(m => m.ProcessId != 0 && NativeMethods.IsWindow(m.Handle));
-        return ResolveForProcess(pid, LinkOf(pid).ExeName, live, ParentOf, maxDepth: 2);
+        // 已销毁的成员不算：进程号可能已经被系统复用。只枚举一次，下面父链 / 同 exe 都要用。
+        var live = members
+            .Where(m => m.ProcessId != 0 && NativeMethods.IsWindow(m.Handle))
+            .ToArray();
+        return ResolveForProcess(pid, LinkOf(pid).ExeName, live, ParentOf, maxDepth: 2, exeOf: ExeOf);
     }
 
     /// <summary>
@@ -71,11 +93,39 @@ public static class ProcessSceneLink
     /// </summary>
     internal static int ResolveForProcess(
         uint pid, string exeName, IEnumerable<StashedWindow> members,
-        Func<uint, uint> parentOf, int maxDepth = 2)
+        Func<uint, uint> parentOf, int maxDepth = 2, Func<uint, string> exeOf = null)
     {
         if (pid == 0) return 0;
         if (IsShellLauncher(exeName)) return 0;
-        return Resolve(pid, members, parentOf, maxDepth);
+
+        // 父链优先：同进程 / 子进程是最可靠的关系。
+        int group = Resolve(pid, members, parentOf, maxDepth);
+        if (group != 0) return group;
+
+        // 父链对不上（飞书媒体中心与聊天窗口是兄弟进程，共同父进程不在场景里）时，
+        // 再按「同一个 exe」兜底；同一 exe 属于多个场景时仍然不猜。
+        if (exeOf == null || string.IsNullOrEmpty(exeName) || IsGenericHost(exeName)) return 0;
+        return ResolveByExe(exeName, members, exeOf);
+    }
+
+    /// <summary>
+    /// 纯规则：找 exe 文件名相同的场景成员，唯一组才返回，多个组不猜。
+    /// </summary>
+    internal static int ResolveByExe(
+        string exeName, IEnumerable<StashedWindow> members, Func<uint, string> exeOf)
+    {
+        if (string.IsNullOrEmpty(exeName) || members == null || exeOf == null) return 0;
+
+        int found = 0;
+        foreach (var member in members)
+        {
+            if (member == null || member.ProcessId == 0) continue;
+            string exe = exeOf(member.ProcessId);
+            if (!string.Equals(exe, exeName, StringComparison.OrdinalIgnoreCase)) continue;
+            if (found == 0) found = member.GroupId;
+            else if (found != member.GroupId) return 0;
+        }
+        return found;
     }
 
     /// <summary>
@@ -147,6 +197,11 @@ public static class ProcessSceneLink
         _processesAt = DateTime.UtcNow;
     }
 
+    private static string ExeOf(uint pid) => pid == 0 ? null : LinkOf(pid).ExeName;
+
     internal static bool IsShellLauncher(string exeName)
         => !string.IsNullOrEmpty(exeName) && ShellLaunchers.Contains(exeName);
+
+    internal static bool IsGenericHost(string exeName)
+        => !string.IsNullOrEmpty(exeName) && GenericHosts.Contains(exeName);
 }

@@ -22,6 +22,12 @@ public class ProcessSceneLinkTests
         return pid => map.TryGetValue(pid, out uint parent) ? parent : 0;
     }
 
+    private static Func<uint, string> Exes(params (uint pid, string exe)[] pairs)
+    {
+        var map = pairs.ToDictionary(p => p.pid, p => p.exe);
+        return pid => map.TryGetValue(pid, out string exe) ? exe : null;
+    }
+
     [Fact]
     public void 同一进程的辅助窗口归入场景()
     {
@@ -87,5 +93,60 @@ public class ProcessSceneLinkTests
         Assert.False(ProcessSceneLink.IsShellLauncher("Weixin.exe"));
         Assert.False(ProcessSceneLink.IsShellLauncher("WeChatAppEx.exe"));
         Assert.False(ProcessSceneLink.IsShellLauncher(""));
+    }
+
+    [Fact]
+    public void 飞书媒体中心的兄弟进程按同exe归入场景()
+    {
+        // 现场：聊天窗口与媒体中心（打开图片 / 视频）都是 Feishu.exe，父进程是飞书主进程；
+        // 主进程不在场景里，父链走不到成员，只能按同一个 exe 兜底。
+        var members = new[] { Member(1, 100) };
+
+        int group = ProcessSceneLink.ResolveForProcess(
+            200, "Feishu.exe", members,
+            Tree((200, 900)), exeOf: Exes((100, "Feishu.exe"), (200, "Feishu.exe")));
+
+        Assert.Equal(1, group);
+    }
+
+    [Fact]
+    public void 同一exe属于两个场景时不猜()
+    {
+        var members = new[] { Member(1, 100), Member(2, 300) };
+
+        int group = ProcessSceneLink.ResolveForProcess(
+            200, "Feishu.exe", members,
+            Tree((200, 900)),
+            exeOf: Exes((100, "Feishu.exe"), (200, "Feishu.exe"), (300, "Feishu.exe")));
+
+        Assert.Equal(0, group);
+    }
+
+    [Fact]
+    public void 运行环境同名进程不按同exe归组()
+    {
+        // python.exe / node.exe 这类宿主同名进程互不相干，不能因此把别的脚本窗口当辅助窗口。
+        var members = new[] { Member(1, 100) };
+
+        int group = ProcessSceneLink.ResolveForProcess(
+            200, "python.exe", members,
+            Tree((200, 900)), exeOf: Exes((100, "python.exe"), (200, "python.exe")));
+
+        Assert.Equal(0, group);
+        Assert.True(ProcessSceneLink.IsGenericHost("node.exe"));
+        Assert.False(ProcessSceneLink.IsGenericHost("Feishu.exe"));
+    }
+
+    [Fact]
+    public void 资源管理器即使同exe也不走辅助窗口兜底()
+    {
+        // 资源管理器是普通应用（1.15.0）：shell 启动器在父链 / 同 exe 兜底之前就直接归 0。
+        var members = new[] { Member(1, 100) };
+
+        int group = ProcessSceneLink.ResolveForProcess(
+            200, "explorer.exe", members,
+            Tree((200, 900)), exeOf: Exes((100, "explorer.exe"), (200, "explorer.exe")));
+
+        Assert.Equal(0, group);
     }
 }
