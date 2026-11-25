@@ -31,6 +31,11 @@ public sealed class ExclusionWindow : Window
     private ScrollViewer _scroll;
     private bool _pickerOpen;
 
+    /// <summary>展开候选前的高度：收起时还回去，避免窗口越撑越高。</summary>
+    private double _collapsedHeight = 560;
+
+    private const double BaseHeight = 560;
+
     public ExclusionWindow()
     {
         WindowStyle = WindowStyle.None;
@@ -41,7 +46,7 @@ public sealed class ExclusionWindow : Window
         ResizeMode = ResizeMode.NoResize;
         SizeToContent = SizeToContent.Manual;
         Width = 420;
-        Height = 560;
+        Height = BaseHeight;
         MinWidth = 360;
         MinHeight = 320;
         MaxWidth = 700;
@@ -49,7 +54,7 @@ public sealed class ExclusionWindow : Window
 
         _summary = Ui.Text("", 10.5, FontWeights.Normal, Theme.TextMuted);
 
-        _pickerEmpty = Ui.Text("这块屏幕上暂时没有可添加的窗口。",
+        _pickerEmpty = Ui.Text("当前没有可添加的窗口。",
             11, FontWeights.Normal, Theme.TextMuted, wrap: true);
         _pickerEmpty.Margin = new Thickness(2, 8, 0, 0);
         _pickerEmpty.Visibility = Visibility.Collapsed;
@@ -111,6 +116,16 @@ public sealed class ExclusionWindow : Window
 
     /// <summary>贴在主面板旁边：优先放右侧，放不下自动换到左侧。</summary>
     public void PlaceBeside(Window anchor) => Ui.PlaceBeside(this, anchor);
+
+    /// <summary>
+    /// 首次打开就展开候选列表：用户进排除管理就是为了加窗口，
+    /// 不该先点一轮「添加已打开的窗口」再自己找列表在哪。
+    /// </summary>
+    public void ExpandPicker()
+    {
+        if (_pickerOpen) return;
+        TogglePicker();
+    }
 
     protected override void OnSourceInitialized(EventArgs e)
     {
@@ -281,10 +296,59 @@ public sealed class ExclusionWindow : Window
         _pickerOpen = !_pickerOpen;
         _pickerSection.Visibility = _pickerOpen ? Visibility.Visible : Visibility.Collapsed;
         _pickerToggleLabel.Text = _pickerOpen ? "收起窗口列表" : "＋ 添加已打开的窗口";
-        if (!_pickerOpen) return;
+        if (!_pickerOpen)
+        {
+            Height = Math.Max(MinHeight, _collapsedHeight);
+            return;
+        }
 
+        _collapsedHeight = Height;
         RefreshRequested?.Invoke();
-        Dispatcher.BeginInvoke(new Action(() => _pickerSection.BringIntoView()), DispatcherPriority.Loaded);
+
+        // 候选行刚加进视觉树，这一刻 ExtentHeight 还是展开前的值。
+        // 等这一轮布局跑完再量高度、再滚到列表开头，否则窗口不会长高，
+        // 用户会对着一个没变化的小窗以为「列表是空的」。
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            GrowToShowPicker();
+            _pickerSection.BringIntoView();
+        }), DispatcherPriority.Loaded);
+    }
+
+    /// <summary>
+    /// 把窗口撑到能看见候选列表：候选多时宁可让窗口变高，
+    /// 也不要让用户对着一个没变化的小窗自己找滚动条。
+    /// 上限是窗口当前所在屏的工作区，再高就交给窗内滚动。
+    /// </summary>
+    private void GrowToShowPicker()
+    {
+        if (_scroll == null) return;
+        UpdateLayout();
+
+        // Viewport 之外还有边框 / 滚动条，换算成同样的外框高度一并加上。
+        double chrome = Math.Max(0, ActualHeight - _scroll.ViewportHeight);
+        double wanted = _scroll.ExtentHeight + chrome;
+
+        double workTop = double.NaN;
+        double workBottom = double.NaN;
+        IntPtr hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd != IntPtr.Zero && NativeMethods.GetWindowRect(hwnd, out var rect) &&
+            NativeMethods.TryGetMonitorOfRect(rect, out var monitor))
+        {
+            double scale = NativeMethods.DpiOfDevice(monitor.szDevice) / 96.0;
+            workTop = monitor.rcWork.Top / scale;
+            workBottom = monitor.rcWork.Bottom / scale;
+        }
+
+        double limit = double.IsNaN(workTop)
+            ? SystemParameters.WorkArea.Height
+            : workBottom - workTop - 40;
+        double height = Math.Max(MinHeight, Math.Min(wanted, Math.Max(MinHeight, limit)));
+        if (height > Height + 0.5) Height = height;
+
+        // 变高以后可能顶出屏幕底部：整体上移到工作区内。
+        if (!double.IsNaN(workBottom) && Top + Height > workBottom - 8)
+            Top = Math.Max(workTop + 8, workBottom - Height - 8);
     }
 
     private Button BuildRuleRow(WindowExclusion rule, int index)

@@ -684,9 +684,11 @@ public sealed partial class AppShell
     /// <summary>把一个已打开的窗口所属应用加进排除列表（按应用生效，重开窗口仍有效）。</summary>
     private void AddExclusion(string exePath, string processName)
     {
+        Diagnostics.Info("exclusions", $"添加请求 path={exePath} name={processName}");
         var rules = _settings.Exclusions().ToList();
         if (WindowExclusion.ContainsApp(rules, exePath, processName))
         {
+            Diagnostics.Info("exclusions", $"添加跳过：已在列表里 name={processName}");
             Feedback("这个应用已经在排除列表里");
             return;
         }
@@ -694,12 +696,14 @@ public sealed partial class AppShell
         var rule = WindowExclusion.ForApp(exePath, processName);
         if (string.IsNullOrEmpty(rule.DisplayName))
         {
+            Diagnostics.Info("exclusions", $"添加失败：读不到进程信息 path={exePath} name={processName}");
             Feedback("读不到这个应用的进程信息，换一个窗口再试");
             return;
         }
 
         rules.Add(rule);
         SaveExclusions(rules);
+        Diagnostics.Info("exclusions", $"已添加「{rule.DisplayName}」 共 {rules.Count} 项");
         Feedback($"「{rule.DisplayName}」已排除");
     }
 
@@ -710,6 +714,9 @@ public sealed partial class AppShell
         _settings.SingleWindowExclusions = normalized;
         _settings.ExcludeExplorerFromSingleWindow = normalized[0].Enabled;
         _settings.Save();
+        Diagnostics.Info("exclusions", $"已保存 {normalized.Count} 项：" +
+            string.Join("、", normalized.Select(rule =>
+                $"{rule.DisplayName}{(rule.Enabled ? "" : "(关)")}")));
         RefreshExclusionManager();
     }
 

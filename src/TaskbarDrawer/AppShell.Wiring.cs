@@ -286,6 +286,9 @@ public sealed partial class AppShell
         }
 
         _single.SuspendTemporarily(800, "打开场景详情");
+        // 与排除管理互斥：两扇侧窗贴的是面板同一侧，同时开着会互相遮挡。
+        CloseExclusionManager();
+
         var editor = new SceneEditorWindow();
         editor.SetPalette(_settings.BadgePalette());
         editor.RemoveWindowRequested += index =>
@@ -375,6 +378,9 @@ public sealed partial class AppShell
         }
 
         _single.SuspendTemporarily(800, "打开排除管理");
+        // 两扇侧窗贴的是面板同一侧，同时开着必然叠在一起：留一个就好。
+        CloseSceneEditor();
+
         var window = new ExclusionWindow();
         window.EnabledRequested += (index, enabled) =>
             Safe("exclusions.enable", () => SetExclusionEnabled(index, enabled));
@@ -399,6 +405,8 @@ public sealed partial class AppShell
             window.Show();
             window.UpdateLayout();
             if (_panel != null) window.PlaceBeside(_panel);
+            window.ExpandPicker();
+            window.Activate();
         }
         catch (Exception ex)
         {
@@ -424,7 +432,12 @@ public sealed partial class AppShell
         var rules = _settings.Exclusions();
         _single.Exclusions = rules;
         _panel?.SetExclusionSummary(rules[0].Enabled, rules.Count - 1);
-        _exclusionWindow?.Reload(rules, BuildExclusionCandidates(rules));
+
+        var candidates = BuildExclusionCandidates(rules);
+        // 候选数是「添加已打开的窗口」能不能用的唯一指标：用户复测时只看这一行。
+        Diagnostics.Info("exclusions",
+            $"刷新 规则={rules.Count}(资源管理器={(rules[0].Enabled ? "排除" : "不排除")}) 候选={candidates.Count}");
+        _exclusionWindow?.Reload(rules, candidates);
     }
 
     /// <summary>
