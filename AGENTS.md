@@ -1,6 +1,6 @@
 # AGENTS.md · 项目规则
 
-> 📌 **文档基线**：2026-11-25 · `cbfa2ff`（1.16.0：排除管理）　← 前序：2b4ece8
+> 📌 **文档基线**：2026-11-25 · `e44afe3`（1.16.1：排除管理候选列表可见性）　← 前序：cbfa2ff
 > **更新文档 / 代码后，请更新此行**（日期 + 新 commit hash），并在 CHANGELOG 追加版本。
 
 > 生成文件，勿手改。改规则请改 `schema/agents.template.md`，再运行 `python tools/repo-kit/generate.py --root . --write`。
