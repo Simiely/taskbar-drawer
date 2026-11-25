@@ -229,7 +229,7 @@ public sealed class HelpWindow : Window
         var panel = new StackPanel { Margin = new Thickness(0, 16, 0, 0) };
         panel.Children.Add(SectionTitle("常见问题"));
         panel.Children.Add(Bullet("「关闭窗口」和「删除场景」：前者真的关闭这个场景的窗口，快照保留、之后还能按原位打开；后者只删除场景记录，窗口留在桌面上，不再由本程序管理。"));
-        panel.Children.Add(Bullet("单窗口模式：同一场景的窗口算一个窗口。切到场景里的任意窗口，同场景窗口一起保留；切到场景外时整个场景收回胶囊。资源管理器默认不计入（面板开关「资源管理器不计入」），既不会被最小化，也不会因它触发单窗口动作。"));
+        panel.Children.Add(Bullet("单窗口模式：同一场景的窗口算一个窗口。切到场景里的任意窗口，同场景窗口一起保留；切到场景外时整个场景收回胶囊。资源管理器默认不计入（面板开关「资源管理器不计入」），既不会被最小化，也不会因它触发单窗口动作；飞书图片 / 视频这类辅助窗口打开时，同一应用的宿主主窗口不会被最小化。"));
         panel.Children.Add(Bullet("多显示器：一块屏幕一个场景。场景详情只列这块屏幕上的窗口，避免收起 / 展开时跨屏带走窗口。"));
         panel.Children.Add(Bullet("移除窗口后窗口去哪了：展开中的窗口留在原位，只是不再跟着场景收起；收在收纳区里的窗口会被放回桌面，不会凭空消失。"));
         return panel;

@@ -19,7 +19,8 @@ related: []
 
 ## 当前状态
 
-- 版本 **1.15.4**（本地提交；未推送）
+- 版本 **1.15.5**（本地提交；未推送）
+- 1.15.5：修飞书「打开聊天里的图片 / 视频，飞书主窗口被最小化」——媒体中心 pid 的父进程就是飞书主进程，单窗口模式把主窗口当「别的窗口」最小化；现在最小化候选前会取前台进程的父 / 祖父 pid（遇到 shell 截断），宿主窗口直接保留，日志新增 `宿主=N`
 - 1.15.4：修飞书「打开聊天里的图片 / 视频，整个场景被收回胶囊」——媒体中心与聊天窗口是**兄弟进程**（`Feishu.exe`，共同父进程不在场景里），`ProcessSceneLink` 在父链之后增加「同一个 exe」兜底，运行环境宿主（`python.exe` / `node.exe` / `java.exe` 等）不参与；面板新增「资源管理器不计入」开关（默认开启），资源管理器窗口不被最小化、也不因它触发单窗口动作，属于场景的仍按场景处理；设置升 v5
 - 版本 **1.15.3**（代码 `8e8d66a`；文档整理 `abaa907`；Release `v1.15.3` 已发布）
 - 1.15.3：修「跨屏拖动后不触发收起」——拖动前后前台窗口没变，系统不发 `EVENT_SYSTEM_FOREGROUND`；新增 `EVENT_SYSTEM_MOVESIZEEND` 监听，拖动结束后按当前前台补一次判定
@@ -47,7 +48,7 @@ related: []
 - 1.8.1 走查修复：18 条链路 → 13 个问题、修 11 个，见 [walkthrough/report-1.md](walkthrough/report-1.md)
 - 1.8.0 结构：`AppShell` 拆三片（`AppShell.cs` 组合根 / `.Commands.cs` 命令 / `.Wiring.cs` 接线）
 - 1.7.1 胶囊 z 序：事件驱动 + 250 ms 守卫，实测 74–176 ms
-- 验收基线：`dotnet build` 0 警告 0 错误、`dotnet test` **171/171**、`REPO CHECK: PASS`
+- 验收基线：`dotnet build` 0 警告 0 错误、`dotnet test` **173/173**、`REPO CHECK: PASS`
 - 主线一句话：`AppShell` 是组合根（三片），收纳走 `StashAllService`（运行时组），快照走 `WorkspaceService`，两者靠 `SavedGroup.Id` / `StashGroup.SavedId` 关联；窗口隐藏与图标装饰在 `WindowStash`；**场景回到屏幕必须走 `FinishSceneOpen` 收尾**（坑 10）；**弹窗不是窗口，按窗口簇处理**（坑 11）
 
 ## 待办（按收益排序）
@@ -75,6 +76,7 @@ P1 / P2（详细调研与取舍见 [剩余待办调研与建议](design/backlog-
 ## 走查（scenario-walkthrough）
 
 - 第 1 轮已完成：[能力清单](walkthrough/capabilities.md) → [素材 + 矩阵](walkthrough/scenarios.md) → [报告](walkthrough/report-1.md)，修掉 11 个问题
+- **1.15.5 实机复测**：飞书场景展开 / 不展开两种状态下打开聊天里的图片、视频，飞书主窗口都不应被最小化；日志出现 `保留宿主 0x…(pid=19236)` 即命中
 - **第 2 轮待做**：① 实机回归 report-1 的 5 步单窗口复测；② 补 S-14 多屏链（需双显示器）；③ 开 1 个新探索会话（charter：`Explore 场景详情与追加列表 with 多窗口/最小化状态 to discover 状态残留与禁用态陷阱`）；④ 收敛判据见方法 C1（🔴 清零 + 两轮递减 + 回归全绿）
 
 ## 已落地：任务栏残留圆点（1.6.7 起）
@@ -101,7 +103,7 @@ P1 / P2（详细调研与取舍见 [剩余待办调研与建议](design/backlog-
 - 胶囊 z 序（1.7.1）：实机点几次任务栏 / 点任务栏按钮切几次窗口，看 `logs\app-*.log` 的 `[chip] 被任务栏压住 N 枚 → 已复位 来源=… 耗时=…ms`——`来源=前台切换` 且耗时几十毫秒为正常；出现 `(非事件触发)` 说明有一路事件没覆盖到，需要补触发源
 - UI 用 UI Automation 找元素 + 真实鼠标点击验证；不要用模拟全局热键，会误触发收纳
 - 配置检查：`settings.json` 的 `Version` 应为 5，尺寸 0.90 / 0.55，`SceneBadgeColors` 第 8 项 `#000000`，`ExcludeExplorerFromSingleWindow` 默认 `true`
-- 发布产物：`dist\TaskbarDrawer-1.15.4-win-x64.zip`，约 260 KB（框架依赖；需 .NET 8 Desktop Runtime）
+- 发布产物：`dist\TaskbarDrawer-1.15.5-win-x64.zip`，约 260 KB（框架依赖；需 .NET 8 Desktop Runtime）
 
 ## 文档职责
 
