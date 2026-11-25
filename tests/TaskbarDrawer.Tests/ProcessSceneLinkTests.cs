@@ -25,7 +25,7 @@ public class ProcessSceneLinkTests
     private static Func<uint, string> Exes(params (uint pid, string exe)[] pairs)
     {
         var map = pairs.ToDictionary(p => p.pid, p => p.exe);
-        return pid => map.TryGetValue(pid, out string exe) ? exe : null;
+        return pid => map.TryGetValue(pid, out string? exe) ? exe ?? string.Empty : string.Empty;
     }
 
     [Fact]
