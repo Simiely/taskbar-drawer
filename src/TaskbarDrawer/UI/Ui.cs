@@ -7,9 +7,11 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Media3D;
 using TaskbarDrawer.Core;
+using TaskbarDrawer.Interop;
 
 namespace TaskbarDrawer.UI;
 
@@ -79,6 +81,98 @@ internal static class Ui
             try { window.DragMove(); } catch (InvalidOperationException) { /* 已松手 */ }
         };
         return strip;
+    }
+
+    /// <summary>
+    /// 把侧窗贴在主面板旁边：优先放右侧；面板贴屏幕右边放不下时自动换到左侧。
+    /// 高度上限按侧窗将要落到的那块屏算——OnSourceInitialized 时窗口还在主屏，
+    /// 主屏 4K + 副屏 1080p 会按主屏算出上限，右下角一拖就把窗口拉出副屏底部。
+    /// </summary>
+    internal static void PlaceBeside(Window window, Window anchor)
+    {
+        if (window == null || anchor == null) return;
+
+        const double gap = 10;
+        double width = window.ActualWidth > 0 ? window.ActualWidth : window.Width;
+        double height = window.ActualHeight > 0 ? window.ActualHeight : window.Height;
+        double left = anchor.Left + anchor.ActualWidth + gap;
+        double top = anchor.Top;
+
+        IntPtr hwnd = new WindowInteropHelper(anchor).Handle;
+        if (hwnd == IntPtr.Zero || !NativeMethods.GetWindowRect(hwnd, out var rect) ||
+            !NativeMethods.TryGetMonitorOfRect(rect, out var monitor))
+        {
+            window.Left = left;
+            window.Top = top;
+            return;
+        }
+
+        // 面板 / 侧窗必须在同一块屏：工作区从物理像素换成面板所在屏的 DIP。
+        double scale = NativeMethods.DpiOfDevice(monitor.szDevice) / 96.0;
+        double workLeft = monitor.rcWork.Left / scale;
+        double workTop = monitor.rcWork.Top / scale;
+        double workRight = monitor.rcWork.Right / scale;
+        double workBottom = monitor.rcWork.Bottom / scale;
+
+        if (left + width > workRight - 8) left = anchor.Left - width - gap;
+        window.Left = Math.Min(Math.Max(left, workLeft + 8), Math.Max(workLeft + 8, workRight - width - 8));
+        window.Top = Math.Min(Math.Max(top, workTop + 8), Math.Max(workTop + 8, workBottom - height - 8));
+
+        window.MaxHeight = Math.Max(window.MinHeight, workBottom - workTop - 40);
+        if (window.Height > window.MaxHeight) window.Height = window.MaxHeight;
+    }
+
+    /// <summary>
+    /// 右下角的调整手柄：拖动按像素改宽高，窗口尺寸受调用方设置的 Min/Max 约束。
+    /// </summary>
+    internal static FrameworkElement ResizeGrip(Window window, string tooltip)
+    {
+        var grip = new TextBlock
+        {
+            Text = "◢",
+            FontFamily = Font,
+            FontSize = 13,
+            Foreground = Theme.TextMuted,
+            Cursor = Cursors.SizeNWSE,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            Margin = new Thickness(0, 0, 6, 2),
+            ToolTip = tooltip
+        };
+
+        Point origin = default;
+        Size start = default;
+        bool dragging = false;
+
+        grip.MouseLeftButtonDown += (_, e) =>
+        {
+            if (e.ButtonState != MouseButtonState.Pressed) return;
+            dragging = true;
+            origin = e.GetPosition(window);
+            start = new Size(window.ActualWidth, window.ActualHeight);
+            grip.CaptureMouse();
+            e.Handled = true;
+        };
+        grip.MouseMove += (_, e) =>
+        {
+            if (!dragging || e.LeftButton != MouseButtonState.Pressed) return;
+            Point now = e.GetPosition(window);
+            double width = Math.Max(window.MinWidth, start.Width + (now.X - origin.X));
+            double height = Math.Max(window.MinHeight, start.Height + (now.Y - origin.Y));
+            window.Width = Math.Min(Math.Min(width, window.MaxWidth), SystemParameters.VirtualScreenWidth);
+            window.Height = window.MaxHeight > 0
+                ? Math.Min(height, window.MaxHeight)
+                : Math.Min(height, SystemParameters.VirtualScreenHeight);
+        };
+        grip.MouseLeftButtonUp += (_, e) =>
+        {
+            dragging = false;
+            grip.ReleaseMouseCapture();
+            e.Handled = true;
+        };
+        // 切换窗口 / 被其它窗口抢走捕获时，必须结束拖动，否则鼠标再移动会继续改大小。
+        grip.LostMouseCapture += (_, _) => dragging = false;
+        return grip;
     }
 
     /// <summary>事件源到窗口之间的任一层是可点击控件，就认为这次按下不该触发拖窗。</summary>

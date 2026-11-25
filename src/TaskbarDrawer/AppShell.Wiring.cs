@@ -79,8 +79,8 @@ public sealed partial class AppShell
     private void WireSingleWindow()
     {
         _single = new SingleWindowMode(Dispatcher.CurrentDispatcher);
-        // 资源管理器默认不计入单窗口模式；面板里可以关掉，改成按普通窗口处理。
-        _single.ExcludeExplorer = _settings.ExcludeExplorerFromSingleWindow;
+        // 排除列表（默认只有资源管理器）；面板的「排除管理」里勾选 / 增删，改完立刻生效。
+        _single.Exclusions = _settings.Exclusions();
         // 打开开关时这块屏幕上没有可接管的窗口：提示用户，而不是默默什么都不做。
         _single.NoCandidateOnScreen += () => Safe("single.none", () =>
             Feedback("这块屏幕上没有可接管的窗口"));
@@ -190,12 +190,13 @@ public sealed partial class AppShell
             {
                 _single.SuspendTemporarily(500, "收起主面板");
                 CloseSceneEditor();
+                CloseExclusionManager();
             });
         };
         _panel.ExpandLatestRequested += () => Safe("panel.expandLatest", () => ExpandLatest());
         _panel.ExpandAllRequested += () => Safe("panel.expandAll", () => ExpandAll());
         _panel.SingleWindowRequested += value => Safe("panel.singleWindow", () => SetSingleWindowMode(value));
-        _panel.ExcludeExplorerRequested += value => Safe("panel.excludeExplorer", () => SetExcludeExplorer(value));
+        _panel.ExclusionsRequested += () => Safe("panel.exclusions", OpenExclusionManager);
         _panel.AutoStartRequested += value => Safe("panel.autoStart", () => SetAutoStart(value));
         _panel.HotkeyChangeRequested += (modifiers, key) => Safe("panel.hotkey", () => ChangeHotkey(modifiers, key));
         _panel.AppIconScaleRequested += value => Safe("panel.appIconSize", () => SetSceneIconSizes(value, null));
@@ -354,6 +355,129 @@ public sealed partial class AppShell
 
         int runningGroupId = _stash.GroupIdOfSaved(detail.Id);
         editor.Reload(detail, runningGroupId, BuildAppendableWindows(detail, runningGroupId));
+    }
+
+    /// <summary>
+    /// 排除管理：贴在主面板右侧的非模态窗口；已经开着就置前并刷新。
+    /// 勾选 / 删除 / 添加都立刻落盘并推给单窗口模式，不需要关掉面板重开。
+    /// </summary>
+    private void OpenExclusionManager()
+    {
+        if (_disposed) return;
+
+        if (_exclusionWindow != null)
+        {
+            _single.SuspendTemporarily(500, "打开排除管理");
+            RefreshExclusionManager();
+            try { _exclusionWindow.Activate(); } catch { /* 窗口可能正在关闭 */ }
+            if (_panel != null && _panel.IsVisible) _exclusionWindow.PlaceBeside(_panel);
+            return;
+        }
+
+        _single.SuspendTemporarily(800, "打开排除管理");
+        var window = new ExclusionWindow();
+        window.EnabledRequested += (index, enabled) =>
+            Safe("exclusions.enable", () => SetExclusionEnabled(index, enabled));
+        window.DeleteRequested += index =>
+            Safe("exclusions.delete", () => DeleteExclusion(index));
+        window.AddRequested += (path, name) =>
+            Safe("exclusions.add", () => AddExclusion(path, name));
+        window.RefreshRequested += () => Safe("exclusions.refresh", RefreshExclusionManager);
+        window.Closed += (_, _) =>
+        {
+            _single.SuspendTemporarily(500, "关闭排除管理");
+            if (ReferenceEquals(_exclusionWindow, window)) _exclusionWindow = null;
+        };
+
+        _exclusionWindow = window;
+        RefreshExclusionManager();
+
+        try
+        {
+            // 隐藏的窗口不能当 Owner；面板可见时挂上，保证排除管理始终跟着面板的层级。
+            if (_panel != null && _panel.IsVisible) window.Owner = _panel;
+            window.Show();
+            window.UpdateLayout();
+            if (_panel != null) window.PlaceBeside(_panel);
+        }
+        catch (Exception ex)
+        {
+            Diagnostics.Write("exclusion manager", ex);
+            CloseExclusionManager();
+        }
+    }
+
+    /// <summary>关闭排除管理；先摘引用再关，避免 Closed 里再次走刷新。</summary>
+    private void CloseExclusionManager()
+    {
+        var window = _exclusionWindow;
+        _exclusionWindow = null;
+        if (window == null) return;
+        _single.SuspendTemporarily(500, "关闭排除管理");
+        try { window.Close(); } catch { /* 窗口可能已经在关闭 */ }
+    }
+
+    /// <summary>把最新排除列表推给单窗口模式 / 面板摘要 / 排除管理窗（开着时才刷新窗口）。</summary>
+    private void RefreshExclusionManager()
+    {
+        if (_disposed) return;
+        var rules = _settings.Exclusions();
+        _single.Exclusions = rules;
+        _panel?.SetExclusionSummary(rules[0].Enabled, rules.Count - 1);
+        _exclusionWindow?.Reload(rules, BuildExclusionCandidates(rules));
+    }
+
+    /// <summary>
+    /// 「添加已打开的窗口」的候选：按应用聚合，一个应用一行。
+    /// 资源管理器由内置项覆盖，不再出现在候选里。
+    /// </summary>
+    private IReadOnlyList<ExclusionCandidate> BuildExclusionCandidates(
+        IReadOnlyList<WindowExclusion> rules)
+    {
+        var apps = new Dictionary<string, CandidateBuilder>(StringComparer.OrdinalIgnoreCase);
+        foreach (var window in _workspace.EnumerateWindows())
+        {
+            string path = window.ExePath ?? "";
+            string name = WindowExclusion.NormalizeProcessName(window.ProcessName);
+            if (name.Length == 0) name = WindowExclusion.FileNameOf(path);
+            if (name.Length == 0 && path.Length == 0) continue;
+            if (string.Equals(name, WindowExclusion.ExplorerProcess, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            string key = path.Length > 0 ? WindowIdentity.NormalizePath(path) : name;
+            if (!apps.TryGetValue(key, out var builder))
+            {
+                builder = new CandidateBuilder(path, name);
+                apps[key] = builder;
+            }
+            builder.Count++;
+        }
+
+        return apps.Values
+            .Select(builder => new ExclusionCandidate
+            {
+                Path = builder.Path,
+                ProcessName = builder.Name,
+                DisplayName = WindowExclusion.DisplayNameOf(builder.Path, builder.Name),
+                WindowCount = builder.Count,
+                Excluded = WindowExclusion.MatchesAny(rules, false, builder.Path, builder.Name)
+            })
+            .OrderBy(candidate => candidate.DisplayName, StringComparer.CurrentCultureIgnoreCase)
+            .ToArray();
+    }
+
+    /// <summary>候选聚合的中间状态：同一个应用只保留第一份路径与窗口计数。</summary>
+    private sealed class CandidateBuilder
+    {
+        public CandidateBuilder(string path, string name)
+        {
+            Path = path;
+            Name = name;
+        }
+
+        public string Path { get; }
+        public string Name { get; }
+        public int Count { get; set; }
     }
 
     /// <summary>

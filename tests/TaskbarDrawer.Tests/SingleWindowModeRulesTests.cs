@@ -80,17 +80,13 @@ public class SingleWindowModeRulesTests
     }
 
     [Fact]
-    public void 资源管理器默认不计入单窗口模式()
+    public void 排除项只跳过不属于场景的窗口()
     {
-        // 开关打开 + 不属于任何场景：前台 / 候选都跳过，既不动它也不因它动别人。
-        Assert.True(SingleWindowMode.ShouldSkipExplorerWindow(true, 0, isExplorer: true));
-        // 属于场景的资源管理器仍按场景整体处理，不能跳过。
-        Assert.False(SingleWindowMode.ShouldSkipExplorerWindow(true, 3, isExplorer: true));
-    }
-
-    [Fact]
-    public void 关掉开关后资源管理器按普通窗口处理()
-    {
-        Assert.False(SingleWindowMode.ShouldSkipExplorerWindow(false, 0, isExplorer: true));
+        // 命中排除项 + 不属于任何场景：前台 / 候选都跳过，既不动它也不因它动别人。
+        Assert.True(SingleWindowMode.ShouldSkipExcludedWindow(0, excluded: true));
+        // 属于场景的窗口仍按场景整体处理，不能跳过。
+        Assert.False(SingleWindowMode.ShouldSkipExcludedWindow(3, excluded: true));
+        // 没命中排除项：照常按普通窗口处理。
+        Assert.False(SingleWindowMode.ShouldSkipExcludedWindow(0, excluded: false));
     }
 }

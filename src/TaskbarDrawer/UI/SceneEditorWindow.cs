@@ -173,42 +173,7 @@ public sealed class SceneEditorWindow : Window
     }
 
     /// <summary>贴在主面板旁边：优先放右侧；面板贴屏幕右边放不下时自动换到左侧。</summary>
-    public void PlaceBeside(Window anchor)
-    {
-        if (anchor == null) return;
-
-        const double gap = 10;
-        double width = ActualWidth > 0 ? ActualWidth : Width;
-        double height = ActualHeight > 0 ? ActualHeight : Height;
-        double left = anchor.Left + anchor.ActualWidth + gap;
-        double top = anchor.Top;
-
-        IntPtr hwnd = new WindowInteropHelper(anchor).Handle;
-        if (hwnd == IntPtr.Zero || !NativeMethods.GetWindowRect(hwnd, out var rect) ||
-            !NativeMethods.TryGetMonitorOfRect(rect, out var monitor))
-        {
-            Left = left;
-            Top = top;
-            return;
-        }
-
-        // 面板 / 详情必须在同一块屏：工作区从物理像素换成面板所在屏的 DIP。
-        double scale = NativeMethods.DpiOfDevice(monitor.szDevice) / 96.0;
-        double workLeft = monitor.rcWork.Left / scale;
-        double workTop = monitor.rcWork.Top / scale;
-        double workRight = monitor.rcWork.Right / scale;
-        double workBottom = monitor.rcWork.Bottom / scale;
-
-        if (left + width > workRight - 8) left = anchor.Left - width - gap;
-        Left = Math.Min(Math.Max(left, workLeft + 8), Math.Max(workLeft + 8, workRight - width - 8));
-        Top = Math.Min(Math.Max(top, workTop + 8), Math.Max(workTop + 8, workBottom - height - 8));
-
-        // 高度上限必须在这里按「详情窗将要落到的那块屏」算：
-        // OnSourceInitialized 执行时窗口还在主屏，主屏 4K + 副屏 1080p 会按主屏算出上限，
-        // 右下角一拖就把窗口拉出副屏底部，底部的删除 / 重命名点不到。
-        MaxHeight = Math.Max(MinHeight, workBottom - workTop - 40);
-        if (Height > MaxHeight) Height = MaxHeight;
-    }
+    public void PlaceBeside(Window anchor) => Ui.PlaceBeside(this, anchor);
 
     protected override void OnSourceInitialized(EventArgs e)
     {
@@ -266,55 +231,7 @@ public sealed class SceneEditorWindow : Window
     }
 
     /// <summary>右下角的调整手柄：拖动按像素改宽高，窗口高度不跟内容无限增长。</summary>
-    private FrameworkElement BuildResizeGrip()
-    {
-        var grip = new TextBlock
-        {
-            Text = "◢",
-            FontFamily = Ui.Font,
-            FontSize = 13,
-            Foreground = Theme.TextMuted,
-            Cursor = Cursors.SizeNWSE,
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Bottom,
-            Margin = new Thickness(0, 0, 6, 2),
-            ToolTip = "拖动调整详情窗大小"
-        };
-
-        Point origin = default;
-        Size start = default;
-        bool dragging = false;
-
-        grip.MouseLeftButtonDown += (_, e) =>
-        {
-            if (e.ButtonState != MouseButtonState.Pressed) return;
-            dragging = true;
-            origin = e.GetPosition(this);
-            start = new Size(ActualWidth, ActualHeight);
-            grip.CaptureMouse();
-            e.Handled = true;
-        };
-        grip.MouseMove += (_, e) =>
-        {
-            if (!dragging || e.LeftButton != MouseButtonState.Pressed) return;
-            Point now = e.GetPosition(this);
-            double width = Math.Max(MinWidth, start.Width + (now.X - origin.X));
-            double height = Math.Max(MinHeight, start.Height + (now.Y - origin.Y));
-            Width = Math.Min(Math.Min(width, MaxWidth), SystemParameters.VirtualScreenWidth);
-            Height = MaxHeight > 0
-                ? Math.Min(height, MaxHeight)
-                : Math.Min(height, SystemParameters.VirtualScreenHeight);
-        };
-        grip.MouseLeftButtonUp += (_, e) =>
-        {
-            dragging = false;
-            grip.ReleaseMouseCapture();
-            e.Handled = true;
-        };
-        // 切换窗口 / 被其它窗口抢走捕获时，必须结束拖动，否则鼠标再移动会继续改大小。
-        grip.LostMouseCapture += (_, _) => dragging = false;
-        return grip;
-    }
+    private FrameworkElement BuildResizeGrip() => Ui.ResizeGrip(this, "拖动调整详情窗大小");
 
     private FrameworkElement BuildHeader()
     {

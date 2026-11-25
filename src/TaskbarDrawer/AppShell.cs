@@ -30,6 +30,7 @@ public sealed partial class AppShell : IDisposable
     private MainPanelWindow _panel;
     private SceneEditorWindow _sceneEditor;
     private string _sceneEditorId;
+    private ExclusionWindow _exclusionWindow;
     private HelpWindow _helpWindow;
     private RuleSet _rules;
     private RuleRunner _runner;
@@ -99,7 +100,7 @@ public sealed partial class AppShell : IDisposable
         _settings.Save();
         _tray.SetAutoStartChecked(autoStart);
         _panel.SetAutoStart(autoStart);
-        _panel.SetExcludeExplorer(_settings.ExcludeExplorerFromSingleWindow);
+        RefreshExclusionManager();
         _panel.SetSceneIconSizes(_settings.SceneAppIconSize, _settings.SceneBadgeSize);
 
         _tray.SetStatus($"{_stashHotkey.Gesture} 新建场景 / 展开");
@@ -480,7 +481,8 @@ public sealed partial class AppShell : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        // 场景详情 / 说明是独立窗口：不先关掉，后面的关闭流程会卡在它们的消息循环里。
+        // 场景详情 / 排除管理 / 说明是独立窗口：不先关掉，后面的关闭流程会卡在它们的消息循环里。
+        try { _exclusionWindow?.Close(); } catch { /* 退出路径不再抛 */ }
         try { _sceneEditor?.Close(); } catch { /* 退出路径不再抛 */ }
         try { _helpWindow?.Close(); } catch { /* 退出路径不再抛 */ }
 

@@ -47,10 +47,11 @@ public sealed class SingleWindowMode : IDisposable
     public bool Enabled => _enabled;
 
     /// <summary>
-    /// 资源管理器窗口不计入单窗口模式（默认开启）：不最小化它们，也不因为它们成为前台
-    /// 就收起场景 / 最小化别的窗口。属于场景的资源管理器窗口仍按场景处理。
+    /// 排除列表（默认只有内置的资源管理器）：命中的应用不参与单窗口模式——
+    /// 成为前台时不收起场景 / 不最小化别的窗口，它自己的窗口也不会被最小化。
+    /// 属于场景的窗口仍按场景处理，不受排除影响。
     /// </summary>
-    public bool ExcludeExplorer { get; set; } = true;
+    public IReadOnlyList<WindowExclusion> Exclusions { get; set; } = Array.Empty<WindowExclusion>();
 
     /// <summary>
     /// 由组合根注入：返回窗口所属的场景运行组号，0 表示不属于任何场景。
@@ -276,12 +277,32 @@ public sealed class SingleWindowMode : IDisposable
                 return;
             }
 
-            // 资源管理器默认不计入：它既不是「要保留的那个窗口」，也不是「要收掉的别的窗口」。
-            // 属于场景的资源管理器（group > 0）不在此列，仍按场景整体处理。
-            if (ShouldSkipExplorerWindow(ExcludeExplorer, group, WindowEnumerator.IsExplorerWindow(foreground)))
+            // 排除项（默认含资源管理器）：它既不是「要保留的那个窗口」，也不是「要收掉的别的窗口」。
+            // 属于场景的窗口（group > 0）不在此列，仍按场景整体处理。
+            var rules = Exclusions;
+            Dictionary<uint, (string Path, string Name)> processCache = null;
+            bool IsExcluded(IntPtr hwnd)
+            {
+                if (rules == null || rules.Count == 0) return false;
+                bool explorer = WindowEnumerator.IsExplorerWindow(hwnd);
+                // 只有内置项时不需要读进程信息（explorer 按窗口类名就能认）。
+                if (!HasUserRules(rules))
+                    return WindowExclusion.MatchesAny(rules, explorer, "", "");
+
+                NativeMethods.GetWindowThreadProcessId(hwnd, out uint pid);
+                processCache ??= new Dictionary<uint, (string Path, string Name)>();
+                if (!processCache.TryGetValue(pid, out var info))
+                {
+                    info = WindowExclusion.ProcessInfoOf(pid);
+                    processCache[pid] = info;
+                }
+                return WindowExclusion.MatchesAny(rules, explorer, info.Path, info.Name);
+            }
+
+            if (ShouldSkipExcludedWindow(group, IsExcluded(foreground)))
             {
                 Diagnostics.Info("single",
-                    $"忽略前台 0x{foreground.ToInt64():X}（资源管理器不计入单窗口模式）" +
+                    $"忽略前台 0x{foreground.ToInt64():X}（排除项）" +
                     $" class={NativeMethods.ClassName(foreground)}");
                 return;
             }
@@ -305,9 +326,8 @@ public sealed class SingleWindowMode : IDisposable
                 if (NativeMethods.MonitorFromWindow(candidate.Handle, NativeMethods.MONITOR_DEFAULTTONEAREST) != monitor) continue;
 
                 int memberGroup = groupOf != null ? groupOf(candidate.Handle) : 0;
-                if (ShouldSkipExplorerWindow(
-                        ExcludeExplorer, memberGroup, WindowEnumerator.IsExplorerWindow(candidate.Handle)))
-                    continue;
+                // 场景成员不参与排除判定：先看组，只有不在场景里才需要读进程信息。
+                if (memberGroup == 0 && IsExcluded(candidate.Handle)) continue;
                 if (memberGroup > 0)
                 {
                     // 别的屏幕的场景：即使有成员被拖到这块屏，也不参与本屏的判定。
@@ -408,11 +428,21 @@ public sealed class SingleWindowMode : IDisposable
         => group == 0 && exclusionReason != null;
 
     /// <summary>
-    /// 资源管理器要不要跳过：开关打开、且它不属于任何场景（属于场景的仍按场景整体处理）。
-    /// 前台判定与候选最小化共用这一条，避免两处语义分叉。
+    /// 排除项要不要跳过：只对不属于任何场景的窗口生效。
+    /// 属于场景的窗口（含资源管理器）仍按场景整体处理，不能因为被排除就留在桌面上。
     /// </summary>
-    public static bool ShouldSkipExplorerWindow(bool excludeExplorer, int group, bool isExplorer)
-        => excludeExplorer && group == 0 && isExplorer;
+    public static bool ShouldSkipExcludedWindow(int group, bool excluded)
+        => excluded && group == 0;
+
+    /// <summary>排除列表里是否有用户添加的应用（决定要不要读进程信息）。</summary>
+    private static bool HasUserRules(IReadOnlyList<WindowExclusion> rules)
+    {
+        foreach (var rule in rules)
+        {
+            if (rule != null && rule.Enabled && !rule.BuiltIn) return true;
+        }
+        return false;
+    }
 
     private static bool IsEligibleForeground(IntPtr hwnd)
     {

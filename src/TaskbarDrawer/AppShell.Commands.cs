@@ -647,15 +647,70 @@ public sealed partial class AppShell
         if (persist) Feedback(value ? "单窗口模式已开启" : "单窗口模式已关闭");
     }
 
-    /// <summary>资源管理器不计入单窗口模式：只改判定开关，不需要立即重扫窗口。</summary>
-    private void SetExcludeExplorer(bool value)
+    // ---------- 排除管理（单窗口模式） ----------
+
+    /// <summary>勾选 / 取消某一项；资源管理器是内置项，同样可以关闭。</summary>
+    private void SetExclusionEnabled(int index, bool enabled)
     {
-        if (_settings.ExcludeExplorerFromSingleWindow == value) return;
-        _settings.ExcludeExplorerFromSingleWindow = value;
+        var rules = _settings.Exclusions().ToList();
+        if (index < 0 || index >= rules.Count) return;
+        if (rules[index].Enabled == enabled) return;
+
+        rules[index].Enabled = enabled;
+        var changed = rules[index];
+        SaveExclusions(rules);
+        Feedback(changed.BuiltIn
+            ? (enabled ? "资源管理器已不计入单窗口模式" : "资源管理器已按普通窗口处理")
+            : (enabled ? $"「{changed.DisplayName}」已排除" : $"「{changed.DisplayName}」不再排除"));
+    }
+
+    /// <summary>删除用户添加的项；内置资源管理器只能关闭，不能删除。</summary>
+    private void DeleteExclusion(int index)
+    {
+        var rules = _settings.Exclusions().ToList();
+        if (index < 0 || index >= rules.Count) return;
+        if (rules[index].BuiltIn)
+        {
+            Feedback("资源管理器是内置项，只能关闭，不能删除");
+            return;
+        }
+
+        string name = rules[index].DisplayName;
+        rules.RemoveAt(index);
+        SaveExclusions(rules);
+        Feedback($"已删除排除项「{name}」");
+    }
+
+    /// <summary>把一个已打开的窗口所属应用加进排除列表（按应用生效，重开窗口仍有效）。</summary>
+    private void AddExclusion(string exePath, string processName)
+    {
+        var rules = _settings.Exclusions().ToList();
+        if (WindowExclusion.ContainsApp(rules, exePath, processName))
+        {
+            Feedback("这个应用已经在排除列表里");
+            return;
+        }
+
+        var rule = WindowExclusion.ForApp(exePath, processName);
+        if (string.IsNullOrEmpty(rule.DisplayName))
+        {
+            Feedback("读不到这个应用的进程信息，换一个窗口再试");
+            return;
+        }
+
+        rules.Add(rule);
+        SaveExclusions(rules);
+        Feedback($"「{rule.DisplayName}」已排除");
+    }
+
+    /// <summary>排除列表的唯一落盘入口：整理 → 保存 → 立刻推给单窗口模式和界面。</summary>
+    private void SaveExclusions(IReadOnlyList<WindowExclusion> rules)
+    {
+        var normalized = WindowExclusion.Normalize(rules);
+        _settings.SingleWindowExclusions = normalized;
+        _settings.ExcludeExplorerFromSingleWindow = normalized[0].Enabled;
         _settings.Save();
-        _single.ExcludeExplorer = value;
-        _panel?.SetExcludeExplorer(value);
-        Feedback(value ? "资源管理器已不计入单窗口模式" : "资源管理器已按普通窗口处理");
+        RefreshExclusionManager();
     }
 
     private void SetAutoStart(bool value)

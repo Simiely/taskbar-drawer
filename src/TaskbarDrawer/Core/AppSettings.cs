@@ -14,7 +14,13 @@ public sealed class AppSettings
     public bool AutoStart { get; set; }
     public bool ShowedWelcome { get; set; }
 
-    /// <summary>资源管理器窗口不计入单窗口模式（1.15.4 起默认开启；面板里可关）。</summary>
+    /// <summary>
+    /// 单窗口模式的排除列表：内置资源管理器（不可删除，默认勾选）+ 用户添加的应用。
+    /// 列表由 <see cref="WindowExclusion.Normalize"/> 整理，读取端永远拿到至少一项。
+    /// </summary>
+    public List<WindowExclusion> SingleWindowExclusions { get; set; } = new();
+
+    /// <summary>v5 的旧字段：迁移到排除列表后仍然写回，降级运行时行为不至于突变。</summary>
     public bool ExcludeExplorerFromSingleWindow { get; set; } = true;
 
     /// <summary>主面板上次关闭时的位置（DIP）。HasPanelPosition 为 false 时按光标所在屏右下角弹出。</summary>
@@ -35,7 +41,11 @@ public sealed class AppSettings
     /// <summary>场景标识的 8 色调色板（#RRGGBB）；可在场景编辑里逐个改色，恢复默认即还原这组值。</summary>
     public List<string> SceneBadgeColors { get; set; } = new(SceneBadge.DefaultPalette);
 
-    private const int CurrentVersion = 5;
+    private const int CurrentVersion = 6;
+
+    /// <summary>当前生效的排除列表：内置资源管理器永远在第一位。</summary>
+    public IReadOnlyList<WindowExclusion> Exclusions()
+        => WindowExclusion.Normalize(SingleWindowExclusions, ExcludeExplorerFromSingleWindow);
 
     /// <summary>
     /// 数据目录，默认 <c>%LOCALAPPDATA%\TaskbarDrawer</c>。
@@ -109,6 +119,17 @@ public sealed class AppSettings
             // 按新默认值打开；用户在面板里手动关掉后会随 Version=5 原样保留。
             if (settings.Version < 5) settings.ExcludeExplorerFromSingleWindow = true;
 
+            // v6 把单个开关升级成排除列表：资源管理器的勾选状态从旧字段带过来，
+            // 用户之后加的别的应用都写在这里。手改配置漏掉内置项时由 Normalize 补齐。
+            if (settings.Version < 6)
+                settings.SingleWindowExclusions = new List<WindowExclusion>
+                {
+                    WindowExclusion.Explorer(settings.ExcludeExplorerFromSingleWindow)
+                };
+            settings.SingleWindowExclusions =
+                WindowExclusion.Normalize(settings.SingleWindowExclusions, settings.ExcludeExplorerFromSingleWindow);
+            settings.ExcludeExplorerFromSingleWindow = settings.SingleWindowExclusions[0].Enabled;
+
             if (settings.Version < CurrentVersion) settings.Version = CurrentVersion;
 
             // 热键字段非法时回落到默认组合，避免注册一个 VK=0 的假热键。
@@ -140,6 +161,9 @@ public sealed class AppSettings
     public void Save()
     {
         Version = CurrentVersion;
+        SingleWindowExclusions =
+            WindowExclusion.Normalize(SingleWindowExclusions, ExcludeExplorerFromSingleWindow);
+        ExcludeExplorerFromSingleWindow = SingleWindowExclusions[0].Enabled;
         SceneBadgeColors = BadgePalette().ToList();
         try
         {

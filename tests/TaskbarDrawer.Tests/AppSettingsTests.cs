@@ -40,8 +40,21 @@ public class AppSettingsTests
     }
 
     [Fact]
-    public void 资源管理器默认不计入单窗口模式()
+    public void 排除列表默认只有内置资源管理器_默认勾选()
     {
-        Assert.True(new AppSettings().ExcludeExplorerFromSingleWindow);
+        var rules = new AppSettings().Exclusions();
+        Assert.Single(rules);
+        Assert.True(rules[0].BuiltIn);
+        Assert.True(rules[0].Enabled);
+    }
+
+    [Fact]
+    public void 旧开关关掉时迁移后资源管理器也是关的()
+    {
+        var settings = new AppSettings { ExcludeExplorerFromSingleWindow = false };
+        var rules = settings.Exclusions();
+
+        Assert.Single(rules);
+        Assert.False(rules[0].Enabled);
     }
 }

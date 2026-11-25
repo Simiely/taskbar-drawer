@@ -29,7 +29,7 @@ public sealed class MainPanelWindow : Window
     private readonly TextBlock _summary;
     private readonly TextBlock _emptyHint;
     private readonly ToggleRow _singleRow;
-    private readonly ToggleRow _excludeExplorerRow;
+    private readonly NavRow _exclusionRow;
     private readonly ToggleRow _autoStartRow;
     private readonly TextBlock _stashHotkeyValue;
     private readonly TextBlock _stashEditLabel;
@@ -69,10 +69,9 @@ public sealed class MainPanelWindow : Window
 
         _singleRow = new ToggleRow("单窗口模式", null,
             value => SingleWindowRequested?.Invoke(value), "panel.singleWindow");
-        _excludeExplorerRow = new ToggleRow("资源管理器不计入", null,
-            value => ExcludeExplorerRequested?.Invoke(value), "panel.excludeExplorer");
-        _excludeExplorerRow.Root.ToolTip =
-            "开启后，资源管理器窗口不会被最小化，也不会因它触发单窗口动作；属于场景的资源管理器仍按场景处理";
+        _exclusionRow = new NavRow("排除管理", () => ExclusionsRequested?.Invoke(), "panel.exclusions");
+        _exclusionRow.Root.ToolTip =
+            "在右侧打开排除管理：勾选 / 添加不参与单窗口模式的应用；资源管理器是内置项，可关不可删";
         _autoStartRow = new ToggleRow("开机自启", null,
             value => AutoStartRequested?.Invoke(value), "panel.autoStart");
 
@@ -111,7 +110,9 @@ public sealed class MainPanelWindow : Window
     public event Action ExpandLatestRequested;
     public event Action ExpandAllRequested;
     public event Action<bool> SingleWindowRequested;
-    public event Action<bool> ExcludeExplorerRequested;
+
+    /// <summary>打开右侧的排除管理窗。</summary>
+    public event Action ExclusionsRequested;
     public event Action<bool> AutoStartRequested;
     public event Action<uint, uint> HotkeyChangeRequested;
 
@@ -214,7 +215,18 @@ public sealed class MainPanelWindow : Window
     }
 
     public void SetSingleWindow(bool value) => _singleRow.Set(value);
-    public void SetExcludeExplorer(bool value) => _excludeExplorerRow.Set(value);
+
+    /// <summary>更新「排除管理」入口右侧的摘要：资源管理器状态 + 用户添加的应用数。</summary>
+    public void SetExclusionSummary(bool explorerEnabled, int userCount)
+    {
+        string summary;
+        if (userCount > 0)
+            summary = explorerEnabled ? $"资源管理器 + {userCount} 个应用" : $"{userCount} 个应用";
+        else
+            summary = explorerEnabled ? "资源管理器" : "未排除任何应用";
+        _exclusionRow.SetSummary(summary);
+    }
+
     public void SetAutoStart(bool value) => _autoStartRow.Set(value);
 
     /// <summary>把配置里的两个尺寸套到滑块上（0.8 → 80%）。</summary>
@@ -585,10 +597,10 @@ public sealed class MainPanelWindow : Window
         panel.Children.Add(title);
 
         _singleRow.Root.Margin = new Thickness(0, 8, 0, 0);
-        _excludeExplorerRow.Root.Margin = new Thickness(0, 8, 0, 0);
+        _exclusionRow.Root.Margin = new Thickness(0, 8, 0, 0);
         _autoStartRow.Root.Margin = new Thickness(0, 8, 0, 0);
         panel.Children.Add(_singleRow.Root);
-        panel.Children.Add(_excludeExplorerRow.Root);
+        panel.Children.Add(_exclusionRow.Root);
         panel.Children.Add(_autoStartRow.Root);
         return panel;
     }
@@ -941,5 +953,41 @@ public sealed class MainPanelWindow : Window
             _track.Background = Value ? Theme.SuccessBrush : Theme.SwitchTrackOff;
             _knob.HorizontalAlignment = Value ? HorizontalAlignment.Right : HorizontalAlignment.Left;
         }
+    }
+
+    /// <summary>「标题 + 当前值 + ›」的入口行：点了在面板旁边打开二级窗口（排除管理）。</summary>
+    private sealed class NavRow
+    {
+        private readonly TextBlock _value;
+
+        public NavRow(string title, Action onClick, string automationId)
+        {
+            _value = Text("", 11, FontWeights.Normal, Theme.TextMuted);
+            _value.VerticalAlignment = VerticalAlignment.Center;
+            _value.Margin = new Thickness(8, 0, 6, 0);
+
+            var chevron = Text("›", 16, FontWeights.Normal, Theme.TextMuted);
+            chevron.VerticalAlignment = VerticalAlignment.Center;
+
+            var grid = new Grid();
+            grid.ColumnDefinitions.Add(new ColumnDefinition());
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var label = Text(title, 12, FontWeights.Normal, Theme.TextPrimary);
+            label.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(label, 0);
+            grid.Children.Add(label);
+            Grid.SetColumn(_value, 1);
+            grid.Children.Add(_value);
+            Grid.SetColumn(chevron, 2);
+            grid.Children.Add(chevron);
+
+            Root = Ui.Id(Ui.CardButton(grid, onClick, null, new Thickness(12, 9, 10, 9), title),
+                automationId);
+        }
+
+        public Button Root { get; }
+
+        public void SetSummary(string summary) => _value.Text = summary;
     }
 }
